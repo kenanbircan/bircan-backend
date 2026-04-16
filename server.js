@@ -1,8 +1,9 @@
-require("dotenv").config();
+import dotenv from "dotenv";
+dotenv.config();
 
-const express = require("express");
-const cors = require("cors");
-const Stripe = require("stripe");
+import express from "express";
+import cors from "cors";
+import Stripe from "stripe";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
