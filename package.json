@@ -1,6 +1,6 @@
 {
   "name": "bircan-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Bircan Migration AI Assessment Backend (Production Ready)",
   "type": "module",
   "main": "server.js",
@@ -15,7 +15,7 @@
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
-    "express": "^5.1.0",
+    "express": "^4.18.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.1.0",
     "multer": "^2.0.0",
