@@ -1,284 +1,444 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+require("dotenv").config();
 
-dotenv.config();
+const express = require("express");
+const cors = require("cors");
+const Stripe = require("stripe");
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+const PORT = process.env.PORT || 3000;
+
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null;
+
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-const PORT = process.env.PORT || 3000;
-const WEBSITE_URL = process.env.WEBSITE_URL || 'https://www.bircanmigration.au';
-const APP_BASE_URL = process.env.APP_BASE_URL || `http://localhost:${PORT}`;
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:4173",
+  "http://127.0.0.1:5500",
+  "http://localhost:5500",
+  "https://www.bircanmigration.au",
+  "https://bircanmigration.au",
+  "https://www.bircanmigration.com.au",
+  "https://bircanmigration.com.au"
+];
 
-/*
-  In-memory demo storage for now.
-  This keeps the backend working immediately.
-  Later you can replace this with database storage.
-*/
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true
+  })
+);
+
 const submissions = new Map();
 
-function makeId(prefix = 'sub') {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+const PRODUCT_CONFIG = {
+  partner_report: {
+    name: "Bircan Migration Partner Visa Assessment Report",
+    amount: 9900,
+    currency: "aud"
+  },
+  assessment_unlock: {
+    name: "Bircan Migration Assessment Unlock",
+    amount: 9900,
+    currency: "aud"
+  }
+};
+
+function normalizeBaseUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return null;
+  }
 }
 
-/* -----------------------------
-   Health
------------------------------ */
-app.get('/', (_req, res) => {
-  res.send('Bircan Migration Backend Running');
-});
+function resolveFrontendBase(req, requestedSiteUrl) {
+  const productionDefault =
+    process.env.FRONTEND_URL || "https://www.bircanmigration.au";
 
-app.get('/api/health', (_req, res) => {
+  const normalizedRequested = normalizeBaseUrl(requestedSiteUrl);
+  if (normalizedRequested && allowedOrigins.includes(normalizedRequested)) {
+    return normalizedRequested;
+  }
+
+  const originHeader = normalizeBaseUrl(req.headers.origin);
+  if (originHeader && allowedOrigins.includes(originHeader)) {
+    return originHeader;
+  }
+
+  const refererHeader = normalizeBaseUrl(req.headers.referer);
+  if (refererHeader && allowedOrigins.includes(refererHeader)) {
+    return refererHeader;
+  }
+
+  return productionDefault;
+}
+
+function makeSubmissionId() {
+  return `assessment_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function sanitizeText(value, fallback = "") {
+  if (value == null) return fallback;
+  return String(value).trim();
+}
+
+app.get("/", (_req, res) => {
   res.json({
     ok: true,
-    service: 'bircan-backend',
-    website: WEBSITE_URL,
-    message: 'Backend is running',
+    service: "bircan-backend",
+    website: "https://www.bircanmigration.au",
+    websiteAlt: "https://www.bircanmigration.com.au",
+    message: "Backend is running",
     endpoints: {
-      health: '/api/health',
-      contact: '/api/contact',
-      assessmentSubmit: '/api/assessment/submit',
-      assessmentPdf: '/api/assessment/pdf',
-      upload: '/api/upload',
-      checkoutSession: '/api/payments/checkout-session',
-      markPaid: '/api/payments/mark-paid'
+      health: "/api/health",
+      contact: "/api/contact",
+      assessmentSubmit: "/api/assessment/submit",
+      assessmentPdf: "/api/assessment/pdf/:submissionId",
+      checkoutSession: "/api/payments/checkout-session",
+      paymentMarkPaid: "/api/payments/mark-paid"
     },
     timestamp: new Date().toISOString()
   });
 });
 
-/* -----------------------------
-   Contact
------------------------------ */
-app.post('/api/contact', async (req, res) => {
-  try {
-    const data = req.body || {};
-    const id = makeId('contact');
-
-    submissions.set(id, {
-      id,
-      type: 'contact',
-      status: 'new',
-      createdAt: new Date().toISOString(),
-      payload: data
-    });
-
-    res.json({
-      ok: true,
-      message: 'Contact request received',
-      id
-    });
-  } catch (error) {
-    console.error('Contact error:', error);
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to process contact request'
-    });
-  }
-});
-
-/* -----------------------------
-   Assessment submit
------------------------------ */
-app.post('/api/assessment/submit', async (req, res) => {
-  try {
-    const data = req.body || {};
-    const id = makeId('assessment');
-
-    submissions.set(id, {
-      id,
-      type: 'assessment',
-      status: 'submitted',
-      paymentStatus: 'unpaid',
-      createdAt: new Date().toISOString(),
-      payload: data
-    });
-
-    res.json({
-      ok: true,
-      message: 'Assessment submitted successfully',
-      submissionId: id
-    });
-  } catch (error) {
-    console.error('Assessment submit error:', error);
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to submit assessment'
-    });
-  }
-});
-
-/* -----------------------------
-   Assessment PDF placeholder
------------------------------ */
-app.post('/api/assessment/pdf', async (req, res) => {
-  try {
-    const data = req.body || {};
-    const submissionId = data.submissionId || makeId('pdf');
-
-    res.json({
-      ok: true,
-      message: 'PDF generation placeholder ready',
-      submissionId,
-      pdfUrl: `${APP_BASE_URL}/api/assessment/pdf/${submissionId}`
-    });
-  } catch (error) {
-    console.error('Assessment PDF error:', error);
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to generate PDF'
-    });
-  }
-});
-
-app.get('/api/assessment/pdf/:id', async (req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    message: 'PDF file endpoint placeholder',
-    id: req.params.id
+    service: "bircan-backend",
+    website: "https://www.bircanmigration.au",
+    stripeConfigured: !!stripe,
+    hasFrontendUrl: !!process.env.FRONTEND_URL,
+    timestamp: new Date().toISOString()
   });
 });
 
-/* -----------------------------
-   Upload placeholder
------------------------------ */
-app.post('/api/upload', async (_req, res) => {
-  res.json({
-    ok: true,
-    message: 'Upload endpoint ready'
-  });
-});
-
-/* -----------------------------
-   Payments / Checkout Session
------------------------------ */
-app.post('/api/payments/checkout-session', async (req, res) => {
+app.post("/api/contact", (req, res) => {
   try {
-    const {
-      productKey,
-      submissionId,
-      customerEmail,
-      customerName,
-      amount
-    } = req.body || {};
+    const name = sanitizeText(req.body?.name);
+    const email = sanitizeText(req.body?.email);
+    const phone = sanitizeText(req.body?.phone);
+    const message = sanitizeText(req.body?.message);
 
-    /*
-      This is a working placeholder response so the frontend
-      stops failing and has a usable checkout URL.
-      Later you can replace this with real Stripe session creation.
-    */
-
-    const resolvedProduct = productKey || 'citizenship_review';
-    const resolvedSubmissionId = submissionId || makeId('order');
-
-    if (!submissions.has(resolvedSubmissionId)) {
-      submissions.set(resolvedSubmissionId, {
-        id: resolvedSubmissionId,
-        type: 'payment-intent',
-        status: 'created',
-        paymentStatus: 'pending',
-        createdAt: new Date().toISOString(),
-        payload: {
-          productKey: resolvedProduct,
-          customerEmail: customerEmail || '',
-          customerName: customerName || '',
-          amount: amount || null
-        }
+    if (!name || !email || !message) {
+      return res.status(400).json({
+        ok: false,
+        error: "Name, email, and message are required"
       });
-    } else {
-      const existing = submissions.get(resolvedSubmissionId);
-      existing.paymentStatus = 'pending';
-      existing.productKey = resolvedProduct;
-      existing.customerEmail = customerEmail || existing.customerEmail || '';
-      existing.customerName = customerName || existing.customerName || '';
-      submissions.set(resolvedSubmissionId, existing);
     }
 
-    /*
-      For now, simulate a checkout success URL back to the website.
-      Replace this later with Stripe Checkout session.url
-    */
-    const successUrl =
-      `${WEBSITE_URL}/success.html` +
-      `?submissionId=${encodeURIComponent(resolvedSubmissionId)}` +
-      `&productKey=${encodeURIComponent(resolvedProduct)}`;
-
-    res.json({
+    return res.json({
       ok: true,
-      message: 'Checkout session created',
-      mock: true,
-      submissionId: resolvedSubmissionId,
-      url: successUrl
+      message: "Contact enquiry received",
+      contact: {
+        name,
+        email,
+        phone,
+        message
+      }
     });
   } catch (error) {
-    console.error('Checkout session error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
-      message: 'Failed to create checkout session'
+      error: error.message || "Failed to process contact request"
     });
   }
 });
 
-/* -----------------------------
-   Mark paid
------------------------------ */
-app.post('/api/payments/mark-paid', async (req, res) => {
+app.post("/api/assessment/submit", (req, res) => {
   try {
-    const { submissionId, productKey } = req.body || {};
+    const body = req.body || {};
+    const submissionId = sanitizeText(body.submissionId) || makeSubmissionId();
+
+    const fullName =
+      sanitizeText(body.fullName) ||
+      sanitizeText(body.name) ||
+      sanitizeText(body.clientName);
+
+    const email =
+      sanitizeText(body.email) ||
+      sanitizeText(body.clientEmail);
+
+    const productKey =
+      sanitizeText(body.productKey) || "partner_report";
+
+    const visaSubclass =
+      sanitizeText(body.visaSubclass) ||
+      sanitizeText(body.subclass) ||
+      sanitizeText(body.visaType);
+
+    const saved = {
+      submissionId,
+      productKey,
+      fullName,
+      email,
+      visaSubclass,
+      paid: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      raw: body
+    };
+
+    submissions.set(submissionId, saved);
+
+    return res.json({
+      ok: true,
+      message: "Assessment saved successfully",
+      submissionId,
+      id: submissionId,
+      saved: {
+        submissionId,
+        productKey,
+        fullName,
+        email,
+        visaSubclass,
+        paid: false
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Failed to save assessment"
+    });
+  }
+});
+
+app.get("/api/assessment/:submissionId", (req, res) => {
+  const submissionId = sanitizeText(req.params.submissionId);
+  const submission = submissions.get(submissionId);
+
+  if (!submission) {
+    return res.status(404).json({
+      ok: false,
+      error: "Submission not found"
+    });
+  }
+
+  return res.json({
+    ok: true,
+    submission
+  });
+});
+
+app.post("/api/payments/checkout-session", async (req, res) => {
+  try {
+    if (!stripe) {
+      return res.status(500).json({
+        ok: false,
+        error: "Stripe is not configured. Add STRIPE_SECRET_KEY to environment variables."
+      });
+    }
+
+    const {
+      submissionId,
+      productKey = "partner_report",
+      customerEmail = "",
+      customerName = "",
+      siteUrl = ""
+    } = req.body || {};
 
     if (!submissionId) {
       return res.status(400).json({
         ok: false,
-        message: 'submissionId is required'
+        error: "Missing submissionId"
       });
     }
 
-    const existing = submissions.get(submissionId) || {
-      id: submissionId,
-      type: 'payment',
-      createdAt: new Date().toISOString(),
-      payload: {}
-    };
+    const submission = submissions.get(submissionId);
+    if (!submission) {
+      return res.status(404).json({
+        ok: false,
+        error: "Submission not found. Save assessment before starting payment."
+      });
+    }
 
-    existing.status = 'paid';
-    existing.paymentStatus = 'paid';
-    existing.paidAt = new Date().toISOString();
-    existing.productKey = productKey || existing.productKey || null;
+    const product = PRODUCT_CONFIG[productKey] || PRODUCT_CONFIG.partner_report;
+    const frontendBase = resolveFrontendBase(req, siteUrl);
 
-    submissions.set(submissionId, existing);
+    const successUrl =
+      `${frontendBase}/success.html` +
+      `?submissionId=${encodeURIComponent(submissionId)}` +
+      `&productKey=${encodeURIComponent(productKey)}` +
+      `&session_id={CHECKOUT_SESSION_ID}`;
 
-    res.json({
+    const cancelUrl =
+      `${frontendBase}/cancel.html` +
+      `?submissionId=${encodeURIComponent(submissionId)}` +
+      `&productKey=${encodeURIComponent(productKey)}`;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: ["card"],
+      customer_email: customerEmail || submission.email || undefined,
+      line_items: [
+        {
+          price_data: {
+            currency: product.currency,
+            product_data: {
+              name: product.name,
+              description: `Submission: ${submissionId}${customerName || submission.fullName ? ` | Client: ${customerName || submission.fullName}` : ""}`
+            },
+            unit_amount: product.amount
+          },
+          quantity: 1
+        }
+      ],
+      metadata: {
+        submissionId,
+        productKey,
+        customerName: customerName || submission.fullName || "",
+        customerEmail: customerEmail || submission.email || ""
+      },
+      success_url: successUrl,
+      cancel_url: cancelUrl
+    });
+
+    submission.updatedAt = new Date().toISOString();
+    submission.checkoutSessionId = session.id;
+    submissions.set(submissionId, submission);
+
+    return res.json({
       ok: true,
-      message: 'Payment marked as paid',
-      submissionId,
-      productKey: existing.productKey || null
+      url: session.url,
+      sessionId: session.id,
+      successUrl,
+      cancelUrl,
+      frontendBase
     });
   } catch (error) {
-    console.error('Mark paid error:', error);
-    res.status(500).json({
+    console.error("checkout-session error:", error);
+    return res.status(500).json({
       ok: false,
-      message: 'Failed to mark payment as paid'
+      error: error.message || "Failed to create checkout session"
     });
   }
 });
 
-/* -----------------------------
-   Simple admin/debug route
------------------------------ */
-app.get('/api/debug/submissions', (_req, res) => {
-  res.json({
-    ok: true,
-    count: submissions.size,
-    items: Array.from(submissions.values())
+app.post("/api/payments/mark-paid", async (req, res) => {
+  try {
+    const { submissionId, sessionId = "" } = req.body || {};
+
+    if (!submissionId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing submissionId"
+      });
+    }
+
+    const submission = submissions.get(submissionId);
+    if (!submission) {
+      return res.status(404).json({
+        ok: false,
+        error: "Submission not found"
+      });
+    }
+
+    let paid = false;
+    let paymentStatus = "unverified";
+
+    if (stripe && sessionId) {
+      try {
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        paymentStatus = session.payment_status || "unknown";
+        paid = session.payment_status === "paid";
+      } catch (err) {
+        console.error("Stripe verify error:", err.message);
+      }
+    }
+
+    if (!sessionId) {
+      paid = true;
+      paymentStatus = "marked_paid_without_session_check";
+    }
+
+    submission.paid = paid;
+    submission.paymentStatus = paymentStatus;
+    submission.updatedAt = new Date().toISOString();
+    submission.paidAt = paid ? new Date().toISOString() : submission.paidAt || null;
+
+    submissions.set(submissionId, submission);
+
+    return res.json({
+      ok: true,
+      submissionId,
+      paid,
+      paymentStatus
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Failed to mark payment"
+    });
+  }
+});
+
+app.get("/api/assessment/pdf/:submissionId", (req, res) => {
+  try {
+    const submissionId = sanitizeText(req.params.submissionId);
+    const submission = submissions.get(submissionId);
+
+    if (!submission) {
+      return res.status(404).json({
+        ok: false,
+        error: "Submission not found"
+      });
+    }
+
+    if (!submission.paid) {
+      return res.status(403).json({
+        ok: false,
+        error: "Payment required before PDF generation"
+      });
+    }
+
+    const content = `
+Bircan Migration - Assessment Summary
+
+Submission ID: ${submission.submissionId}
+Client Name: ${submission.fullName || "Not provided"}
+Client Email: ${submission.email || "Not provided"}
+Visa Subclass: ${submission.visaSubclass || "Not provided"}
+Product: ${submission.productKey}
+Paid: ${submission.paid ? "Yes" : "No"}
+Created At: ${submission.createdAt}
+Updated At: ${submission.updatedAt}
+
+Raw Assessment Data:
+${JSON.stringify(submission.raw || {}, null, 2)}
+`.trim();
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${submissionId}.pdf"`
+    );
+
+    return res.send(Buffer.from(content, "utf8"));
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Failed to generate PDF"
+    });
+  }
+});
+
+app.use((err, _req, res, _next) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({
+    ok: false,
+    error: err.message || "Internal server error"
   });
 });
 
-/* -----------------------------
-   Start server
------------------------------ */
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Bircan backend running on port ${PORT}`);
 });
