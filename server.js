@@ -16,9 +16,18 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
-const APP_BASE_URL = String(process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const FRONTEND_SUCCESS_URL = String(process.env.FRONTEND_SUCCESS_URL || `${APP_BASE_URL}/success.html`).replace(/\/$/, '');
-const FRONTEND_CANCEL_URL = String(process.env.FRONTEND_CANCEL_URL || `${APP_BASE_URL}/cancel.html`).replace(/\/$/, '');
+
+const APP_BASE_URL = String(
+  process.env.APP_BASE_URL || `http://localhost:${PORT}`
+).replace(/\/$/, '');
+
+const FRONTEND_SUCCESS_URL = String(
+  process.env.FRONTEND_SUCCESS_URL || `${APP_BASE_URL}/success.html`
+).replace(/\/$/, '');
+
+const FRONTEND_CANCEL_URL = String(
+  process.env.FRONTEND_CANCEL_URL || `${APP_BASE_URL}/cancel.html`
+).replace(/\/$/, '');
 
 const storageDir = path.join(__dirname, 'storage');
 const submissionsDir = path.join(storageDir, 'submissions');
@@ -32,7 +41,14 @@ const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null;
 
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/reports', express.static(reportsDir));
@@ -45,9 +61,9 @@ function safe(value, fallback = '') {
 
 function formatDate(value) {
   if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return safe(value, '');
-  return d.toLocaleDateString('en-AU', {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return safe(value, '');
+  return date.toLocaleDateString('en-AU', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
@@ -59,6 +75,7 @@ function submissionFile(id) {
 }
 
 function readSubmission(id) {
+  if (!id) return null;
   const file = submissionFile(id);
   if (!fs.existsSync(file)) return null;
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -71,6 +88,7 @@ function writeSubmission(id, data) {
 function createSubmission(data = {}) {
   const id = nanoid(12);
   const now = new Date().toISOString();
+
   const record = {
     id,
     createdAt: now,
@@ -85,6 +103,7 @@ function createSubmission(data = {}) {
     emailSentAt: null,
     ...data,
   };
+
   writeSubmission(id, record);
   return record;
 }
@@ -92,17 +111,28 @@ function createSubmission(data = {}) {
 function updateSubmission(id, patch = {}) {
   const existing = readSubmission(id);
   if (!existing) return null;
+
   const updated = {
     ...existing,
     ...patch,
     updatedAt: new Date().toISOString(),
   };
+
   writeSubmission(id, updated);
   return updated;
 }
 
+function listSubmissions() {
+  return fs
+    .readdirSync(submissionsDir)
+    .filter(file => file.endsWith('.json'))
+    .map(file => JSON.parse(fs.readFileSync(path.join(submissionsDir, file), 'utf8')))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
 function createTransporter() {
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER) return null;
+
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
@@ -114,15 +144,74 @@ function createTransporter() {
   });
 }
 
-async function sendFinalReportEmail(submission, pdfBuffer) {
-  const transporter = createTransporter();
-  if (!transporter || !submission.email || !pdfBuffer) return false;
+async function sendAdminNotification(submission) {
+  try {
+    const transporter = createTransporter();
+    const to = process.env.ADMIN_NOTIFY_EMAIL;
 
-  await transporter.sendMail({
-    from: process.env.MAIL_FROM || 'Bircan Migration <noreply@bircanmigration.com.au>',
-    to: submission.email,
-    subject: 'Your Migration Assessment Letter',
-    text: `Dear ${safe(submission.fullName || submission.name, 'Client')},
+    if (!transporter || !to) return false;
+
+    await transporter.sendMail({
+      from: process.env.MAIL_FROM || 'Bircan Migration <noreply@bircanmigration.com.au>',
+      to,
+      subject: `New Bircan Migration submission: ${safe(submission.type, 'Assessment')}`,
+      text: `Submission ID: ${submission.id}
+Type: ${safe(submission.type)}
+Name: ${safe(submission.fullName || submission.name)}
+Email: ${safe(submission.email)}
+Phone: ${safe(submission.phone)}
+Visa Type: ${safe(submission.visaType)}
+Plan: ${safe(submission.planLabel || submission.productName || submission.productKey)}
+`,
+    });
+
+    return true;
+  } catch (error) {
+    console.error('sendAdminNotification error:', error);
+    return false;
+  }
+}
+
+async function sendClientReceipt(submission) {
+  try {
+    const transporter = createTransporter();
+
+    if (!transporter || !submission.email) return false;
+
+    await transporter.sendMail({
+      from: process.env.MAIL_FROM || 'Bircan Migration <noreply@bircanmigration.com.au>',
+      to: submission.email,
+      subject: 'Your Bircan Migration submission',
+      text: `Dear ${safe(submission.fullName || submission.name, 'Client')},
+
+Thank you for your submission.
+
+Reference ID: ${submission.id}
+
+We have received your information.
+
+Bircan Migration
+https://bircanmigration.com.au`,
+    });
+
+    return true;
+  } catch (error) {
+    console.error('sendClientReceipt error:', error);
+    return false;
+  }
+}
+
+async function sendFinalReportEmail(submission, pdfBuffer) {
+  try {
+    const transporter = createTransporter();
+
+    if (!transporter || !submission.email || !pdfBuffer) return false;
+
+    await transporter.sendMail({
+      from: process.env.MAIL_FROM || 'Bircan Migration <noreply@bircanmigration.com.au>',
+      to: submission.email,
+      subject: 'Your Migration Assessment Letter',
+      text: `Dear ${safe(submission.fullName || submission.name, 'Client')},
 
 Thank you for your payment.
 
@@ -132,18 +221,22 @@ Reference ID: ${submission.id}
 
 Bircan Migration
 https://bircanmigration.com.au`,
-    attachments: [
-      {
-        filename: `assessment-${submission.id}.pdf`,
-        content: pdfBuffer,
-      },
-    ],
-  });
+      attachments: [
+        {
+          filename: `assessment-${submission.id}.pdf`,
+          content: pdfBuffer,
+        },
+      ],
+    });
 
-  return true;
+    return true;
+  } catch (error) {
+    console.error('sendFinalReportEmail error:', error);
+    return false;
+  }
 }
 
-function buildAssessment(submission) {
+function buildAssessment(submission = {}) {
   const findings = [];
   const strengths = [];
   const risks = [];
@@ -153,6 +246,9 @@ function buildAssessment(submission) {
   if (submission.currentVisa) findings.push(`Current visa recorded as ${submission.currentVisa}.`);
   if (submission.relationshipStatus) findings.push(`Relationship status: ${submission.relationshipStatus}.`);
   if (submission.location) findings.push(`Client location: ${submission.location}.`);
+  if (submission.planLabel || submission.productName) {
+    findings.push(`Selected package: ${safe(submission.planLabel || submission.productName)}.`);
+  }
 
   if (submission.email) strengths.push('Client email provided for communication.');
   if (submission.phone) strengths.push('Client phone number provided.');
@@ -161,6 +257,7 @@ function buildAssessment(submission) {
 
   if (!submission.currentVisa) risks.push('Current visa details should be confirmed.');
   if (!submission.nationality) risks.push('Nationality details should be confirmed.');
+  if (!submission.phone) risks.push('Phone number should be confirmed.');
   if (!submission.relationshipStartDate && /partner/i.test(safe(submission.visaType))) {
     risks.push('Relationship commencement evidence may be required.');
   }
@@ -173,7 +270,9 @@ function buildAssessment(submission) {
     outcome: risks.length <= 1 ? 'Promising initial assessment' : 'Further review recommended',
     suitability: risks.length <= 1 ? 'Good preliminary profile' : 'Requires targeted review',
     findings: findings.length ? findings : ['Preliminary information was received and assessed.'],
-    strengths: strengths.length ? strengths : ['Sufficient initial information was provided for a preliminary review.'],
+    strengths: strengths.length
+      ? strengths
+      : ['Sufficient initial information was provided for a preliminary review.'],
     risks,
     recommendedNextSteps,
   };
@@ -183,9 +282,15 @@ async function generatePdfBuffer(submission) {
   return new Promise((resolve, reject) => {
     try {
       const assessment = submission.assessment || buildAssessment(submission);
+
       const doc = new PDFDocument({
         size: 'A4',
-        margins: { top: 50, bottom: 50, left: 50, right: 50 },
+        margins: {
+          top: 50,
+          bottom: 50,
+          left: 50,
+          right: 50,
+        },
       });
 
       const chunks = [];
@@ -217,7 +322,10 @@ async function generatePdfBuffer(submission) {
         .font('Helvetica')
         .fontSize(9)
         .fillColor('#D9ECFA')
-        .text(`Generated: ${formatDate(new Date().toISOString())}`, 310, 54, { width: 220, align: 'right' });
+        .text(`Generated: ${formatDate(new Date().toISOString())}`, 310, 54, {
+          width: 220,
+          align: 'right',
+        });
 
       doc.y = 125;
 
@@ -225,7 +333,9 @@ async function generatePdfBuffer(submission) {
         .font('Helvetica-Bold')
         .fontSize(15)
         .fillColor('#163955')
-        .text(`Client: ${safe(submission.fullName || submission.name, 'Client')}`, 50, doc.y, { width: 495 });
+        .text(`Client: ${safe(submission.fullName || submission.name, 'Client')}`, 50, doc.y, {
+          width: 495,
+        });
 
       doc.moveDown(0.5);
 
@@ -238,44 +348,90 @@ async function generatePdfBuffer(submission) {
             submission.visaType,
             'the requested visa pathway'
           )}. It is based on the information provided by the client and should be treated as an initial review only.`,
-          { width: 495, lineGap: 3 }
+          {
+            width: 495,
+            lineGap: 3,
+          }
         );
 
       doc.moveDown(1);
 
-      const labelValue = (label, value, fallback = 'Not provided') => {
-        const y = doc.y;
-        doc.font('Helvetica-Bold').fontSize(10).fillColor('#163955').text(label, 50, y, { width: 125 });
-        doc.font('Helvetica').fontSize(10).fillColor('#222222').text(safe(value, fallback), 185, y, { width: 350, lineGap: 2 });
-        doc.moveDown(0.9);
-      };
-
-      const section = title => {
+      function section(title) {
         doc.moveDown(0.5);
         const y = doc.y;
-        doc.roundedRect(50, y, 495, 24, 6).fill('#EAF4FB');
-        doc.font('Helvetica-Bold').fontSize(12).fillColor('#0E3A5D').text(title, 62, y + 7, { width: 460 });
-        doc.y = y + 32;
-      };
 
-      const bullets = (items, emptyText) => {
+        doc.roundedRect(50, y, 495, 24, 6).fill('#EAF4FB');
+
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(12)
+          .fillColor('#0E3A5D')
+          .text(title, 62, y + 7, { width: 460 });
+
+        doc.y = y + 32;
+      }
+
+      function labelValue(label, value, fallback = 'Not provided') {
+        const y = doc.y;
+
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(10)
+          .fillColor('#163955')
+          .text(label, 50, y, { width: 125 });
+
+        doc
+          .font('Helvetica')
+          .fontSize(10)
+          .fillColor('#222222')
+          .text(safe(value, fallback), 185, y, {
+            width: 350,
+            lineGap: 2,
+          });
+
+        doc.moveDown(0.9);
+      }
+
+      function bullets(items, emptyText) {
         if (!items || !items.length) {
-          doc.font('Helvetica').fontSize(10).fillColor('#444444').text(emptyText, 62, doc.y, { width: 470 });
+          doc
+            .font('Helvetica')
+            .fontSize(10)
+            .fillColor('#444444')
+            .text(emptyText, 62, doc.y, { width: 470 });
+
           doc.moveDown(0.8);
           return;
         }
+
         for (const item of items) {
           const y = doc.y;
-          doc.font('Helvetica-Bold').fontSize(11).fillColor('#0F5E9C').text('•', 62, y);
-          doc.font('Helvetica').fontSize(10).fillColor('#222222').text(safe(item), 78, y, { width: 450, lineGap: 2 });
+
+          doc
+            .font('Helvetica-Bold')
+            .fontSize(11)
+            .fillColor('#0F5E9C')
+            .text('•', 62, y);
+
+          doc
+            .font('Helvetica')
+            .fontSize(10)
+            .fillColor('#222222')
+            .text(safe(item), 78, y, {
+              width: 450,
+              lineGap: 2,
+            });
+
           doc.moveDown(0.45);
         }
+
         doc.moveDown(0.3);
-      };
+      }
 
       section('Client Information');
       labelValue('Full name', submission.fullName || submission.name);
       labelValue('Visa type', submission.visaType);
+      labelValue('Selected plan', submission.planLabel || submission.productName || submission.productKey);
       labelValue('Email', submission.email);
       labelValue('Phone', submission.phone);
       labelValue('Date of birth', submission.dateOfBirth ? formatDate(submission.dateOfBirth) : '');
@@ -284,8 +440,15 @@ async function generatePdfBuffer(submission) {
       labelValue('Relationship status', submission.relationshipStatus);
       labelValue('Sponsor status', submission.sponsorStatus || submission.sponsorCitizenshipStatus);
       labelValue('Current visa', submission.currentVisa || submission.applicantStatus);
-      labelValue('Relationship start date', submission.relationshipStartDate ? formatDate(submission.relationshipStartDate) : '');
-      labelValue('Cohabitation start date', submission.cohabitationStartDate ? formatDate(submission.cohabitationStartDate) : '');
+      labelValue(
+        'Relationship start date',
+        submission.relationshipStartDate ? formatDate(submission.relationshipStartDate) : ''
+      );
+      labelValue(
+        'Cohabitation start date',
+        submission.cohabitationStartDate ? formatDate(submission.cohabitationStartDate) : ''
+      );
+      labelValue('Notes', submission.notes);
       labelValue('Submitted', formatDate(submission.submittedAt || submission.createdAt));
 
       section('Assessment Outcome');
@@ -299,7 +462,10 @@ async function generatePdfBuffer(submission) {
       bullets(assessment.strengths, 'No strengths recorded.');
 
       section('Risks / Review Flags');
-      bullets(assessment.risks, 'No immediate review flags were identified in this preliminary summary.');
+      bullets(
+        assessment.risks,
+        'No immediate review flags were identified in this preliminary summary.'
+      );
 
       section('Recommended Next Steps');
       bullets(assessment.recommendedNextSteps, 'No next steps recorded.');
@@ -313,7 +479,10 @@ async function generatePdfBuffer(submission) {
           'This letter is a preliminary assessment summary only. It does not constitute formal legal advice, a final eligibility determination, or a guarantee of visa outcome. A full review of evidence, history, legal criteria, and application strategy should be completed before any application is lodged.',
           62,
           doc.y,
-          { width: 470, lineGap: 4 }
+          {
+            width: 470,
+            lineGap: 4,
+          }
         );
 
       doc.end();
@@ -328,6 +497,11 @@ const PRODUCT_CATALOG = {
   '309-24h': { name: 'Subclass 309 Assessment - 24 Hours', amount: 199, currency: 'aud' },
   '309-3d': { name: 'Subclass 309 Assessment - 3 Days', amount: 149, currency: 'aud' },
   '309-7d': { name: 'Subclass 309 Assessment - 7 Days', amount: 99, currency: 'aud' },
+
+  'partner-309-100-review': { name: 'Partner Visa 309/100 Premium Review', amount: 79, currency: 'aud' },
+  'partner-820-801-review': { name: 'Partner Visa 820/801 Premium Review', amount: 79, currency: 'aud' },
+  'aat-appeals-review': { name: 'AAT Appeals Risk Review', amount: 199, currency: 'aud' },
+  'citizenship-eligibility-review': { name: 'Citizenship Eligibility Review', amount: 49, currency: 'aud' },
 };
 
 app.get('/', (_req, res) => {
@@ -343,6 +517,19 @@ app.get('/api/health', (_req, res) => {
     service: 'bircan-migration-backend',
     hasStripeKey: Boolean(process.env.STRIPE_SECRET_KEY),
     hasSmtp: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER),
+    appBaseUrl: APP_BASE_URL,
+  });
+});
+
+app.get('/api/stripe-check', (_req, res) => {
+  res.json({
+    ok: true,
+    hasStripeKey: Boolean(process.env.STRIPE_SECRET_KEY),
+    keyPrefix: process.env.STRIPE_SECRET_KEY
+      ? process.env.STRIPE_SECRET_KEY.slice(0, 7)
+      : null,
+    successUrl: FRONTEND_SUCCESS_URL,
+    cancelUrl: FRONTEND_CANCEL_URL,
   });
 });
 
@@ -371,6 +558,11 @@ app.post('/api/assessment/submit', async (req, res) => {
       assessment: payload.assessment || buildAssessment(payload),
     });
 
+    await Promise.allSettled([
+      sendAdminNotification(submission),
+      sendClientReceipt(submission),
+    ]);
+
     return res.json({
       ok: true,
       submissionId: submission.id,
@@ -394,7 +586,16 @@ app.post('/api/payments/checkout-session', async (req, res) => {
       });
     }
 
-    const { submissionId, productKey, amount, currency, customerEmail, customerName } = req.body || {};
+    const {
+      submissionId,
+      productKey,
+      amount,
+      currency,
+      customerEmail,
+      customerName,
+      planLabel,
+    } = req.body || {};
+
     const submission = readSubmission(submissionId);
 
     if (!submission) {
@@ -405,7 +606,7 @@ app.post('/api/payments/checkout-session', async (req, res) => {
     }
 
     const product = PRODUCT_CATALOG[productKey] || {
-      name: 'Migration Assessment',
+      name: safe(planLabel, 'Migration Assessment'),
       amount: Number(amount) || 99,
       currency: safe(currency, 'aud').toLowerCase(),
     };
@@ -426,7 +627,9 @@ app.post('/api/payments/checkout-session', async (req, res) => {
           },
         },
       ],
-      success_url: `${FRONTEND_SUCCESS_URL}?submissionId=${encodeURIComponent(submissionId)}&productKey=${encodeURIComponent(productKey || '')}&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${FRONTEND_SUCCESS_URL}?submissionId=${encodeURIComponent(
+        submissionId
+      )}&productKey=${encodeURIComponent(productKey || '')}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${FRONTEND_CANCEL_URL}?submissionId=${encodeURIComponent(submissionId)}`,
       metadata: {
         submissionId,
@@ -440,6 +643,7 @@ app.post('/api/payments/checkout-session', async (req, res) => {
       stripeSessionId: session.id,
       productKey: safe(productKey, ''),
       productName: product.name,
+      planLabel: safe(planLabel || product.name, product.name),
       amount: product.amount,
       currency: product.currency,
     });
@@ -450,7 +654,7 @@ app.post('/api/payments/checkout-session', async (req, res) => {
       sessionId: session.id,
     });
   } catch (error) {
-    console.error('checkout error:', error);
+    console.error('Stripe checkout error:', error);
     return res.status(500).json({
       ok: false,
       error: error.message || 'Failed to create checkout session.',
@@ -470,7 +674,7 @@ app.post('/api/payments/mark-paid', async (req, res) => {
       });
     }
 
-    const updated = updateSubmission(submissionId, {
+    updateSubmission(submissionId, {
       paymentStatus: 'paid',
       status: 'paid',
       stripeSessionId: sessionId || submission.stripeSessionId || null,
@@ -505,7 +709,6 @@ app.post('/api/payments/mark-paid', async (req, res) => {
       submissionId,
       downloadUrl: `${APP_BASE_URL}${pdfUrl}`,
       submission: readSubmission(submissionId),
-      updated,
     });
   } catch (error) {
     console.error('mark-paid error:', error);
@@ -514,6 +717,20 @@ app.post('/api/payments/mark-paid', async (req, res) => {
       error: error.message || 'Failed to mark payment as paid.',
     });
   }
+});
+
+app.get('/api/admin/submissions', (_req, res) => {
+  return res.json({
+    ok: true,
+    items: listSubmissions(),
+  });
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    ok: false,
+    error: `Route not found: ${req.method} ${req.originalUrl}`,
+  });
 });
 
 app.listen(PORT, () => {
