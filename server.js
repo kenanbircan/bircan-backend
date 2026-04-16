@@ -8,9 +8,6 @@ import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-
-// This expects pdf.js to export a DEFAULT function:
-// export default async function generatePDF(data) { ... }
 import generatePDF from './pdf.js';
 
 dotenv.config();
@@ -23,9 +20,7 @@ const __dirname = path.dirname(__filename);
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024,
-  },
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 const allowedOrigins = [
@@ -52,8 +47,8 @@ app.use(
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
-app.use(express.json({ limit: '15mb' }));
-app.use(express.urlencoded({ extended: true, limit: '15mb' }));
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -64,104 +59,139 @@ const apiLimiter = rateLimit({
 
 app.use('/api', apiLimiter);
 
-function cleanString(value, fallback = '') {
+function safeString(value, fallback = '') {
   if (value === null || value === undefined) return fallback;
   return String(value).trim();
 }
 
-function buildAssessmentSummary(payload = {}) {
-  const visaType = cleanString(payload.visaType, 'Migration Assessment');
-  const fullName = cleanString(payload.fullName || payload.name, 'Client');
-  const email = cleanString(payload.email, '');
-  const phone = cleanString(payload.phone, '');
-  const nationality = cleanString(payload.nationality, '');
-  const location = cleanString(payload.location, '');
-  const relationshipStatus = cleanString(payload.relationshipStatus, '');
-  const sponsorStatus = cleanString(payload.sponsorStatus, '');
-  const applicantStatus = cleanString(payload.applicantStatus, '');
-  const notes = cleanString(
-    payload.notes ||
-      payload.additionalInformation ||
-      payload.additionalInfo ||
-      ''
-  );
+function toArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === 'string' && value.trim()) {
+    return value
+      .split('\n')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
 
+function pick(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function buildAssessmentSummary(payload = {}) {
   return {
-    visaType,
-    fullName,
-    email,
-    phone,
-    nationality,
-    location,
-    relationshipStatus,
-    sponsorStatus,
-    applicantStatus,
-    notes,
+    visaType: pick(payload.visaType, payload.visaSubclass, 'Migration Assessment'),
+    fullName: pick(payload.fullName, payload.name, 'Client'),
+    email: pick(payload.email),
+    phone: pick(payload.phone, payload.mobile),
+    dateOfBirth: pick(payload.dateOfBirth, payload.dob),
+    nationality: pick(payload.nationality, payload.citizenship),
+    location: pick(payload.location, payload.currentLocation, payload.countryOfResidence),
+    relationshipStatus: pick(payload.relationshipStatus, payload.maritalStatus),
+    sponsorStatus: pick(payload.sponsorStatus),
+    applicantStatus: pick(payload.applicantStatus, payload.currentVisaStatus),
+    passportCountry: pick(payload.passportCountry),
+    currentVisa: pick(payload.currentVisa),
+    sponsorName: pick(payload.sponsorName),
+    sponsorCitizenshipStatus: pick(payload.sponsorCitizenshipStatus),
+    relationshipStartDate: pick(payload.relationshipStartDate),
+    cohabitationStartDate: pick(payload.cohabitationStartDate),
+    childrenDetails: pick(payload.childrenDetails),
+    refusalHistory: pick(payload.refusalHistory),
+    healthIssues: pick(payload.healthIssues),
+    characterIssues: pick(payload.characterIssues),
+    notes: pick(payload.notes, payload.additionalInformation, payload.additionalInfo),
     submittedAt: new Date().toISOString(),
   };
 }
 
-function buildSimpleAssessmentResult(summary) {
+function buildAssessmentResult(summary, payload = {}) {
   const findings = [];
-  const risks = [];
   const strengths = [];
+  const risks = [];
   const recommendedNextSteps = [];
 
   if (summary.visaType.toLowerCase().includes('309')) {
-    strengths.push(
-      'This appears to align with the offshore partner visa pathway where the relationship is genuine and continuing.'
-    );
-    recommendedNextSteps.push(
-      'Prepare evidence across financial, social, household, and commitment aspects of the relationship.'
-    );
-    recommendedNextSteps.push(
-      'Organise identity documents, relationship timeline, communication history, and sponsor documents.'
-    );
+    findings.push('The requested pathway appears to be the offshore Partner visa stream.');
+    strengths.push('Subclass 309 is generally suitable where the applicant is outside Australia and the relationship is genuine and continuing.');
+    recommendedNextSteps.push('Prepare evidence across the four relationship categories: financial, social, nature of household, and commitment.');
+    recommendedNextSteps.push('Prepare a clear relationship timeline supported by documents and statements.');
+    recommendedNextSteps.push('Confirm the sponsor’s Australian citizenship, permanent residence, or eligible New Zealand citizen status.');
   }
 
-  if (summary.relationshipStatus) {
-    findings.push(`Relationship status: ${summary.relationshipStatus}`);
+  if (summary.relationshipStatus) findings.push(`Relationship status recorded: ${summary.relationshipStatus}`);
+  if (summary.sponsorStatus) findings.push(`Sponsor status recorded: ${summary.sponsorStatus}`);
+  if (summary.applicantStatus) findings.push(`Applicant visa status recorded: ${summary.applicantStatus}`);
+  if (summary.currentVisa) findings.push(`Current visa recorded: ${summary.currentVisa}`);
+  if (summary.location) findings.push(`Current location recorded: ${summary.location}`);
+  if (summary.nationality) findings.push(`Nationality recorded: ${summary.nationality}`);
+
+  if (summary.relationshipStartDate) {
+    strengths.push('A relationship commencement date has been provided, which assists with timeline assessment.');
   }
 
-  if (summary.sponsorStatus) {
-    findings.push(`Sponsor status: ${summary.sponsorStatus}`);
+  if (summary.cohabitationStartDate) {
+    strengths.push('A cohabitation commencement date has been provided, which may support household evidence.');
   }
 
-  if (summary.applicantStatus) {
-    findings.push(`Applicant status: ${summary.applicantStatus}`);
+  if (summary.sponsorCitizenshipStatus) {
+    strengths.push('Sponsor immigration status information has been provided.');
   }
 
-  if (summary.nationality) {
-    findings.push(`Nationality: ${summary.nationality}`);
+  if (!summary.email) risks.push('Email address not provided.');
+  if (!summary.phone) risks.push('Phone number not provided.');
+  if (!summary.location) risks.push('Current location not provided.');
+  if (!summary.relationshipStatus) risks.push('Relationship status not provided.');
+  if (!summary.sponsorStatus && !summary.sponsorCitizenshipStatus) risks.push('Sponsor eligibility information is incomplete.');
+  if (!summary.notes) risks.push('Limited case detail has been provided for deeper assessment.');
+
+  if (summary.refusalHistory) {
+    risks.push('The client has indicated prior refusal or relevant immigration history that should be reviewed carefully.');
+    recommendedNextSteps.push('Review all previous visa refusal, cancellation, or immigration history documents before proceeding.');
   }
 
-  if (summary.location) {
-    findings.push(`Current location: ${summary.location}`);
+  if (summary.healthIssues) {
+    risks.push('Potential health issues were flagged and may require further assessment.');
+    recommendedNextSteps.push('Obtain more detail regarding any health issues and likely evidentiary requirements.');
   }
 
-  if (!summary.email) {
-    risks.push('Email address was not provided.');
+  if (summary.characterIssues) {
+    risks.push('Potential character issues were flagged and may require further assessment.');
+    recommendedNextSteps.push('Review police, court, or related character documents before application strategy is finalised.');
   }
 
-  if (!summary.phone) {
-    risks.push('Phone number was not provided.');
+  const customFindings = toArray(payload.findings);
+  const customStrengths = toArray(payload.strengths);
+  const customRisks = toArray(payload.risks);
+  const customNextSteps = toArray(payload.recommendedNextSteps);
+
+  findings.push(...customFindings);
+  strengths.push(...customStrengths);
+  risks.push(...customRisks);
+  recommendedNextSteps.push(...customNextSteps);
+
+  if (strengths.length === 0) {
+    strengths.push('The submission contains some initial information suitable for a preliminary review.');
   }
 
-  if (!summary.notes) {
-    recommendedNextSteps.push(
-      'Provide additional personal background and case details for a more accurate review.'
-    );
+  if (recommendedNextSteps.length === 0) {
+    recommendedNextSteps.push('Obtain a full migration consultation and document review before lodging any application.');
   }
 
-  if (risks.length === 0) {
-    strengths.push(
-      'The submission includes enough core information for an initial review.'
-    );
-  }
+  const suitability =
+    risks.length >= 4
+      ? 'Requires detailed review before eligibility can be assessed'
+      : 'Potentially suitable subject to full legal and evidentiary review';
 
   return {
-    outcome: 'Initial assessment completed',
-    suitability: 'Preliminary only',
+    outcome: 'Preliminary assessment completed',
+    suitability,
     findings,
     strengths,
     risks,
@@ -171,9 +201,7 @@ function buildSimpleAssessmentResult(summary) {
 
 async function ensureTempDir() {
   const dir = path.join(__dirname, 'tmp');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -199,7 +227,6 @@ app.get('/api/health', (req, res) => {
     ok: true,
     service: 'bircan-backend',
     website: 'https://www.bircanmigration.au',
-    hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
     hasFrontendUrl: Boolean(process.env.FRONTEND_URL),
     nodeEnv: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString(),
@@ -211,11 +238,11 @@ app.post('/api/contact', async (req, res) => {
     const body = req.body || {};
 
     const contact = {
-      fullName: cleanString(body.fullName),
-      email: cleanString(body.email),
-      phone: cleanString(body.phone),
-      subject: cleanString(body.subject),
-      message: cleanString(body.message),
+      fullName: safeString(body.fullName),
+      email: safeString(body.email),
+      phone: safeString(body.phone),
+      subject: safeString(body.subject),
+      message: safeString(body.message),
       submittedAt: new Date().toISOString(),
     };
 
@@ -244,7 +271,7 @@ app.post('/api/assessment/submit', async (req, res) => {
   try {
     const payload = req.body || {};
     const summary = buildAssessmentSummary(payload);
-    const assessment = buildSimpleAssessmentResult(summary);
+    const assessment = buildAssessmentResult(summary, payload);
 
     return res.json({
       ok: true,
@@ -265,7 +292,7 @@ app.post('/api/assessment/pdf', async (req, res) => {
   try {
     const payload = req.body || {};
     const summary = buildAssessmentSummary(payload);
-    const assessment = buildSimpleAssessmentResult(summary);
+    const assessment = buildAssessmentResult(summary, payload);
 
     const pdfData = {
       ...summary,
@@ -276,7 +303,6 @@ app.post('/api/assessment/pdf', async (req, res) => {
     };
 
     const pdfResult = await generatePDF(pdfData);
-
     const filename = `${summary.visaType.replace(/[^a-z0-9]+/gi, '_')}_assessment_letter.pdf`;
 
     if (Buffer.isBuffer(pdfResult)) {
