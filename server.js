@@ -4,9 +4,10 @@ dotenv.config();
 import express from "express";
 import cors from "cors";
 import Stripe from "stripe";
+import PDFDocument from "pdfkit";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
@@ -31,7 +32,9 @@ app.use(
     origin(origin, callback) {
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
+
+      console.warn(`CORS blocked for origin: ${origin}`);
+      return callback(null, true);
     },
     credentials: true
   })
@@ -64,7 +67,7 @@ function normalizeBaseUrl(url) {
 
 function resolveFrontendBase(req, requestedSiteUrl) {
   const productionDefault =
-    process.env.FRONTEND_URL || "https://www.bircanmigration.au";
+    process.env.FRONTEND_URL || "https://www.bircanmigration.com.au";
 
   const normalizedRequested = normalizeBaseUrl(requestedSiteUrl);
   if (normalizedRequested && allowedOrigins.includes(normalizedRequested)) {
@@ -97,17 +100,19 @@ app.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "bircan-backend",
-    website: "https://www.bircanmigration.au",
-    websiteAlt: "https://www.bircanmigration.com.au",
+    website: "https://www.bircanmigration.com.au",
+    websiteAlt: "https://www.bircanmigration.au",
     message: "Backend is running",
     endpoints: {
       health: "/api/health",
       contact: "/api/contact",
       assessmentSubmit: "/api/assessment/submit",
+      assessmentGet: "/api/assessment/:submissionId",
       assessmentPdf: "/api/assessment/pdf/:submissionId",
       checkoutSession: "/api/payments/checkout-session",
       paymentMarkPaid: "/api/payments/mark-paid"
     },
+    stripeConfigured: !!stripe,
     timestamp: new Date().toISOString()
   });
 });
@@ -116,7 +121,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     service: "bircan-backend",
-    website: "https://www.bircanmigration.au",
+    website: "https://www.bircanmigration.com.au",
     stripeConfigured: !!stripe,
     hasFrontendUrl: !!process.env.FRONTEND_URL,
     timestamp: new Date().toISOString()
@@ -286,7 +291,11 @@ app.post("/api/payments/checkout-session", async (req, res) => {
             currency: product.currency,
             product_data: {
               name: product.name,
-              description: `Submission: ${submissionId}${customerName || submission.fullName ? ` | Client: ${customerName || submission.fullName}` : ""}`
+              description: `Submission: ${submissionId}${
+                customerName || submission.fullName
+                  ? ` | Client: ${customerName || submission.fullName}`
+                  : ""
+              }`
             },
             unit_amount: product.amount
           },
@@ -401,29 +410,52 @@ app.get("/api/assessment/pdf/:submissionId", (req, res) => {
       });
     }
 
-    const content = `
-Bircan Migration - Assessment Summary
-
-Submission ID: ${submission.submissionId}
-Client Name: ${submission.fullName || "Not provided"}
-Client Email: ${submission.email || "Not provided"}
-Visa Subclass: ${submission.visaSubclass || "Not provided"}
-Product: ${submission.productKey}
-Paid: ${submission.paid ? "Yes" : "No"}
-Created At: ${submission.createdAt}
-Updated At: ${submission.updatedAt}
-
-Raw Assessment Data:
-${JSON.stringify(submission.raw || {}, null, 2)}
-`.trim();
-
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${submissionId}.pdf"`
     );
 
-    return res.send(Buffer.from(content, "utf8"));
+    const doc = new PDFDocument({
+      margin: 50,
+      size: "A4"
+    });
+
+    doc.pipe(res);
+
+    doc.fontSize(20).text("Bircan Migration Assessment Report", {
+      align: "center"
+    });
+
+    doc.moveDown();
+    doc.fontSize(12).text(`Submission ID: ${submission.submissionId}`);
+    doc.text(`Client Name: ${submission.fullName || "Not provided"}`);
+    doc.text(`Client Email: ${submission.email || "Not provided"}`);
+    doc.text(`Visa Subclass: ${submission.visaSubclass || "Not provided"}`);
+    doc.text(`Product: ${submission.productKey || "Not provided"}`);
+    doc.text(`Paid: ${submission.paid ? "Yes" : "No"}`);
+    doc.text(`Created At: ${submission.createdAt || "Not available"}`);
+    doc.text(`Updated At: ${submission.updatedAt || "Not available"}`);
+
+    if (submission.paidAt) {
+      doc.text(`Paid At: ${submission.paidAt}`);
+    }
+
+    if (submission.paymentStatus) {
+      doc.text(`Payment Status: ${submission.paymentStatus}`);
+    }
+
+    doc.moveDown();
+    doc.fontSize(14).text("Assessment Data", { underline: true });
+    doc.moveDown(0.5);
+
+    const rawData = JSON.stringify(submission.raw || {}, null, 2);
+    doc.fontSize(9).text(rawData, {
+      width: 500,
+      align: "left"
+    });
+
+    doc.end();
   } catch (error) {
     return res.status(500).json({
       ok: false,
