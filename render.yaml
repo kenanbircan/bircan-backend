@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: bircan-migration-phase3
-    env: node
-    plan: starter
-    buildCommand: npm install
-    startCommand: npm start
-    autoDeploy: true
