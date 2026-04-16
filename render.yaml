@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: bircan-migration-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_BASE_URL
+        sync: false
+      - key: FRONTEND_SUCCESS_URL
+        sync: false
+      - key: FRONTEND_CANCEL_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: ADMIN_NOTIFY_EMAIL
+        sync: false
+      - key: BUSINESS_NAME
+        value: Bircan Migration
+      - key: BUSINESS_WEBSITE
+        value: https://bircanmigration.com.au
+      - key: STRIPE_CURRENCY
+        value: aud
+      - key: STRIPE_DEFAULT_AMOUNT_CENTS
+        value: "5000"
