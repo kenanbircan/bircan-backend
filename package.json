@@ -1,19 +1,24 @@
 {
-  "name": "bircan-migration-phase3",
+  "name": "bircan-backend",
   "version": "1.0.0",
-  "private": true,
+  "description": "Bircan Migration AI Assessment Backend (Production Ready)",
   "type": "module",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "nanoid": "^5.0.7",
-    "nodemailer": "^6.9.13",
-    "pdfkit": "^0.15.0",
-    "stripe": "^16.5.0"
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "multer": "^2.0.0",
+    "pdfkit": "^0.15.2"
   }
 }
