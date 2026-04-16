@@ -1,23 +1,18 @@
 {
   "name": "bircan-migration-backend",
-  "version": "2.0.0",
-  "description": "Production-ready backend for Bircan Migration payment, PDF, and email workflow",
+  "version": "1.0.0",
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "engines": {
-    "node": ">=18"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
+    "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "nodemailer": "^6.10.0",
-    "pdfkit": "^0.15.0",
-    "stripe": "^17.5.0",
-    "uuid": "^11.1.0"
+    "nanoid": "^5.1.5",
+    "nodemailer": "^6.10.1",
+    "pdfkit": "^0.17.2",
+    "stripe": "^18.1.1"
   }
 }
