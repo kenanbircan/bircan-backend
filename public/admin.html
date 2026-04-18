@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Bircan Migration Admin Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root{
+      --navy:#0b1f3a;--blue:#2f6fed;--muted:#5f6b7d;--line:#dce4ef;--bg:#f6f9fc;--white:#fff;--ok:#0f9d58;--warn:#d97706;--danger:#b42318;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,Arial,sans-serif;background:linear-gradient(180deg,#f8fbff 0%, #f3f7fc 100%);color:#172033}
+    .wrap{width:min(1380px,calc(100% - 32px));margin:0 auto;padding:28px 0 40px}
+    .card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:20px;box-shadow:0 12px 36px rgba(11,31,58,.08)}
+    .top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
+    h1{margin:0;color:var(--navy)}
+    p{color:var(--muted)}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    input,button{border-radius:14px;padding:12px 14px;font-size:14px}
+    input{border:1px solid var(--line);min-width:240px}
+    button{border:0;background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;font-weight:700;cursor:pointer}
+    button.secondary{background:#fff;color:var(--navy);border:1px solid var(--line)}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{padding:12px 10px;border-bottom:1px solid #edf2fa;text-align:left;vertical-align:top}
+    th{color:var(--navy);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+    .pill{display:inline-flex;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:700}
+    .ok{background:#eefaf4;color:#11613c}.warn{background:#fff8ee;color:#8a5100}.danger{background:#fff1f2;color:#b42318}.info{background:#eef4ff;color:#173e8a}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .mini{padding:8px 10px;border-radius:12px;font-size:12px;text-decoration:none;display:inline-flex;align-items:center}
+    .empty{padding:18px;color:var(--muted)}
+    #status{margin:12px 0 0;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="top">
+        <div>
+          <h1>Bircan Migration Admin Dashboard</h1>
+          <p>Track submissions, download generated PDFs, and resend assessment emails.</p>
+        </div>
+        <div class="row">
+          <input id="token" placeholder="Admin token (leave blank if disabled)" />
+          <button id="loadBtn">Load Submissions</button>
+        </div>
+      </div>
+      <div id="status">Ready.</div>
+    </div>
+
+    <div class="card" style="margin-top:18px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Submission</th>
+            <th>Client</th>
+            <th>Status</th>
+            <th>Email</th>
+            <th>PDF</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="6" class="empty">Load submissions to view admin records.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+    const statusEl = document.getElementById('status');
+    const tbody = document.getElementById('tbody');
+    const tokenEl = document.getElementById('token');
+
+    function pillClass(value){
+      value = String(value || '').toLowerCase();
+      if (value.includes('sent') || value.includes('generated') || value.includes('completed')) return 'pill ok';
+      if (value.includes('failed')) return 'pill danger';
+      if (value.includes('queued') || value.includes('pending') || value.includes('processing') || value.includes('running')) return 'pill info';
+      return 'pill warn';
+    }
+
+    async function loadSubmissions(){
+      statusEl.textContent = 'Loading submissions...';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading...</td></tr>';
+      try{
+        const headers = {};
+        if(tokenEl.value.trim()) headers['x-admin-token'] = tokenEl.value.trim();
+
+        const res = await fetch(API + '/api/admin/submissions', { headers });
+        const data = await res.json();
+        if(!res.ok || !data.ok) throw new Error(data.error || 'Failed to load submissions.');
+
+        const items = data.items || [];
+        if(!items.length){
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No submissions found.</td></tr>';
+          statusEl.textContent = 'No submissions found.';
+          return;
+        }
+
+        tbody.innerHTML = items.map(item => `
+          <tr>
+            <td>
+              <strong>${item.id}</strong><br>
+              <span style="color:#5f6b7d">${item.createdAt || ''}</span><br>
+              <span style="color:#5f6b7d">${item.visaType || ''}</span>
+            </td>
+            <td>
+              <strong>${item.fullName || '—'}</strong><br>
+              <span style="color:#5f6b7d">${item.email || '—'}</span>
+            </td>
+            <td>
+              <div><span class="${pillClass(item.status)}">${item.status || '—'}</span></div>
+              <div style="margin-top:6px"><span class="${pillClass(item.analysisStatus)}">AI: ${item.analysisStatus || '—'}</span></div>
+              <div style="margin-top:6px"><span class="${pillClass(item.pdfStatus)}">PDF: ${item.pdfStatus || '—'}</span></div>
+            </td>
+            <td>
+              <div><span class="${pillClass(item.emailStatus)}">${item.emailStatus || '—'}</span></div>
+              <div style="margin-top:6px;color:#5f6b7d">${item.emailError || item.processingError || ''}</div>
+            </td>
+            <td>
+              ${item.pdfUrl ? `<a class="mini secondary" href="${API + item.pdfUrl}" target="_blank" style="border:1px solid #dce4ef;color:#0b1f3a;">Download PDF</a>` : '<span style="color:#5f6b7d">Not available</span>'}
+            </td>
+            <td>
+              <div class="actions">
+                ${item.pdfUrl ? `<a class="mini secondary" href="${API + item.pdfUrl}" target="_blank" style="border:1px solid #dce4ef;color:#0b1f3a;">Download again</a>` : ''}
+                <button class="mini" onclick="resendEmail('${item.id}')">Resend email</button>
+              </div>
+            </td>
+          </tr>
+        `).join('');
+        statusEl.textContent = `Loaded ${items.length} submission(s).`;
+      }catch(err){
+        tbody.innerHTML = `<tr><td colspan="6" class="empty">${err.message}</td></tr>`;
+        statusEl.textContent = err.message;
+      }
+    }
+
+    async function resendEmail(submissionId){
+      statusEl.textContent = `Resending email for ${submissionId}...`;
+      try{
+        const headers = { 'Content-Type':'application/json' };
+        if(tokenEl.value.trim()) headers['x-admin-token'] = tokenEl.value.trim();
+        const res = await fetch(API + '/api/admin/submissions/' + encodeURIComponent(submissionId) + '/resend-email', {
+          method:'POST',
+          headers
+        });
+        const data = await res.json();
+        if(!res.ok || !data.ok) throw new Error(data.error || 'Resend failed.');
+        statusEl.textContent = `Email resend completed for ${submissionId}.`;
+        await loadSubmissions();
+      }catch(err){
+        statusEl.textContent = err.message;
+      }
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', loadSubmissions);
+    window.resendEmail = resendEmail;
+  </script>
+</body>
+</html>
