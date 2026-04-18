@@ -1,0 +1,13 @@
+{
+  "name": "bircan-migration-pdf-engine",
+  "version": "2.0.0",
+  "description": "Commercial-grade PDF engine for Bircan Migration preliminary visa assessment letters.",
+  "main": "src/generateAssessmentPdf.js",
+  "type": "commonjs",
+  "scripts": {
+    "test:sample": "node examples/create-sample.js"
+  },
+  "dependencies": {
+    "pdfkit": "^0.15.0"
+  }
+}
