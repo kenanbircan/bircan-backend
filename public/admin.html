@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bircan Migration — Operations Console</title>
+  <style>
+    :root{
+      --bg:#07101d;--bg2:#0b1526;--panel:#0f1b31;--panel2:#13223d;--line:rgba(148,163,184,.16);
+      --text:#ecf4ff;--muted:#9bb0d1;--accent:#3b82f6;--good:#10b981;--warn:#f59e0b;--bad:#ef4444;
+      --shadow:0 24px 70px rgba(0,0,0,.35);--radius:20px;
+    }
+    *{box-sizing:border-box} html,body{margin:0;padding:0}
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,var(--bg),var(--bg2));color:var(--text);min-height:100vh}
+    .app{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+    .sidebar{border-right:1px solid var(--line);padding:24px 18px;background:rgba(255,255,255,.02)}
+    .content{padding:24px;display:grid;gap:18px}
+    .brand{display:flex;gap:12px;align-items:center;padding:6px 8px 16px;border-bottom:1px solid var(--line);margin-bottom:14px}
+    .badge{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;font-weight:800;background:linear-gradient(135deg,var(--accent),#1d4ed8)}
+    .card{background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+    .panel{padding:18px}
+    .hero{display:grid;grid-template-columns:1.3fr .9fr;gap:18px}
+    .title{font-size:34px;font-weight:900;letter-spacing:-.04em;line-height:1.05;margin:14px 0 10px}
+    .sub{color:var(--muted);font-size:15px;line-height:1.65}
+    .field{display:grid;gap:8px;margin-bottom:12px}
+    .field label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:800}
+    input,select{width:100%;background:#0a1424;color:var(--text);border:1px solid var(--line);border-radius:14px;padding:12px 13px;outline:none;font-size:14px}
+    .btns{display:flex;gap:10px;flex-wrap:wrap}
+    button{border:0;border-radius:14px;padding:11px 15px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,var(--accent),#2563eb);color:white}
+    button.secondary{background:#1a2a47} button.ghost{background:transparent;border:1px solid rgba(148,163,184,.28);color:#dbeafe}
+    button.warn{background:linear-gradient(135deg,#f59e0b,#d97706);color:#1f1300}
+    .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+    .stat{padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:18px}
+    .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.v{font-size:28px;font-weight:900;margin-top:10px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    .list{display:grid;gap:10px}.item{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
+    .item .small{font-size:12px;color:var(--muted);margin-top:6px}
+    .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:18px}
+    table{width:100%;min-width:1100px;border-collapse:collapse} th,td{padding:14px 12px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
+    th{background:#13213a;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#cfe1ff}
+    .pill{display:inline-flex;align-items:center;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#12203a;border:1px solid var(--line)}
+    .ok{color:#b8f7df}.bad{color:#fecaca}.warn{color:#fde6b0}
+    .console{background:#08111f;border:1px solid var(--line);border-radius:18px;padding:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:430px;overflow:auto}
+    .notice{padding:12px 14px;border-radius:14px;background:rgba(59,130,246,.09);border:1px solid rgba(96,165,250,.18);color:#dbeafe;font-size:13px}
+    .error{padding:12px 14px;border-radius:14px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.28);color:#fecaca;font-size:13px;display:none}
+    .top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:14px}
+    .section-title{font-size:18px;font-weight:900}.section-sub{font-size:13px;color:var(--muted);margin-top:4px}
+    a{color:#93c5fd;text-decoration:none;font-weight:700}
+    @media (max-width:1200px){.app{grid-template-columns:1fr}.hero,.grid2,.stats{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="badge">BM</div>
+      <div><div style="font-weight:800">Operations Console</div><div style="font-size:12px;color:var(--muted)">Server management dashboard</div></div>
+    </div>
+    <div class="card panel" style="margin-bottom:12px">
+      <div class="field">
+        <label>Backend Base URL</label>
+        <input id="baseUrl" placeholder="https://your-backend.onrender.com">
+      </div>
+      <div class="field">
+        <label>Admin Token</label>
+        <input id="adminToken" placeholder="Optional x-admin-token">
+      </div>
+      <div class="btns">
+        <button id="saveBtn">Save</button>
+        <button id="refreshBtn" class="secondary">Refresh</button>
+      </div>
+    </div>
+    <div class="card panel" style="margin-bottom:12px">
+      <div class="field">
+        <label>Submission ID</label>
+        <input id="submissionIdInput" placeholder="sub_...">
+      </div>
+      <div class="btns">
+        <button id="statusBtn">Open Status</button>
+        <button id="healthBtn" class="ghost">Health Check</button>
+      </div>
+    </div>
+    <div class="card panel">
+      <div class="field">
+        <label>Resend Email Submission ID</label>
+        <input id="resendIdInput" placeholder="sub_...">
+      </div>
+      <button id="resendBtn" class="warn" style="width:100%">Resend Assessment Email</button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="error" id="fatalError"></div>
+
+    <section class="hero">
+      <div class="card panel">
+        <div class="notice">This version auto-detects the backend base URL from the current page, loads data automatically on open, and shows clear errors if an endpoint is missing.</div>
+        <div class="title">Professional server management for assessments, submissions, and knowledgebase operations.</div>
+        <div class="sub">Use this console to monitor health, inspect submissions, open generated PDFs, resend email, and verify knowledgebase indexing without needing to manually wire the page each time.</div>
+      </div>
+      <div class="card panel">
+        <div class="top"><div><div class="section-title">Quick Readiness</div><div class="section-sub">Live backend summary</div></div></div>
+        <div class="stats" style="grid-template-columns:1fr 1fr">
+          <div class="stat"><div class="k">Service</div><div class="v" id="miniService">—</div></div>
+          <div class="stat"><div class="k">KB Files</div><div class="v" id="miniKb">—</div></div>
+          <div class="stat"><div class="k">OpenAI</div><div class="v" id="miniAi">—</div></div>
+          <div class="stat"><div class="k">SMTP</div><div class="v" id="miniSmtp">—</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <div class="top"><div><div class="section-title">System Overview</div><div class="section-sub">Health, integrations, and indexing state</div></div></div>
+      <div class="stats">
+        <div class="stat"><div class="k">Service</div><div class="v" id="statService">—</div></div>
+        <div class="stat"><div class="k">OpenAI</div><div class="v" id="statAi">—</div></div>
+        <div class="stat"><div class="k">SMTP</div><div class="v" id="statSmtp">—</div></div>
+        <div class="stat"><div class="k">Knowledgebase</div><div class="v" id="statKb">—</div></div>
+      </div>
+    </section>
+
+    <section class="grid2">
+      <section class="card panel">
+        <div class="top"><div><div class="section-title">Knowledgebase Index</div><div class="section-sub" id="kbSummary">No data loaded.</div></div><button id="kbBtn" class="ghost">Reload KB</button></div>
+        <div class="list" id="kbMeta"><div class="item">No knowledgebase metadata loaded.</div></div>
+      </section>
+      <section class="card panel">
+        <div class="top"><div><div class="section-title">Submission Inspector</div><div class="section-sub">Status payload for a selected submission</div></div></div>
+        <div class="console" id="submissionStatusPanel">No submission loaded.</div>
+      </section>
+    </section>
+
+    <section class="card panel">
+      <div class="top">
+        <div><div class="section-title">Submissions</div><div class="section-sub" id="submissionCount">0 records</div></div>
+        <div class="btns">
+          <input id="searchInput" placeholder="Search by ID, visa, client, email" style="max-width:260px">
+          <select id="statusFilter" style="max-width:180px">
+            <option value="">All statuses</option>
+            <option value="completed">Completed</option>
+            <option value="processing">Processing</option>
+            <option value="failed">Failed</option>
+            <option value="queued">Queued</option>
+          </select>
+          <button id="loadSubmissionsBtn" class="secondary">Load Submissions</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Status</th><th>Visa</th><th>Client</th><th>Email</th><th>PDF</th><th>Created</th><th>Actions</th></tr></thead>
+          <tbody id="submissionsTbody"><tr><td colspan="8">No submissions loaded.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <div class="top"><div><div class="section-title">Activity Console</div><div class="section-sub">Session log and errors</div></div></div>
+      <div class="console" id="activityLog">Admin console ready.</div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = {submissions: []};
+
+function escapeHtml(str){return String(str??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');}
+function log(msg, payload){
+  const stamp = new Date().toLocaleString();
+  const line = `[${stamp}] ${msg}` + (payload ? `\n${typeof payload==='string'?payload:JSON.stringify(payload,null,2)}` : '');
+  $('activityLog').textContent = line + '\n\n' + $('activityLog').textContent;
+}
+function showFatal(msg){
+  const el = $('fatalError');
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+function clearFatal(){ $('fatalError').style.display = 'none'; $('fatalError').textContent=''; }
+
+function autoDetectBaseUrl(){
+  const stored = localStorage.getItem('bircan_admin_cfg_v3');
+  if(stored){
+    try{
+      const cfg = JSON.parse(stored);
+      if(cfg.baseUrl) $('baseUrl').value = cfg.baseUrl;
+      if(cfg.token) $('adminToken').value = cfg.token;
+    }catch{}
+  }
+  if(!$('baseUrl').value){
+    const origin = window.location.origin;
+    $('baseUrl').value = origin;
+  }
+}
+function saveConfig(){
+  const cfg = {baseUrl: $('baseUrl').value.trim().replace(/\/$/,''), token: $('adminToken').value.trim()};
+  localStorage.setItem('bircan_admin_cfg_v3', JSON.stringify(cfg));
+  log('Saved configuration.', cfg);
+}
+function getConfig(){
+  return {baseUrl: $('baseUrl').value.trim().replace(/\/$/,''), token: $('adminToken').value.trim()};
+}
+async function api(path, options={}){
+  const cfg = getConfig();
+  if(!cfg.baseUrl) throw new Error('Backend Base URL is empty.');
+  const headers = {...(options.headers||{})};
+  if(cfg.token) headers['x-admin-token'] = cfg.token;
+  const res = await fetch(cfg.baseUrl + path, {...options, headers});
+  const text = await res.text();
+  let data;
+  try{ data = JSON.parse(text); }catch{ data = text; }
+  if(!res.ok) throw new Error(typeof data==='object' ? (data.error || JSON.stringify(data)) : text);
+  return data;
+}
+function renderHealth(data){
+  $('statService').textContent = data.service || 'Live';
+  $('statAi').textContent = data.hasOpenAiKey ? 'Ready' : 'Missing';
+  $('statSmtp').textContent = data.hasSmtp ? 'Ready' : 'Missing';
+  $('statKb').textContent = String(data.knowledgebaseFileCount ?? data.knowledgebaseFiles ?? 0);
+
+  $('miniService').textContent = 'Live';
+  $('miniKb').textContent = String(data.knowledgebaseFileCount ?? data.knowledgebaseFiles ?? 0);
+  $('miniAi').textContent = data.hasOpenAiKey ? 'Ready' : 'Missing';
+  $('miniSmtp').textContent = data.hasSmtp ? 'Ready' : 'Missing';
+}
+function renderKb(data){
+  const items = Array.isArray(data.items) ? data.items : [];
+  $('kbSummary').textContent = `${items.length} indexed files`;
+  $('kbMeta').innerHTML = items.length ? items.map(item => `
+    <div class="item">
+      <div><strong>${escapeHtml(item.file || item.path || 'Unknown file')}</strong></div>
+      <div class="small">${escapeHtml(item.path || '')}<br>Chunks: ${escapeHtml(item.chunkCount ?? '—')} • Type: ${escapeHtml(item.fileType || item.type || '—')}</div>
+    </div>
+  `).join('') : '<div class="item">No knowledgebase files detected.</div>';
+}
+function statusPill(status){
+  const s = String(status || 'unknown').toLowerCase();
+  const cls = s==='completed' ? 'ok' : s==='failed' ? 'bad' : 'warn';
+  return `<span class="pill ${cls}">${escapeHtml(status||'unknown')}</span>`;
+}
+function filteredSubmissions(){
+  const q = $('searchInput').value.trim().toLowerCase();
+  const status = $('statusFilter').value;
+  return state.submissions.filter(item => {
+    const hay = [item.id,item.status,item.visaType,item.fullName,item.email].join(' ').toLowerCase();
+    return (!q || hay.includes(q)) && (!status || item.status===status);
+  });
+}
+function renderSubmissions(){
+  const rows = filteredSubmissions();
+  $('submissionCount').textContent = `${rows.length} records`;
+  const baseUrl = getConfig().baseUrl;
+  $('submissionsTbody').innerHTML = rows.length ? rows.map(item => `
+    <tr>
+      <td><strong>${escapeHtml(item.id)}</strong></td>
+      <td>${statusPill(item.status)}</td>
+      <td>${escapeHtml(item.visaType || '—')}</td>
+      <td>${escapeHtml(item.fullName || '—')}</td>
+      <td>${escapeHtml(item.email || '—')}</td>
+      <td>${item.pdfUrl ? `<a href="${escapeHtml(baseUrl + item.pdfUrl)}" target="_blank">Open PDF</a>` : '—'}</td>
+      <td>${escapeHtml(item.createdAt || '—')}</td>
+      <td class="btns">
+        <button class="ghost" onclick="openSubmission('${escapeHtml(item.id)}')">Status</button>
+        <button class="secondary" onclick="triggerResend('${escapeHtml(item.id)}')">Resend</button>
+      </td>
+    </tr>
+  `).join('') : '<tr><td colspan="8">No matching submissions.</td></tr>';
+}
+
+async function fetchHealth(){ const d = await api('/api/health'); renderHealth(d); log('Health loaded.', d); }
+async function fetchKb(){
+  try{ const d = await api('/api/meta/knowledgebase'); renderKb(d); log('Knowledgebase loaded.', d); }
+  catch(err){ $('kbMeta').innerHTML = `<div class="item">${escapeHtml(err.message)}</div>`; log('Knowledgebase endpoint unavailable.', err.message); }
+}
+async function fetchSubmissions(){ const d = await api('/api/admin/submissions'); state.submissions = Array.isArray(d.items) ? d.items : []; renderSubmissions(); log('Submissions loaded.', {count: state.submissions.length}); }
+async function fetchSubmissionStatus(id){
+  const submissionId = (id || $('submissionIdInput').value).trim();
+  if(!submissionId) throw new Error('Enter a submission ID first.');
+  const d = await api(`/api/assessment/${encodeURIComponent(submissionId)}/status`);
+  $('submissionStatusPanel').textContent = JSON.stringify(d, null, 2);
+  log(`Submission loaded: ${submissionId}`, d);
+}
+async function resendEmail(id){
+  const submissionId = (id || $('resendIdInput').value).trim();
+  if(!submissionId) throw new Error('Enter a submission ID first.');
+  const d = await api(`/api/admin/submissions/${encodeURIComponent(submissionId)}/resend-email`, {method:'POST'});
+  log(`Resend triggered: ${submissionId}`, d);
+  alert('Resend request completed.');
+}
+window.openSubmission = async id => { try{ await fetchSubmissionStatus(id); }catch(err){ log('Status load failed.', err.message); alert(err.message); } };
+window.triggerResend = async id => { try{ await resendEmail(id); }catch(err){ log('Resend failed.', err.message); alert(err.message); } };
+
+async function boot(){
+  autoDetectBaseUrl();
+  saveConfig();
+  clearFatal();
+  try{
+    await fetchHealth();
+    await fetchKb();
+    await fetchSubmissions();
+  }catch(err){
+    showFatal(`Could not auto-load backend data. Check Backend Base URL, admin token, or deployment endpoints.\n\nError: ${err.message}`);
+    log('Auto-load failed.', err.message);
+  }
+}
+
+$('saveBtn').addEventListener('click', saveConfig);
+$('refreshBtn').addEventListener('click', async ()=>{ try{ saveConfig(); await boot(); }catch(err){ log('Refresh failed.', err.message); }});
+$('healthBtn').addEventListener('click', async ()=>{ try{ await fetchHealth(); }catch(err){ log('Health check failed.', err.message); alert(err.message); }});
+$('kbBtn').addEventListener('click', async ()=>{ try{ await fetchKb(); }catch(err){ log('KB load failed.', err.message); alert(err.message); }});
+$('loadSubmissionsBtn').addEventListener('click', async ()=>{ try{ await fetchSubmissions(); }catch(err){ log('Submissions load failed.', err.message); alert(err.message); }});
+$('statusBtn').addEventListener('click', async ()=>{ try{ await fetchSubmissionStatus(); }catch(err){ log('Status load failed.', err.message); alert(err.message); }});
+$('resendBtn').addEventListener('click', async ()=>{ try{ await resendEmail(); }catch(err){ log('Resend failed.', err.message); alert(err.message); }});
+$('searchInput').addEventListener('input', renderSubmissions);
+$('statusFilter').addEventListener('change', renderSubmissions);
+
+boot();
+</script>
+</body>
+</html>
