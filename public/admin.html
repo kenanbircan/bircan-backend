@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bircan Migration — Commercial Admin Console</title>
+  <style>
+    :root{
+      --navy-980:#07142b;
+      --navy-950:#0b1d3b;
+      --navy-900:#12315e;
+      --navy-800:#1c4d8f;
+      --navy-700:#2b63af;
+      --navy-100:#eaf1ff;
+      --navy-050:#f6f9ff;
+      --bg:#eef3fb;
+      --card:#ffffff;
+      --line:#dbe5f2;
+      --line-2:#e8eef8;
+      --text:#15253f;
+      --muted:#66758c;
+      --good:#18794e;
+      --good-bg:#eaf8f0;
+      --warn:#9a6700;
+      --warn-bg:#fff6df;
+      --bad:#c43d3d;
+      --bad-bg:#fff1f1;
+      --shadow:0 12px 36px rgba(8,24,52,.08);
+      --shadow-strong:0 22px 60px rgba(8,24,52,.12);
+      --radius-2xl:26px;
+      --radius-xl:20px;
+      --radius-lg:16px;
+      --radius-md:14px;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,#f7faff 0%,var(--bg) 100%);color:var(--text)}
+    a{text-decoration:none;color:var(--navy-800);font-weight:800}
+    button,input,select,textarea{font:inherit}
+    .shell{max-width:1620px;margin:0 auto;padding:22px}
+    .masthead{
+      background:linear-gradient(135deg,var(--navy-980),var(--navy-900));
+      color:#fff;border-radius:30px;padding:26px 28px;box-shadow:var(--shadow-strong);margin-bottom:16px;
+      display:flex;justify-content:space-between;align-items:flex-start;gap:20px
+    }
+    .brand{display:flex;gap:16px;align-items:flex-start}
+    .crest{width:62px;height:62px;border-radius:18px;display:grid;place-items:center;font-weight:900;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.12);letter-spacing:.04em}
+    .masthead h1{margin:0;font-size:30px;letter-spacing:-.04em;line-height:1.05}
+    .masthead p{margin:8px 0 0;color:rgba(255,255,255,.84);max-width:860px;line-height:1.65;font-size:14px}
+    .top-controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+    .btn{border:0;border-radius:14px;padding:12px 16px;font-weight:800;cursor:pointer;transition:.18s ease;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+    .btn:hover{transform:translateY(-1px)}
+    .btn-primary{background:#fff;color:var(--navy-950)}
+    .btn-secondary{background:var(--navy-900);color:#fff}
+    .btn-light{background:var(--navy-050);color:var(--navy-900);border:1px solid var(--line)}
+    .btn-outline{background:#fff;color:var(--navy-900);border:1px solid var(--line)}
+    .btn-warn{background:#b45309;color:#fff}
+    .btn-good{background:#0f9d6d;color:#fff}
+    .btn-muted{background:#edf2fa;color:#4f5f78;border:1px solid var(--line)}
+    .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+    .sticky-bar{position:sticky;top:14px;z-index:10;margin-bottom:18px}
+    .nav-shell{background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+    .navtabs{display:flex;gap:10px;flex-wrap:wrap}
+    .tab{padding:11px 16px;border-radius:12px;border:1px solid var(--line);background:#fff;color:var(--navy-900);font-weight:800;cursor:pointer}
+    .tab.active{background:var(--navy-900);border-color:var(--navy-900);color:#fff}
+    .status-strip{display:flex;gap:10px;flex-wrap:wrap}
+    .chip{display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:12px;font-weight:800;color:var(--navy-900)}
+    .chip-dot{width:8px;height:8px;border-radius:999px;background:var(--navy-700)}
+    .panel{display:none}
+    .panel.active{display:block}
+    .grid-hero{display:grid;grid-template-columns:1.28fr .92fr;gap:18px;margin-bottom:18px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-2xl);box-shadow:var(--shadow)}
+    .card-pad{padding:22px}
+    .card-title{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:16px}
+    .card-title h2,.card-title h3{margin:0;color:var(--navy-950);letter-spacing:-.03em}
+    .card-title h2{font-size:34px;line-height:1.05}
+    .card-title h3{font-size:19px}
+    .card-title p{margin:5px 0 0;color:var(--muted);font-size:13px;line-height:1.6}
+    .lead{color:var(--muted);line-height:1.8;font-size:15px}
+    .bullets{display:grid;gap:10px;margin-top:16px}
+    .bullet{display:flex;gap:12px;align-items:flex-start;padding:13px 14px;border-radius:15px;background:var(--navy-050);border:1px solid #e2eafa}
+    .bullet-mark{width:30px;height:30px;border-radius:12px;display:grid;place-items:center;background:#fff;color:var(--navy-800);font-weight:900;border:1px solid var(--line)}
+    .bullet b{display:block;color:var(--navy-900);margin-bottom:3px}
+    .metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
+    .metric{padding:18px 18px 16px}
+    .metric .label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}
+    .metric .value{font-size:31px;font-weight:900;letter-spacing:-.03em;color:var(--navy-950);margin-top:10px}
+    .metric .sub{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+    .overview{display:grid;grid-template-columns:360px 1fr;gap:18px}
+    .stack{display:grid;gap:18px}
+    .field{display:grid;gap:8px}
+    .field + .field{margin-top:14px}
+    .field label{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:var(--navy-900)}
+    input,select,textarea{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 13px;background:#fff;color:var(--text);outline:none}
+    input:focus,select:focus,textarea:focus{border-color:#9cb6dc;box-shadow:0 0 0 4px rgba(43,99,175,.08)}
+    textarea{min-height:120px;resize:vertical}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+    .summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .summary-box{padding:15px;border-radius:16px;border:1px solid var(--line);background:#fff}
+    .summary-box .label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}
+    .summary-box .value{font-size:16px;font-weight:900;color:var(--navy-950);margin-top:7px;line-height:1.45}
+    .list{display:grid;gap:12px}
+    .list-item{padding:14px;border:1px solid var(--line);border-radius:16px;background:#fff}
+    .small{font-size:12px;color:var(--muted);line-height:1.6}
+    .empty{padding:16px;border-radius:14px;background:#f8fbff;border:1px dashed #cad8ef;color:var(--muted);font-size:13px}
+    .notice{padding:14px 15px;border-radius:15px;background:#eef5ff;border:1px solid #dce7fa;color:var(--navy-900);font-size:13px;line-height:1.7}
+    .danger{padding:14px 15px;border-radius:15px;background:var(--bad-bg);border:1px solid #f1cbcb;color:var(--bad);font-size:13px;line-height:1.7;display:none}
+    .console{background:#08142a;color:#dbe8ff;border-radius:18px;padding:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto}
+    .table-toolbar{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px}
+    .filters{display:flex;gap:10px;flex-wrap:wrap;flex:1 1 720px}
+    .filters > *{flex:1 1 180px}
+    .quick-filter-row{display:flex;gap:10px;flex-wrap:wrap}
+    .quick-filter{padding:9px 12px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--navy-900);font-size:12px;font-weight:800;cursor:pointer}
+    .quick-filter.active{background:var(--navy-900);border-color:var(--navy-900);color:#fff}
+    .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:20px;background:#fff}
+    table{width:100%;min-width:1340px;border-collapse:collapse}
+    th,td{padding:14px 12px;border-bottom:1px solid var(--line-2);text-align:left;font-size:13px;vertical-align:top}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--navy-900);background:#f5f8ff}
+    tr:hover td{background:#fbfdff}
+    .badge{display:inline-flex;align-items:center;padding:7px 11px;border-radius:999px;font-size:12px;font-weight:900;border:1px solid transparent}
+    .completed{background:var(--good-bg);color:var(--good);border-color:#cdeedc}
+    .processing,.queued{background:var(--warn-bg);color:var(--warn);border-color:#f3e3ad}
+    .failed{background:var(--bad-bg);color:var(--bad);border-color:#efcdcd}
+    .neutral{background:#eef2f7;color:#516074;border-color:#d7dfec}
+    .risk-low{background:var(--good-bg);color:var(--good)}
+    .risk-moderate{background:var(--warn-bg);color:var(--warn)}
+    .risk-high{background:var(--bad-bg);color:var(--bad)}
+    .row-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .mini{padding:9px 11px;border-radius:12px;font-size:12px}
+    .split{display:grid;grid-template-columns:1.02fr .98fr;gap:18px}
+    .case-hero{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:18px}
+    .case-banner{padding:18px;border-radius:18px;background:linear-gradient(135deg,#f9fbff,#eef4ff);border:1px solid #dbe6f8}
+    .case-banner h3{margin:0 0 8px;font-size:24px;letter-spacing:-.03em;color:var(--navy-950)}
+    .case-banner p{margin:0;color:var(--muted);line-height:1.7}
+    .case-id{display:inline-flex;align-items:center;gap:8px;margin-top:12px;padding:10px 12px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:12px;font-weight:800;color:var(--navy-900)}
+    .flag-list,.notes,.reasons,.timeline,.checklist{display:grid;gap:10px}
+    .flag{padding:12px 13px;border-radius:14px;font-size:13px;font-weight:700}
+    .flag.red{background:var(--bad-bg);color:var(--bad)}
+    .flag.amber{background:var(--warn-bg);color:var(--warn)}
+    .flag.green{background:var(--good-bg);color:var(--good)}
+    .note-card,.reason-card{padding:13px 14px;border:1px solid var(--line);border-radius:14px;background:#fff}
+    .note-meta{font-size:12px;color:var(--muted);margin-bottom:6px}
+    .step{display:flex;gap:12px;align-items:flex-start;padding:13px 14px;border-radius:14px;border:1px solid var(--line);background:#fff}
+    .step-dot{width:12px;height:12px;border-radius:999px;background:var(--navy-700);margin-top:5px}
+    .check-item{display:flex;justify-content:space-between;gap:12px;padding:13px 14px;border-radius:14px;border:1px solid var(--line);background:#fff}
+    .check-item strong{color:var(--navy-900)}
+    .footer-note{font-size:12px;color:var(--muted);line-height:1.7}
+    @media (max-width:1320px){
+      .grid-hero,.overview,.split,.case-hero{grid-template-columns:1fr}
+      .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+    }
+    @media (max-width:760px){
+      .shell{padding:14px}
+      .masthead{padding:18px;flex-direction:column}
+      .metrics,.summary-grid{grid-template-columns:1fr}
+      .nav-shell{padding:8px}
+      .masthead h1{font-size:26px}
+      .card-title h2{font-size:28px}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div class="brand">
+        <div class="crest">BM</div>
+        <div>
+          <h1>Commercial Admin Console</h1>
+          <p>A cleaner law-firm style operations system for Bircan Migration. It is built to help you review visa assessments quickly, prioritise risk, control final agent decisions, and manage client-facing outputs without technical clutter.</p>
+        </div>
+      </div>
+      <div class="top-controls">
+        <button class="btn btn-primary" id="refreshAllBtn">Refresh all</button>
+        <button class="btn btn-secondary" id="openSubmissionsBtn">Submissions</button>
+        <button class="btn btn-secondary" id="openCaseBtn">Case view</button>
+      </div>
+    </header>
+
+    <div class="sticky-bar">
+      <div class="nav-shell">
+        <nav class="navtabs">
+          <button class="tab active" data-tab="dashboard">Dashboard</button>
+          <button class="tab" data-tab="submissions">Submissions</button>
+          <button class="tab" data-tab="caseview">Case view</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </nav>
+        <div class="status-strip">
+          <div class="chip"><span class="chip-dot"></span>Service <span id="quickServiceInline">—</span></div>
+          <div class="chip"><span class="chip-dot"></span>OpenAI <span id="quickAiInline">—</span></div>
+          <div class="chip"><span class="chip-dot"></span>SMTP <span id="quickSmtpInline">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <section class="panel active" id="dashboardPanel">
+      <div class="grid-hero">
+        <div class="card card-pad">
+          <div class="card-title">
+            <div>
+              <h2>Professional visibility for real case handling.</h2>
+              <p>Keep the admin focused on business decisions: what needs attention, which cases are safe to progress, which outputs are ready, and what the final agent position should be.</p>
+            </div>
+          </div>
+          <div class="bullets">
+            <div class="bullet"><div class="bullet-mark">1</div><div><b>Triage first</b><span class="small">Failed and pending matters rise to the top, so the team sees what needs action first.</span></div></div>
+            <div class="bullet"><div class="bullet-mark">2</div><div><b>Case review second</b><span class="small">Clear outcome, risk, action recommendation, notes, and final agent override in one place.</span></div></div>
+            <div class="bullet"><div class="bullet-mark">3</div><div><b>Client output last</b><span class="small">Open PDF, resend email, confirm review status, and preserve an internal audit trail.</span></div></div>
+          </div>
+        </div>
+        <div class="card card-pad">
+          <div class="card-title">
+            <div>
+              <h3>Environment readiness</h3>
+              <p>Live backend summary</p>
+            </div>
+          </div>
+          <div class="summary-grid">
+            <div class="summary-box"><div class="label">Service</div><div class="value" id="quickService">—</div></div>
+            <div class="summary-box"><div class="label">Knowledgebase files</div><div class="value" id="quickKb">—</div></div>
+            <div class="summary-box"><div class="label">OpenAI</div><div class="value" id="quickAi">—</div></div>
+            <div class="summary-box"><div class="label">SMTP</div><div class="value" id="quickSmtp">—</div></div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-outline" id="quickHealthBtn">Health check</button>
+            <button class="btn btn-light" id="quickKbBtn">Reload knowledgebase</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="metrics">
+        <div class="card metric"><div class="label">Total submissions</div><div class="value" id="metricTotal">0</div><div class="sub">All loaded matters</div></div>
+        <div class="card metric"><div class="label">Completed</div><div class="value" id="metricCompleted">0</div><div class="sub">Assessment and output finished</div></div>
+        <div class="card metric"><div class="label">Needs attention</div><div class="value" id="metricAttention">0</div><div class="sub">Failed, queued, or processing</div></div>
+        <div class="card metric"><div class="label">Reviewed</div><div class="value" id="metricReviewed">0</div><div class="sub">Marked as agent reviewed</div></div>
+        <div class="card metric"><div class="label">PDF ready</div><div class="value" id="metricPdf">0</div><div class="sub">Immediate client-ready output</div></div>
+      </div>
+
+      <div class="overview">
+        <div class="stack">
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Connection</h3><p>Backend base URL and admin token</p></div></div>
+            <div class="field"><label>Backend base URL</label><input id="baseUrl" placeholder="https://your-backend.onrender.com"></div>
+            <div class="field"><label>Admin token</label><input id="adminToken" placeholder="Optional x-admin-token"></div>
+            <div class="actions">
+              <button class="btn btn-primary" id="saveConfigBtn">Save connection</button>
+              <button class="btn btn-outline" id="testConnectionBtn">Test connection</button>
+            </div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Knowledgebase</h3><p id="kbSummary">No knowledgebase data loaded</p></div><button class="btn btn-light" id="kbReloadBtn">Reload</button></div>
+            <div class="list" id="kbList"><div class="empty">Knowledgebase information will appear here after loading.</div></div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Priority queue</h3><p>Cases that should be looked at first</p></div></div>
+            <div class="list" id="priorityList"><div class="empty">No priority cases yet.</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Operational notes</h3><p>Live system messages and endpoint responses</p></div></div>
+            <div class="danger" id="fatalError"></div>
+            <div class="console" id="activityLog">Commercial admin console ready.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="submissionsPanel">
+      <div class="card card-pad">
+        <div class="table-toolbar">
+          <div>
+            <h3 style="margin:0;color:var(--navy-950)">Submissions register</h3>
+            <p id="submissionCount" class="small" style="margin:6px 0 0">0 records</p>
+          </div>
+          <div class="quick-filter-row">
+            <button class="quick-filter active" data-quick="all">All</button>
+            <button class="quick-filter" data-quick="attention">Needs attention</button>
+            <button class="quick-filter" data-quick="completed">Completed</button>
+            <button class="quick-filter" data-quick="reviewed">Reviewed</button>
+          </div>
+        </div>
+        <div class="filters">
+          <input id="searchInput" placeholder="Search by submission ID, visa, client or email">
+          <select id="statusFilter">
+            <option value="">All statuses</option>
+            <option value="completed">Completed</option>
+            <option value="processing">Processing</option>
+            <option value="failed">Failed</option>
+            <option value="queued">Queued</option>
+          </select>
+          <select id="reviewFilter">
+            <option value="">All review states</option>
+            <option value="reviewed">Reviewed</option>
+            <option value="unreviewed">Unreviewed</option>
+          </select>
+          <button class="btn btn-primary" id="loadSubmissionsBtn">Load submissions</button>
+          <button class="btn btn-outline" id="exportCsvBtn">Export CSV</button>
+        </div>
+        <div class="table-wrap" style="margin-top:14px">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Visa</th>
+                <th>Client</th>
+                <th>Final decision</th>
+                <th>Risk</th>
+                <th>Review</th>
+                <th>Email</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="submissionsTbody"><tr><td colspan="10">No submissions loaded.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="caseviewPanel">
+      <div class="case-hero">
+        <div class="card card-pad">
+          <div class="case-banner">
+            <h3 id="caseHeading">Open a case for review</h3>
+            <p id="caseIntro">Use the case view to load a submission, assess risk, record an internal note, and set the final agent position.</p>
+            <div class="case-id"><span>Submission</span><span id="caseSubmissionTag">—</span><button class="btn btn-muted mini" id="copyCaseIdBtn">Copy ID</button></div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="loadCaseBtn">Load case view</button>
+            <button class="btn btn-outline" id="statusBtn">Open status</button>
+            <button class="btn btn-light" id="pdfBtn">Open PDF</button>
+            <button class="btn btn-warn" id="resendBtn">Resend email</button>
+            <button class="btn btn-muted" id="rerunBtn" disabled>Re-run AI</button>
+          </div>
+        </div>
+        <div class="card card-pad">
+          <div class="card-title"><div><h3>Open case</h3><p>Load a submission into review mode</p></div></div>
+          <div class="field"><label>Submission ID</label><input id="submissionIdInput" placeholder="sub_..."></div>
+          <div class="field"><label>Quick action</label>
+            <select id="caseQuickAction">
+              <option value="status">Load status</option>
+              <option value="case">Load full case view</option>
+              <option value="resend">Resend assessment email</option>
+            </select>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="runCaseActionBtn">Run action</button>
+            <button class="btn btn-outline" id="copySubmissionBtn">Copy submission ID</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="stack">
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Case officer summary</h3><p>Short review screen for decision making</p></div></div>
+            <div class="summary-grid">
+              <div class="summary-box"><div class="label">Client</div><div class="value" id="caseClient">—</div></div>
+              <div class="summary-box"><div class="label">Visa</div><div class="value" id="caseVisa">—</div></div>
+              <div class="summary-box"><div class="label">Current outcome</div><div class="value" id="caseOutcome">—</div></div>
+              <div class="summary-box"><div class="label">Risk level</div><div class="value" id="caseRisk">—</div></div>
+              <div class="summary-box"><div class="label">Recommended action</div><div class="value" id="caseAction">—</div></div>
+              <div class="summary-box"><div class="label">Review status</div><div class="value" id="caseReviewStatus">—</div></div>
+            </div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Risk flags</h3><p>Attention markers for quick triage</p></div></div>
+            <div class="flag-list" id="flagList"><div class="empty">Load a case to see risk flags.</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Internal notes</h3><p>Working notes saved locally in this browser</p></div></div>
+            <div class="field"><label>Agent note</label><textarea id="noteInput" placeholder="Example: Client appears eligible in principle but evidence of employment history needs strengthening before lodgement."></textarea></div>
+            <div class="actions">
+              <button class="btn btn-primary" id="saveNoteBtn">Add note</button>
+              <button class="btn btn-outline" id="clearNoteBtn">Clear</button>
+            </div>
+            <div class="notes" id="notesList" style="margin-top:14px"><div class="empty">No notes saved for this case.</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Agent checklist</h3><p>Simple operational checklist for final review</p></div></div>
+            <div class="checklist" id="checklistList"><div class="empty">Load a case to generate the checklist.</div></div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Final agent decision</h3><p>Record the final commercial and legal position</p></div></div>
+            <div class="field"><label>Final decision</label>
+              <select id="overrideDecision">
+                <option value="">No override</option>
+                <option>Likely Eligible</option>
+                <option>Likely Eligible Subject to Evidence</option>
+                <option>Borderline</option>
+                <option>Do Not Lodge Yet</option>
+                <option>Not Eligible</option>
+              </select>
+            </div>
+            <div class="field"><label>Final risk level</label>
+              <select id="overrideRisk">
+                <option value="">No override</option>
+                <option>Low</option>
+                <option>Moderate</option>
+                <option>High</option>
+              </select>
+            </div>
+            <div class="field"><label>Final recommendation</label><textarea id="overrideReason" placeholder="Record the final advice and what needs to happen next."></textarea></div>
+            <div class="actions">
+              <button class="btn btn-primary" id="saveOverrideBtn">Save final decision</button>
+              <button class="btn btn-good" id="markReviewedBtn">Mark reviewed</button>
+            </div>
+            <div class="footer-note" style="margin-top:12px">This override is stored locally in the browser and displayed as the final decision inside the admin.</div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Case timeline</h3><p>Clear workflow progress for this matter</p></div></div>
+            <div class="timeline" id="timelineList"><div class="empty">Load a case to see the workflow timeline.</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Status payload</h3><p>Full backend response for audit and troubleshooting</p></div></div>
+            <div class="console" id="submissionStatusPanel">No case loaded.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="settingsPanel">
+      <div class="split">
+        <div class="card card-pad">
+          <div class="card-title"><div><h3>Admin preferences</h3><p>Saved locally in this browser</p></div></div>
+          <div class="field"><label>Default tab on load</label>
+            <select id="defaultTabSelect">
+              <option value="dashboard">Dashboard</option>
+              <option value="submissions">Submissions</option>
+              <option value="caseview">Case view</option>
+            </select>
+          </div>
+          <div class="field"><label>Priority queue threshold</label>
+            <select id="priorityThresholdSelect">
+              <option value="all">Show all active items</option>
+              <option value="attention">Only failed and processing</option>
+              <option value="failed">Only failed</option>
+            </select>
+          </div>
+          <div class="field"><label>Review label</label><input id="reviewLabelInput" placeholder="Reviewed by agent"></div>
+          <div class="actions"><button class="btn btn-primary" id="savePrefsBtn">Save preferences</button></div>
+        </div>
+
+        <div class="stack">
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>What is improved</h3><p>Commercial polish added to this version</p></div></div>
+            <div class="list">
+              <div class="list-item"><strong>Law-firm style interface</strong><div class="small">Cleaner hierarchy, calmer spacing, professional colour balance, and less developer-like clutter.</div></div>
+              <div class="list-item"><strong>Better daily workflow</strong><div class="small">Priority queue, quick filters, exports, checklist, copy actions, and clearer case review structure.</div></div>
+              <div class="list-item"><strong>Stronger case handling</strong><div class="small">Risk flags, final decision override, internal notes, reviewed state, and pipeline tracking.</div></div>
+            </div>
+          </div>
+          <div class="card card-pad">
+            <div class="card-title"><div><h3>Endpoint assumptions</h3><p>Backend routes currently used</p></div></div>
+            <div class="notice">This admin uses the same core backend route structure as your earlier file: <b>/api/health</b>, <b>/api/meta/knowledgebase</b>, <b>/api/admin/submissions</b>, <b>/api/assessment/{id}/status</b>, and <b>/api/admin/submissions/{id}/resend-email</b>. CSV export and local notes/overrides work without backend changes.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const state = {
+      submissions: [],
+      currentCase: null,
+      kb: [],
+      quickFilter: 'all',
+      prefs: { defaultTab: 'dashboard', priorityThreshold: 'attention', reviewLabel: 'Reviewed by agent' }
+    };
+
+    function escapeHtml(value){
+      return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+    }
+    function getStoredJson(key, fallback){ try{ return JSON.parse(localStorage.getItem(key)) ?? fallback; }catch{ return fallback; } }
+    function setStoredJson(key, value){ localStorage.setItem(key, JSON.stringify(value)); }
+    function copyText(text){ if(!text) return; navigator.clipboard?.writeText(text); }
+    function log(message, payload){
+      const stamp = new Date().toLocaleString();
+      const line = `[${stamp}] ${message}` + (payload ? `\n${typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)}` : '');
+      $('activityLog').textContent = line + '\n\n' + $('activityLog').textContent;
+    }
+    function showFatal(message){ $('fatalError').style.display = 'block'; $('fatalError').textContent = message; }
+    function clearFatal(){ $('fatalError').style.display = 'none'; $('fatalError').textContent = ''; }
+    function autoDetectBaseUrl(){
+      const cfg = getStoredJson('bircan_admin_cfg_commercial', {});
+      if(cfg.baseUrl) $('baseUrl').value = cfg.baseUrl;
+      if(cfg.token) $('adminToken').value = cfg.token;
+      if(!cfg.baseUrl) $('baseUrl').value = window.location.origin;
+    }
+    function loadPrefs(){
+      state.prefs = {...state.prefs, ...getStoredJson('bircan_admin_prefs_commercial', {})};
+      $('defaultTabSelect').value = state.prefs.defaultTab;
+      $('priorityThresholdSelect').value = state.prefs.priorityThreshold;
+      $('reviewLabelInput').value = state.prefs.reviewLabel;
+    }
+    function savePrefs(){
+      state.prefs = {
+        defaultTab: $('defaultTabSelect').value,
+        priorityThreshold: $('priorityThresholdSelect').value,
+        reviewLabel: $('reviewLabelInput').value.trim() || 'Reviewed by agent'
+      };
+      setStoredJson('bircan_admin_prefs_commercial', state.prefs);
+      renderPriority();
+      renderSubmissions();
+      log('Preferences saved.', state.prefs);
+      alert('Preferences saved.');
+    }
+    function saveConfig(){
+      const cfg = { baseUrl: $('baseUrl').value.trim().replace(/\/$/, ''), token: $('adminToken').value.trim() };
+      setStoredJson('bircan_admin_cfg_commercial', cfg);
+      log('Connection settings saved.', cfg);
+    }
+    function getConfig(){ return { baseUrl: $('baseUrl').value.trim().replace(/\/$/, ''), token: $('adminToken').value.trim() }; }
+
+    async function api(path, options = {}){
+      const cfg = getConfig();
+      if(!cfg.baseUrl) throw new Error('Backend Base URL is empty.');
+      const headers = {...(options.headers || {})};
+      if(cfg.token) headers['x-admin-token'] = cfg.token;
+      const response = await fetch(cfg.baseUrl + path, {...options, headers});
+      const text = await response.text();
+      let data;
+      try{ data = JSON.parse(text); }catch{ data = text; }
+      if(!response.ok){
+        const message = typeof data === 'object' ? (data.error || JSON.stringify(data)) : text;
+        throw new Error(message || `Request failed: ${path}`);
+      }
+      return data;
+    }
+
+    function setActiveTab(tab){
+      document.querySelectorAll('.tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
+      document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
+      const map = { dashboard:'dashboardPanel', submissions:'submissionsPanel', caseview:'caseviewPanel', settings:'settingsPanel' };
+      $(map[tab]).classList.add('active');
+    }
+    function badgeClass(status){
+      const s = String(status || '').toLowerCase();
+      if(s === 'completed') return 'completed';
+      if(s === 'failed') return 'failed';
+      if(s === 'processing' || s === 'queued') return s;
+      return 'neutral';
+    }
+    function riskClass(risk){
+      const r = String(risk || '').toLowerCase();
+      if(r === 'low') return 'risk-low';
+      if(r === 'moderate') return 'risk-moderate';
+      if(r === 'high') return 'risk-high';
+      return 'neutral';
+    }
+    function getReviewedMap(){ return getStoredJson('bircan_reviewed_cases_commercial', {}); }
+    function getNotesMap(){ return getStoredJson('bircan_case_notes_commercial', {}); }
+    function getOverridesMap(){ return getStoredJson('bircan_case_overrides_commercial', {}); }
+
+    function estimateOutcome(item){
+      const status = String(item.status || '').toLowerCase();
+      if(status === 'failed') return 'Requires intervention';
+      if(status === 'processing' || status === 'queued') return 'Pending assessment';
+      if(String(item.pdfStatus || '').toLowerCase() === 'generated' || item.pdfUrl) return 'Likely eligible / output generated';
+      return 'Review required';
+    }
+    function estimateRisk(item){
+      const status = String(item.status || '').toLowerCase();
+      if(status === 'failed') return 'High';
+      if(status === 'processing' || status === 'queued') return 'Moderate';
+      return 'Low';
+    }
+    function recommendAction(item){
+      const risk = estimateRisk(item);
+      if(risk === 'High') return 'Do not progress to client advice until manual review is complete.';
+      if(risk === 'Moderate') return 'Monitor analysis and confirm supporting documents before final advice.';
+      return 'Proceed to final review and confirm agent position.';
+    }
+    function buildFlags(item){
+      const flags = [];
+      const status = String(item.status || '').toLowerCase();
+      if(status === 'failed') flags.push({tone:'red', text:'Assessment failed — manual review required before client-facing action.'});
+      if(status === 'processing' || status === 'queued') flags.push({tone:'amber', text:'Assessment not finalised yet — do not treat the result as final advice.'});
+      if(!item.pdfUrl) flags.push({tone:'amber', text:'No PDF output detected — confirm the generation step completed.'});
+      if(!item.email) flags.push({tone:'amber', text:'Client email not visible in this record.'});
+      if(status === 'completed' && item.pdfUrl) flags.push({tone:'green', text:'Output generated — suitable for final agent review.'});
+      if(item.processingError) flags.push({tone:'red', text:`Processing error recorded: ${item.processingError}`});
+      return flags;
+    }
+    function buildChecklist(item){
+      return [
+        {label:'Assessment status reviewed', value: String(item.status || 'Unknown')},
+        {label:'PDF output confirmed', value: item.pdfUrl ? 'Yes' : 'No'},
+        {label:'Client email visible', value: item.email ? 'Yes' : 'No'},
+        {label:'Final risk level', value: estimateRisk(item)},
+        {label:'Ready for client advice', value: (String(item.status || '').toLowerCase()==='completed' && !!item.pdfUrl) ? 'Likely yes' : 'Not yet'}
+      ];
+    }
+
+    function renderHealth(data){
+      const service = data.service || 'Live';
+      const kbCount = String(data.knowledgebaseFileCount ?? data.knowledgebaseFiles ?? 0);
+      const ai = data.hasOpenAiKey ? 'Ready' : 'Missing';
+      const smtp = data.hasSmtp ? 'Ready' : 'Missing';
+      $('quickService').textContent = service;
+      $('quickKb').textContent = kbCount;
+      $('quickAi').textContent = ai;
+      $('quickSmtp').textContent = smtp;
+      $('quickServiceInline').textContent = service;
+      $('quickAiInline').textContent = ai;
+      $('quickSmtpInline').textContent = smtp;
+    }
+    function renderKnowledgebase(data){
+      const items = Array.isArray(data.items) ? data.items : [];
+      state.kb = items;
+      $('kbSummary').textContent = `${items.length} indexed knowledgebase files`;
+      $('kbList').innerHTML = items.length ? items.slice(0,8).map(item => `
+        <div class="list-item">
+          <strong>${escapeHtml(item.file || item.path || 'Knowledgebase file')}</strong>
+          <div class="small">${escapeHtml(item.path || '')}<br>Chunks: ${escapeHtml(item.chunkCount ?? '—')} • Type: ${escapeHtml(item.fileType || item.type || '—')}</div>
+        </div>`).join('') : '<div class="empty">No knowledgebase files detected.</div>';
+    }
+
+    function filteredSubmissions(){
+      const query = $('searchInput').value.trim().toLowerCase();
+      const status = $('statusFilter').value;
+      const review = $('reviewFilter').value;
+      const reviewedMap = getReviewedMap();
+      return state.submissions.filter(item => {
+        const hay = [item.id, item.status, item.visaType, item.fullName, item.email].join(' ').toLowerCase();
+        const isReviewed = !!reviewedMap[item.id];
+        const matchesReview = !review || (review === 'reviewed' ? isReviewed : !isReviewed);
+        const quick = state.quickFilter;
+        const matchesQuick = quick === 'all'
+          || (quick === 'attention' && ['failed','processing','queued'].includes(String(item.status).toLowerCase()))
+          || (quick === 'completed' && String(item.status).toLowerCase() === 'completed')
+          || (quick === 'reviewed' && isReviewed);
+        return (!query || hay.includes(query)) && (!status || item.status === status) && matchesReview && matchesQuick;
+      });
+    }
+
+    function updateMetrics(){
+      const reviewedMap = getReviewedMap();
+      const total = state.submissions.length;
+      const completed = state.submissions.filter(x => String(x.status).toLowerCase() === 'completed').length;
+      const attention = state.submissions.filter(x => ['failed','processing','queued'].includes(String(x.status).toLowerCase())).length;
+      const reviewed = Object.keys(reviewedMap).filter(id => state.submissions.some(x => x.id === id)).length;
+      const pdfReady = state.submissions.filter(x => !!x.pdfUrl || String(x.pdfStatus).toLowerCase()==='generated').length;
+      $('metricTotal').textContent = total;
+      $('metricCompleted').textContent = completed;
+      $('metricAttention').textContent = attention;
+      $('metricReviewed').textContent = reviewed;
+      $('metricPdf').textContent = pdfReady;
+    }
+
+    function renderPriority(){
+      const threshold = state.prefs.priorityThreshold;
+      let items = [...state.submissions];
+      if(threshold === 'attention') items = items.filter(x => ['failed','processing','queued'].includes(String(x.status).toLowerCase()));
+      if(threshold === 'failed') items = items.filter(x => String(x.status).toLowerCase() === 'failed');
+      items.sort((a,b) => {
+        const order = {failed:0, processing:1, queued:2, completed:3};
+        return (order[String(a.status).toLowerCase()] ?? 9) - (order[String(b.status).toLowerCase()] ?? 9);
+      });
+      $('priorityList').innerHTML = items.length ? items.slice(0,6).map(item => `
+        <div class="list-item">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+            <div>
+              <strong>${escapeHtml(item.fullName || item.id)}</strong>
+              <div class="small">${escapeHtml(item.visaType || 'Visa not specified')} • ${escapeHtml(item.email || 'No email')}</div>
+            </div>
+            <span class="badge ${badgeClass(item.status)}">${escapeHtml(item.status || 'unknown')}</span>
+          </div>
+          <div class="small" style="margin-top:8px">${escapeHtml(recommendAction(item))}</div>
+          <div class="actions" style="margin-top:10px">
+            <button class="btn btn-light mini" onclick="loadCase('${escapeHtml(item.id)}')">Open case</button>
+          </div>
+        </div>`).join('') : '<div class="empty">No priority items match the current threshold.</div>';
+    }
+
+    function renderSubmissions(){
+      const rows = filteredSubmissions();
+      const reviewedMap = getReviewedMap();
+      const overridesMap = getOverridesMap();
+      $('submissionCount').textContent = `${rows.length} records`;
+      $('submissionsTbody').innerHTML = rows.length ? rows.map(item => {
+        const override = overridesMap[item.id] || {};
+        const decision = override.decision || estimateOutcome(item);
+        const risk = override.risk || estimateRisk(item);
+        const reviewed = reviewedMap[item.id] ? `${state.prefs.reviewLabel} • ${reviewedMap[item.id].time}` : 'Pending review';
+        const baseUrl = getConfig().baseUrl;
+        const pdfLink = item.pdfUrl ? `${baseUrl}${item.pdfUrl}` : '';
+        return `
+          <tr>
+            <td><strong>${escapeHtml(item.id)}</strong></td>
+            <td><span class="badge ${badgeClass(item.status)}">${escapeHtml(item.status || 'unknown')}</span></td>
+            <td>${escapeHtml(item.visaType || '—')}</td>
+            <td>${escapeHtml(item.fullName || '—')}</td>
+            <td>${escapeHtml(decision)}</td>
+            <td><span class="badge ${riskClass(risk)}">${escapeHtml(risk)}</span></td>
+            <td><div>${escapeHtml(reviewed)}</div></td>
+            <td>${escapeHtml(item.email || '—')}</td>
+            <td>${escapeHtml(item.createdAt || '—')}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn btn-light mini" onclick="loadCase('${escapeHtml(item.id)}')">Open case</button>
+                <button class="btn btn-outline mini" onclick="openStatusOnly('${escapeHtml(item.id)}')">Status</button>
+                <button class="btn btn-warn mini" onclick="triggerResend('${escapeHtml(item.id)}')">Resend</button>
+                ${pdfLink ? `<a class="btn btn-light mini" href="${escapeHtml(pdfLink)}" target="_blank">PDF</a>` : `<button class="btn btn-light mini" disabled>No PDF</button>`}
+              </div>
+            </td>
+          </tr>`;
+      }).join('') : '<tr><td colspan="10">No matching submissions.</td></tr>';
+      updateMetrics();
+      renderPriority();
+    }
+
+    function renderNotes(caseId){
+      const notes = (getNotesMap()[caseId] || []);
+      $('notesList').innerHTML = notes.length ? notes.slice().reverse().map(note => `
+        <div class="note-card"><div class="note-meta">${escapeHtml(note.time)}</div><div>${escapeHtml(note.text)}</div></div>`).join('') : '<div class="empty">No notes saved for this case.</div>';
+    }
+    function renderFlags(item){
+      const flags = buildFlags(item);
+      $('flagList').innerHTML = flags.length ? flags.map(flag => `<div class="flag ${flag.tone}">${escapeHtml(flag.text)}</div>`).join('') : '<div class="empty">No case flags detected.</div>';
+    }
+    function renderChecklist(item){
+      const checklist = buildChecklist(item);
+      $('checklistList').innerHTML = checklist.map(row => `
+        <div class="check-item"><div><strong>${escapeHtml(row.label)}</strong></div><div class="small">${escapeHtml(row.value)}</div></div>`).join('');
+    }
+    function renderTimeline(item, statusPayload){
+      const steps = [
+        {title:'Submitted', text:item.createdAt || 'Submission created'},
+        {title:'Analysing', text:statusPayload.analysisStatus || item.analysisStatus || 'Not available'},
+        {title:'PDF generated', text:statusPayload.pdfStatus || item.pdfStatus || (item.pdfUrl ? 'generated' : 'not generated')},
+        {title:'Email sent', text:statusPayload.emailStatus || item.emailStatus || 'Not available'},
+        {title:'Final status', text:statusPayload.status || item.status || 'Not available'}
+      ];
+      $('timelineList').innerHTML = steps.map(step => `
+        <div class="step"><div class="step-dot"></div><div><strong>${escapeHtml(step.title)}</strong><div class="small">${escapeHtml(step.text)}</div></div></div>`).join('');
+    }
+
+    function populateCaseView(item, payload){
+      state.currentCase = item;
+      const overridesMap = getOverridesMap();
+      const reviewedMap = getReviewedMap();
+      const override = overridesMap[item.id] || {};
+      const outcome = override.decision || estimateOutcome(item);
+      const risk = override.risk || estimateRisk(item);
+      $('caseHeading').textContent = item.fullName ? `${item.fullName} — case review` : 'Case review';
+      $('caseIntro').textContent = recommendAction(item);
+      $('caseSubmissionTag').textContent = item.id || '—';
+      $('caseClient').textContent = item.fullName || item.id || '—';
+      $('caseVisa').textContent = item.visaType || '—';
+      $('caseOutcome').textContent = outcome;
+      $('caseRisk').textContent = risk;
+      $('caseAction').textContent = override.reason || recommendAction(item);
+      $('caseReviewStatus').textContent = reviewedMap[item.id] ? `${state.prefs.reviewLabel} — ${reviewedMap[item.id].time}` : 'Pending review';
+      $('submissionIdInput').value = item.id || '';
+      $('overrideDecision').value = override.decision || '';
+      $('overrideRisk').value = override.risk || '';
+      $('overrideReason').value = override.reason || '';
+      $('submissionStatusPanel').textContent = JSON.stringify(payload, null, 2);
+      renderFlags(item);
+      renderNotes(item.id);
+      renderChecklist(item);
+      renderTimeline(item, payload);
+      setActiveTab('caseview');
+    }
+
+    async function fetchHealth(){ const data = await api('/api/health'); renderHealth(data); log('Health loaded.', data); }
+    async function fetchKnowledgebase(){
+      try{ const data = await api('/api/meta/knowledgebase'); renderKnowledgebase(data); log('Knowledgebase loaded.', data); }
+      catch(error){ $('kbList').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; log('Knowledgebase endpoint unavailable.', error.message); }
+    }
+    async function fetchSubmissions(){
+      const data = await api('/api/admin/submissions');
+      state.submissions = Array.isArray(data.items) ? data.items : [];
+      renderSubmissions();
+      log('Submissions loaded.', {count: state.submissions.length});
+    }
+    async function fetchStatus(submissionId){
+      if(!submissionId) throw new Error('Enter a submission ID first.');
+      const payload = await api(`/api/assessment/${encodeURIComponent(submissionId)}/status`);
+      $('submissionStatusPanel').textContent = JSON.stringify(payload, null, 2);
+      log(`Status loaded: ${submissionId}`, payload);
+      return payload;
+    }
+    async function fetchAndOpenCase(submissionId){
+      const id = submissionId || $('submissionIdInput').value.trim();
+      if(!id) throw new Error('Enter a submission ID first.');
+      let item = state.submissions.find(x => x.id === id);
+      if(!item) item = { id, status:'processing', visaType:'Unknown visa', fullName:'Unknown client', email:'', createdAt:'' };
+      const payload = await fetchStatus(id);
+      item = {
+        ...item,
+        status: payload.status || item.status,
+        analysisStatus: payload.analysisStatus || item.analysisStatus,
+        pdfStatus: payload.pdfStatus || item.pdfStatus,
+        emailStatus: payload.emailStatus || item.emailStatus,
+        pdfUrl: payload.pdfUrl || item.pdfUrl,
+        processingError: payload.processingError || item.processingError
+      };
+      populateCaseView(item, payload);
+    }
+    async function resendEmail(submissionId){
+      const id = submissionId || $('submissionIdInput').value.trim();
+      if(!id) throw new Error('Enter a submission ID first.');
+      const payload = await api(`/api/admin/submissions/${encodeURIComponent(id)}/resend-email`, {method:'POST'});
+      log(`Resend email triggered: ${id}`, payload);
+      alert('Resend request completed.');
+      return payload;
+    }
+
+    function saveNote(){
+      if(!state.currentCase) return alert('Load a case first.');
+      const text = $('noteInput').value.trim();
+      if(!text) return alert('Enter a note first.');
+      const notesMap = getNotesMap();
+      notesMap[state.currentCase.id] = notesMap[state.currentCase.id] || [];
+      notesMap[state.currentCase.id].push({time:new Date().toLocaleString(), text});
+      setStoredJson('bircan_case_notes_commercial', notesMap);
+      $('noteInput').value = '';
+      renderNotes(state.currentCase.id);
+      log(`Note saved for ${state.currentCase.id}.`);
+    }
+    function saveOverride(){
+      if(!state.currentCase) return alert('Load a case first.');
+      const overridesMap = getOverridesMap();
+      overridesMap[state.currentCase.id] = {
+        decision: $('overrideDecision').value,
+        risk: $('overrideRisk').value,
+        reason: $('overrideReason').value.trim(),
+        time: new Date().toLocaleString()
+      };
+      setStoredJson('bircan_case_overrides_commercial', overridesMap);
+      log(`Final decision saved for ${state.currentCase.id}.`, overridesMap[state.currentCase.id]);
+      populateCaseView(state.currentCase, JSON.parse($('submissionStatusPanel').textContent || '{}'));
+      renderSubmissions();
+      alert('Final decision saved.');
+    }
+    function markReviewed(){
+      if(!state.currentCase) return alert('Load a case first.');
+      const reviewedMap = getReviewedMap();
+      reviewedMap[state.currentCase.id] = { time: new Date().toLocaleString() };
+      setStoredJson('bircan_reviewed_cases_commercial', reviewedMap);
+      log(`Case marked reviewed: ${state.currentCase.id}`);
+      populateCaseView(state.currentCase, JSON.parse($('submissionStatusPanel').textContent || '{}'));
+      renderSubmissions();
+      alert('Case marked as reviewed.');
+    }
+    function openPdfForCurrent(){
+      if(!state.currentCase) return alert('Load a case first.');
+      const baseUrl = getConfig().baseUrl;
+      if(!state.currentCase.pdfUrl) return alert('No PDF available for this case.');
+      window.open(baseUrl + state.currentCase.pdfUrl, '_blank');
+    }
+    function exportCsv(){
+      const rows = filteredSubmissions();
+      const reviewedMap = getReviewedMap();
+      const overridesMap = getOverridesMap();
+      const headers = ['ID','Status','Visa','Client','Final Decision','Risk','Reviewed','Email','Created'];
+      const csv = [headers.join(',')].concat(rows.map(item => {
+        const override = overridesMap[item.id] || {};
+        const reviewed = reviewedMap[item.id] ? 'Yes' : 'No';
+        const vals = [
+          item.id,
+          item.status,
+          item.visaType,
+          item.fullName,
+          override.decision || estimateOutcome(item),
+          override.risk || estimateRisk(item),
+          reviewed,
+          item.email,
+          item.createdAt
+        ].map(v => `"${String(v ?? '').replaceAll('"','""')}"`);
+        return vals.join(',');
+      })).join('\n');
+      const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'bircan-admin-submissions.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      log('CSV export generated.', {rows: rows.length});
+    }
+    async function refreshAll(){
+      saveConfig();
+      clearFatal();
+      try{ await fetchHealth(); await fetchKnowledgebase(); await fetchSubmissions(); }
+      catch(error){ showFatal(`Could not load backend data. Check Backend Base URL, admin token, or deployment endpoints.\n\nError: ${error.message}`); log('Refresh failed.', error.message); }
+    }
+
+    window.loadCase = async function(id){ try{ await fetchAndOpenCase(id); }catch(error){ log('Case load failed.', error.message); alert(error.message); } };
+    window.openStatusOnly = async function(id){ try{ await fetchStatus(id); setActiveTab('caseview'); $('submissionIdInput').value = id; $('caseSubmissionTag').textContent = id; }catch(error){ log('Status load failed.', error.message); alert(error.message); } };
+    window.triggerResend = async function(id){ try{ await resendEmail(id); }catch(error){ log('Resend failed.', error.message); alert(error.message); } };
+
+    document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => setActiveTab(btn.dataset.tab)));
+    document.querySelectorAll('.quick-filter').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.quick-filter').forEach(x => x.classList.remove('active'));
+      btn.classList.add('active');
+      state.quickFilter = btn.dataset.quick;
+      renderSubmissions();
+    }));
+
+    $('refreshAllBtn').addEventListener('click', refreshAll);
+    $('openSubmissionsBtn').addEventListener('click', () => setActiveTab('submissions'));
+    $('openCaseBtn').addEventListener('click', () => setActiveTab('caseview'));
+    $('saveConfigBtn').addEventListener('click', () => { saveConfig(); alert('Connection settings saved.'); });
+    $('testConnectionBtn').addEventListener('click', async () => { try{ saveConfig(); await fetchHealth(); alert('Connection successful.'); }catch(error){ log('Connection test failed.', error.message); alert(error.message); } });
+    $('quickHealthBtn').addEventListener('click', async () => { try{ await fetchHealth(); }catch(error){ log('Health check failed.', error.message); alert(error.message); } });
+    $('quickKbBtn').addEventListener('click', async () => { try{ await fetchKnowledgebase(); }catch(error){ log('Knowledgebase reload failed.', error.message); alert(error.message); } });
+    $('kbReloadBtn').addEventListener('click', async () => { try{ await fetchKnowledgebase(); }catch(error){ log('Knowledgebase reload failed.', error.message); alert(error.message); } });
+    $('loadSubmissionsBtn').addEventListener('click', async () => { try{ await fetchSubmissions(); }catch(error){ log('Submission load failed.', error.message); alert(error.message); } });
+    $('exportCsvBtn').addEventListener('click', exportCsv);
+    $('searchInput').addEventListener('input', renderSubmissions);
+    $('statusFilter').addEventListener('change', renderSubmissions);
+    $('reviewFilter').addEventListener('change', renderSubmissions);
+    $('runCaseActionBtn').addEventListener('click', async () => {
+      const action = $('caseQuickAction').value;
+      const id = $('submissionIdInput').value.trim();
+      try{
+        if(action === 'status') await fetchStatus(id);
+        if(action === 'case') await fetchAndOpenCase(id);
+        if(action === 'resend') await resendEmail(id);
+      }catch(error){ log('Case action failed.', error.message); alert(error.message); }
+    });
+    $('loadCaseBtn').addEventListener('click', async () => { try{ await fetchAndOpenCase(); }catch(error){ log('Case load failed.', error.message); alert(error.message); } });
+    $('statusBtn').addEventListener('click', async () => { try{ await fetchStatus($('submissionIdInput').value.trim()); }catch(error){ log('Status load failed.', error.message); alert(error.message); } });
+    $('pdfBtn').addEventListener('click', openPdfForCurrent);
+    $('resendBtn').addEventListener('click', async () => { try{ await resendEmail(); }catch(error){ log('Resend failed.', error.message); alert(error.message); } });
+    $('saveNoteBtn').addEventListener('click', saveNote);
+    $('clearNoteBtn').addEventListener('click', () => $('noteInput').value = '');
+    $('saveOverrideBtn').addEventListener('click', saveOverride);
+    $('markReviewedBtn').addEventListener('click', markReviewed);
+    $('savePrefsBtn').addEventListener('click', savePrefs);
+    $('copySubmissionBtn').addEventListener('click', () => { copyText($('submissionIdInput').value.trim()); });
+    $('copyCaseIdBtn').addEventListener('click', () => { copyText($('caseSubmissionTag').textContent.trim()); });
+
+    (async function boot(){
+      autoDetectBaseUrl();
+      loadPrefs();
+      setActiveTab(state.prefs.defaultTab || 'dashboard');
+      saveConfig();
+      await refreshAll();
+    })();
+  </script>
+</body>
+</html>
