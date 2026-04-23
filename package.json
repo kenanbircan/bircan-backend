@@ -1,0 +1,16 @@
+{
+  "name": "bircan-citizenship-stripe-test",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stripe test-mode wiring for the Bircan Migration citizenship exam page.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "stripe": "^18.1.1"
+  }
+}
