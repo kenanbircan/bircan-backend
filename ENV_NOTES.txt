@@ -1,0 +1,18 @@
+Required environment variables for Stripe:
+- STRIPE_SECRET_KEY=sk_live_...
+- STRIPE_WEBHOOK_SECRET=whsec_...
+- BASE_URL or FRONTEND_URL=https://assessment.bircanmigration.au
+- STRIPE_PRICE_CITIZENSHIP_20=price_1TPHR9J1zGpc7hJ0KRkJbBlV
+- STRIPE_PRICE_CITIZENSHIP_50=price_1TPHa8J1zGpc7hJ07fdtV2Un
+- STRIPE_PRICE_CITIZENSHIP_100=price_1TPHa8J1zGpc7hJ0SmJdoKuv
+- STRIPE_PRICE_CITIZENSHIP_UNLIMITED=price_1TPHa8J1zGpc7hJ0vYOJD06X
+- ALLOWED_ORIGINS=https://assessment.bircanmigration.au,https://www.assessment.bircanmigration.au
+Optional:
+- STRIPE_SUCCESS_PATH=/citizenship-test-stripe-wired.html
+- STRIPE_CANCEL_PATH=/citizenship-test-stripe-wired.html
+
+New routes added:
+- POST /create-checkout-session
+- GET /checkout/verify-session?session_id=...&plan=50
+- POST /stripe/webhook
+- GET /api/health now reports Stripe config flags
