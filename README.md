@@ -1,62 +1,36 @@
-# Bircan Migration Backend Bundle
+# Bircan Migration citizenship test Stripe test-mode package
 
-This package replaces the unstable PDF flow with a single clean generation path.
+## What is included
+- `citizenship-test.html` — updated exam page wired to backend endpoints.
+- `server.js` — Express + Stripe backend.
+- `citizenship-success.html` — verifies the returned Checkout Session.
+- `citizenship-cancel.html` — cancel return page.
+- `data/entitlements.json` — simple local storage file for browser-based test entitlements.
 
-## What this fixes
+## Setup
+1. Install Node.js 18+.
+2. In this folder run:
+   - `npm install`
+3. Copy `.env.example` to `.env`.
+4. Fill in your Stripe test keys and Stripe test Price IDs.
+5. Start the server:
+   - `npm start`
+6. Open:
+   - `http://localhost:4242/citizenship-test.html`
 
-- Prevents extra blank trailing pages caused by footer/header content being treated as normal flowing content
-- Uses buffered page numbering in `pdfkit` so page labels are stamped after the real content is finished
-- Uses a locked two-column header layout so the website, email, and contact details do not break awkwardly
-- Provides a production-ready `server.js` with `/api/health` and `/api/assessment/submit`
+## Stripe webhook for local testing
+Use Stripe CLI so webhook events hit your local server:
+- `stripe listen --forward-to localhost:4242/api/stripe/webhook`
 
-## Install
+Stripe CLI will print a webhook signing secret. Put that into:
+- `STRIPE_WEBHOOK_SECRET`
 
-```bash
-npm install
-cp .env.example .env
-npm start
-```
+## Test card
+Use Stripe test card:
+- `4242 4242 4242 4242`
+- any future expiry
+- any CVC
+- any ZIP/postcode
 
-## Routes
-
-### GET `/api/health`
-Returns backend health and whether SMTP is configured.
-
-### POST `/api/assessment/submit`
-Accepts assessment data and returns a generated PDF URL.
-
-Example body:
-
-```json
-{
-  "clientEmail": "kenan@bircanmigration.com.au",
-  "answers": {
-    "fullName": "John Smith",
-    "email": "kenan@bircanmigration.com.au",
-    "dob": "1990-05-14",
-    "citizenship": "United Kingdom",
-    "location": "Outside Australia",
-    "occupation": "Software Engineer",
-    "employerName": "Tech Solutions Pty Ltd",
-    "nominationStatus": "Lodged and pending",
-    "skillsAssessment": "Completed successfully",
-    "englishScore": "IELTS 7.0 overall with at least 6.0 in each band",
-    "workYears": "5 years"
-  }
-}
-```
-
-## Deployment notes for Render
-
-- Use **Web Service**
-- Build command: `npm install`
-- Start command: `npm start`
-- Add env vars from `.env.example`
-- Set `PUBLIC_BASE_URL` to your Render backend URL
-- Optional: set `PDF_LOGO_PATH` if you want to include your logo from disk
-
-## Important implementation rule
-
-Do not run a second PDF pass in any other file. The PDF must be generated **only once** through `renderAssessment()` from `src/generateAssessmentPdf.js`.
-
-If you append any footer, page-number, or branding content outside this module, the duplicate-pages bug can return.
+## Important
+This package uses a simple browser ID and local JSON store for test-mode entitlement tracking. It is suitable for testing and demonstration, not for a production multi-user authenticated deployment.
