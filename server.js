@@ -2772,6 +2772,56 @@ async function processSubmission(submissionId) {
 }
 
 
+async function finalizePaidVisaSubmissionForDashboard(submissionId) {
+  let submission = await getSubmission(submissionId);
+  if (!submission) throw new Error(`Submission not found for ${submissionId}`);
+
+  const hasPdf = Boolean(submission.pdfPath && fs.existsSync(submission.pdfPath));
+  if (String(submission.paymentStatus || '').toLowerCase() === 'paid' && hasPdf) {
+    if (submission.pdfStatus !== 'generated') {
+      submission = await markSubmissionStage(submissionId, { pdfStatus: 'generated', status: submission.status || 'completed' });
+    }
+    return submission;
+  }
+
+  // Final production rule: after Stripe payment, the backend finishes processing
+  // and attaches the PDF before the dashboard is told the assessment is ready.
+  try {
+    return await processSubmission(submissionId);
+  } catch (error) {
+    const latest = (await getSubmission(submissionId)) || submission;
+    if (!latest.pdfPath || !fs.existsSync(latest.pdfPath)) {
+      const pdfResult = await generateProfessionalPdf(latest);
+      return markSubmissionStage(submissionId, {
+        paymentStatus: 'paid',
+        status: 'completed',
+        analysisStatus: latest.analysisStatus || 'fallback',
+        pdfStatus: 'generated',
+        pdfPath: pdfResult.pdfPath,
+        pdfUrl: pdfResult.pdfUrl,
+        pdfGeneratedAt: nowIso(),
+        processingError: latest.processingError || error.message,
+      });
+    }
+    return latest;
+  }
+}
+
+function startPaidVisaSubmissionProcessing(submissionId) {
+  processSubmission(submissionId).catch(async (error) => {
+    await updateSubmission(submissionId, {
+      processingError: error.message,
+      analysisStatus: 'failed',
+      pdfStatus: 'failed',
+      emailStatus: 'failed',
+      status: 'failed',
+      processedAt: nowIso(),
+    }).catch(() => null);
+    console.error('[visa-paid-session-processing-error]', error);
+  });
+}
+
+
 let EMAIL_RELEASE_PASS_RUNNING = false;
 
 async function releaseScheduledEmailForSubmission(submission, options = {}) {
@@ -3316,7 +3366,7 @@ function makeVisaAssessmentToken(sessionId) {
     .digest('hex');
 }
 
-async function createVisaAssessmentFromPaidSession(session, existingPayload = null) {
+async function createVisaAssessmentFromPaidSession(session, existingPayload = null, options = {}) {
   const metadata = session.metadata || {};
   if (String(metadata.product || '') !== 'visa_assessment') return null;
   const paid = session.payment_status === 'paid' || session.status === 'complete';
@@ -3331,8 +3381,13 @@ async function createVisaAssessmentFromPaidSession(session, existingPayload = nu
       patch.accountEmail = String(metadata.email || session.customer_details?.email || session.customer_email || '').trim().toLowerCase();
     }
     if (!existingSubmission.stripeSessionId) patch.stripeSessionId = session.id;
-    if (Object.keys(patch).length) return updateSubmission(existingSubmission.id, patch);
-    return existingSubmission;
+    if (!existingSubmission.stripePaymentIntentId) patch.stripePaymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : (session.payment_intent?.id || null);
+    const updated = Object.keys(patch).length ? await updateSubmission(existingSubmission.id, patch) : existingSubmission;
+    if (options.finalize === false) {
+      if (options.background !== false && (!updated.pdfPath || !fs.existsSync(updated.pdfPath))) startPaidVisaSubmissionProcessing(updated.id);
+      return updated;
+    }
+    return finalizePaidVisaSubmissionForDashboard(updated.id);
   }
 
   const payloadTokenFromMeta = String(metadata.payloadToken || '').trim();
@@ -3379,18 +3434,11 @@ async function createVisaAssessmentFromPaidSession(session, existingPayload = nu
     plan,
   };
   await saveSubmission(submission);
-  processSubmission(submissionId).catch(async (error) => {
-    await updateSubmission(submissionId, {
-      processingError: error.message,
-      analysisStatus: 'failed',
-      pdfStatus: 'failed',
-      emailStatus: 'failed',
-      status: 'failed',
-      processedAt: nowIso(),
-    });
-    console.error('[visa-paid-session-processing-error]', error);
-  });
-  return submission;
+  if (options.finalize === false) {
+    if (options.background !== false) startPaidVisaSubmissionProcessing(submissionId);
+    return submission;
+  }
+  return finalizePaidVisaSubmissionForDashboard(submissionId);
 }
 
 app.post(['/create-visa-checkout-session', '/create-assessment-checkout-session', '/api/assessment/create-checkout-session', '/api/assessments/create-checkout-session', '/api/visa/create-checkout-session', '/api/checkout/visa'], async (req, res, next) => {
@@ -3782,7 +3830,7 @@ app.post('/stripe/webhook', async (req, res) => {
       if (String(session.metadata?.product || '') === 'visa_assessment') {
         const payloadToken = String(session.metadata?.payloadToken || '').trim();
         const payload = payloadToken ? readJsonSafe(path.join(STORAGE_DIR, 'visa-checkout-payloads', `${sanitizeFileName(payloadToken)}.json`), null) : null;
-        await createVisaAssessmentFromPaidSession(session, payload);
+        await createVisaAssessmentFromPaidSession(session, payload, { finalize: false, background: true });
       } else {
         await upsertCitizenshipEntitlementFromSession(session);
       }
@@ -4220,43 +4268,29 @@ app.get('/api/assessment/:submissionId/status', async (req, res, next) => {
   }
 });
 
-app.get('/api/assessment/:submissionId/pdf', async (req, res, next) => {
+app.get('/api/assessment/:submissionId/pdf', requireCitizenshipAuth, async (req, res, next) => {
   try {
-    let submission = await getSubmission(req.params.submissionId);
+    const submission = await getSubmission(req.params.submissionId);
     if (!submission) return res.status(404).json({ ok: false, error: 'Assessment not found.' });
 
-    // Production fix: a paid assessment may reach the dashboard before the async
-    // AI/PDF worker has finished. Do not show a permanent "PDF not found" error.
-    // Generate a safe preliminary PDF on demand, save the PDF fields, then return it.
-    if (!submission.pdfPath || !fs.existsSync(submission.pdfPath)) {
-      try {
-        await updateSubmission(submission.id, {
-          pdfStatus: 'generating',
-          status: submission.status || 'paid',
-        });
+    const userEmail = String(req.user?.email || '').trim().toLowerCase();
+    const userId = String(req.user?.id || '').trim();
+    const submissionUserId = String(submission.userId || submission.accountUserId || '').trim();
+    const emails = [submission.accountEmail, submission.stripeCustomerEmail, submission.customerEmail, submission.clientEmail, submission.email, submission.client && submission.client.email]
+      .map(v => String(v || '').trim().toLowerCase())
+      .filter(Boolean);
+    const ownsAssessment = (userId && submissionUserId && userId === submissionUserId) || (userEmail && emails.includes(userEmail));
+    if (!ownsAssessment) return res.status(403).json({ ok: false, error: 'This assessment belongs to a different account.' });
 
-        const pdfResult = await generateProfessionalPdf(submission);
-        submission = await updateSubmission(submission.id, {
-          pdfStatus: 'generated',
-          pdfPath: pdfResult.pdfPath,
-          pdfUrl: pdfResult.pdfUrl,
-          status: submission.status || 'paid',
-          pdfGeneratedAt: nowIso(),
-        });
-      } catch (pdfError) {
-        await updateSubmission(submission.id, {
-          pdfStatus: 'failed',
-          pdfError: pdfError.message,
-        }).catch(() => null);
-        return res.status(500).json({ ok: false, error: 'PDF could not be generated yet. Please refresh the dashboard and try again.' });
-      }
+    if (String(submission.paymentStatus || '').toLowerCase() !== 'paid') {
+      return res.status(402).json({ ok: false, error: 'Payment is required before the PDF can be downloaded.' });
     }
 
     if (!submission.pdfPath || !fs.existsSync(submission.pdfPath)) {
-      return res.status(404).json({ ok: false, error: 'PDF file is missing on disk.' });
+      return res.status(409).json({ ok: false, error: 'PDF is still being generated. Please refresh the dashboard shortly.' });
     }
 
-    res.download(submission.pdfPath, path.basename(submission.pdfPath));
+    return res.download(submission.pdfPath, path.basename(submission.pdfPath));
   } catch (error) {
     next(error);
   }
