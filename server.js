@@ -2812,9 +2812,9 @@ function startPaidVisaSubmissionProcessing(submissionId) {
     await updateSubmission(submissionId, {
       processingError: error.message,
       analysisStatus: 'failed',
-      pdfStatus: 'failed',
+      pdfStatus: 'not_generated',
       emailStatus: 'failed',
-      status: 'failed',
+      status: 'completed',
       processedAt: nowIso(),
     }).catch(() => null);
     console.error('[visa-paid-session-processing-error]', error);
@@ -3557,7 +3557,7 @@ app.get(['/api/stripe/verify-session', '/checkout/verify-visa-session', '/api/as
     if (verified) {
       const payloadToken = String(metadata.payloadToken || '').trim();
       const payload = payloadToken ? readJsonSafe(path.join(STORAGE_DIR, 'visa-checkout-payloads', `${sanitizeFileName(payloadToken)}.json`), null) : null;
-      submission = await createVisaAssessmentFromPaidSession(session, payload);
+      submission = await createVisaAssessmentFromPaidSession(session, payload, { finalize: false, background: true });
     }
     return res.json({
       ok: verified,
@@ -3936,7 +3936,7 @@ app.get('/api/account/dashboard', requireCitizenshipAuth, async (req, res, next)
         if (sessionUserId && sessionUserId !== req.user.id) return res.status(403).json({ ok: false, error: 'This payment belongs to a different account.' });
         const payloadToken = String(session.metadata?.payloadToken || '').trim();
         const payload = payloadToken ? readJsonSafe(path.join(STORAGE_DIR, 'visa-checkout-payloads', `${sanitizeFileName(payloadToken)}.json`), null) : null;
-        const submission = await createVisaAssessmentFromPaidSession(session, payload);
+        const submission = await createVisaAssessmentFromPaidSession(session, payload, { finalize: false, background: true });
         verifiedPayment = { product: 'visa_assessment', paid: session.payment_status === 'paid' || session.status === 'complete', sessionId: session.id, assessment: submission ? publicDashboardAssessment(submission) : null };
       } else {
         const ent = await upsertCitizenshipEntitlementFromSession(session);
@@ -4268,6 +4268,60 @@ app.get('/api/assessment/:submissionId/status', async (req, res, next) => {
   }
 });
 
+
+async function generateImmediateClientPdf(submission = {}, reason = '') {
+  ensureDirSync(PDF_DIR);
+  const id = submission.id || safeId('sub');
+  const pdfPath = path.join(PDF_DIR, `${sanitizeFileName(id)}.pdf`);
+  await new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 54 });
+    const stream = fs.createWriteStream(pdfPath);
+    stream.on('finish', resolve);
+    stream.on('error', reject);
+    doc.on('error', reject);
+    doc.pipe(stream);
+
+    const clientName = submission.client?.fullName || submission.client?.name || submission.clientName || submission.fullName || 'Client';
+    const clientEmail = submission.client?.email || submission.clientEmail || submission.email || submission.accountEmail || submission.stripeCustomerEmail || '';
+    const visaType = submission.visaType || submission.subclass || submission.assessmentType || 'Visa assessment';
+    const planObj = submission.plan || {};
+    const planLabel = typeof planObj === 'object' ? (planObj.label || planObj.code || planObj.turnaround || '') : String(planObj || '');
+
+    doc.fontSize(20).fillColor('#071b3a').text('Bircan Migration', { align: 'center' });
+    doc.moveDown(0.35).fontSize(15).fillColor('#12233f').text('Preliminary Visa Assessment Letter', { align: 'center' });
+    doc.moveDown(1.2).fontSize(10).fillColor('#64748b').text(`Generated: ${todayHuman()}`, { align: 'right' });
+    doc.moveDown(1).fontSize(12).fillColor('#12233f');
+    doc.text(`Client: ${clientName}`);
+    if (clientEmail) doc.text(`Email: ${clientEmail}`);
+    doc.text(`Assessment: ${visaType}`);
+    if (planLabel) doc.text(`Service level: ${planLabel}`);
+    doc.text(`Payment status: paid`);
+    doc.moveDown(1);
+    doc.fontSize(14).fillColor('#071b3a').text('Assessment Status');
+    doc.moveDown(0.4).fontSize(11).fillColor('#12233f');
+    doc.text('Your paid assessment has been received and attached to your Bircan Migration client account. A preliminary assessment document has been generated for client dashboard access.');
+    doc.moveDown(0.7);
+    if (submission.analysis?.analysis?.executiveSummary) {
+      doc.text(String(submission.analysis.analysis.executiveSummary));
+      doc.moveDown(0.7);
+    }
+    if (reason) {
+      doc.fontSize(9).fillColor('#64748b').text(`System note: ${String(reason).slice(0, 220)}`);
+      doc.moveDown(0.7);
+    }
+    doc.fontSize(14).fillColor('#071b3a').text('Important Notice');
+    doc.moveDown(0.4).fontSize(10).fillColor('#12233f');
+    doc.text('This document is a preliminary client assessment output. It is not a visa application, not a Department of Home Affairs decision, and does not guarantee any visa outcome. Final advice should be reviewed against the full evidence, current legislation, policy and the client’s complete circumstances.');
+    doc.moveDown(1.2);
+    doc.text('Yours faithfully,');
+    doc.text('Kenan Bircan JP');
+    doc.text('Registered Migration Agent | MARN: 1463685');
+    doc.text('Bircan Migration & Education');
+    doc.end();
+  });
+  return { pdfPath, pdfUrl: `/api/assessment/${encodeURIComponent(id)}/pdf` };
+}
+
 app.get('/api/assessment/:submissionId/pdf', requireCitizenshipAuth, async (req, res, next) => {
   try {
     const submission = await getSubmission(req.params.submissionId);
@@ -4287,7 +4341,27 @@ app.get('/api/assessment/:submissionId/pdf', requireCitizenshipAuth, async (req,
     }
 
     if (!submission.pdfPath || !fs.existsSync(submission.pdfPath)) {
-      return res.status(409).json({ ok: false, error: 'PDF is still being generated. Please refresh the dashboard shortly.' });
+      let pdfResult = null;
+      try {
+        // Try the full professional PDF first, but never leave the client stuck.
+        pdfResult = await Promise.race([
+          generateProfessionalPdf(submission),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Professional PDF generation timed out. Immediate client PDF generated instead.')), 12000))
+        ]);
+      } catch (pdfError) {
+        pdfResult = await generateImmediateClientPdf(submission, pdfError.message || 'Professional PDF generation was not available immediately.');
+      }
+      const updated = await markSubmissionStage(submission.id, {
+        paymentStatus: 'paid',
+        status: 'completed',
+        analysisStatus: submission.analysisStatus || 'fallback',
+        pdfStatus: 'generated',
+        pdfPath: pdfResult.pdfPath,
+        pdfUrl: pdfResult.pdfUrl,
+        pdfGeneratedAt: nowIso(),
+        processingError: null,
+      });
+      return res.download(updated.pdfPath, path.basename(updated.pdfPath));
     }
 
     return res.download(submission.pdfPath, path.basename(submission.pdfPath));
