@@ -1,62 +1,67 @@
-# Bircan Migration Backend Bundle
+BIRCAN FINAL SERVER - DEPLOYMENT NOTES
 
-This package replaces the unstable PDF flow with a single clean generation path.
+Upload these files to your backend repository root:
+- server.js
+- db.js
+- pdf.js
+- package.json
 
-## What this fixes
+Required Render environment variables:
+- DATABASE_URL
+- SESSION_SECRET
+- APP_BASE_URL=https://bircanmigration.au
+- STRIPE_SECRET_KEY or STRIPE_SECRET_KEY_TEST
+- STRIPE_WEBHOOK_SECRET recommended
+- STRIPE_PRICE_VISA_INSTANT_TEST or STRIPE_PRICE_VISA_INSTANT
+- STRIPE_PRICE_VISA_24H_TEST or STRIPE_PRICE_VISA_24H
+- STRIPE_PRICE_VISA_3D_TEST or STRIPE_PRICE_VISA_3D
 
-- Prevents extra blank trailing pages caused by footer/header content being treated as normal flowing content
-- Uses buffered page numbering in `pdfkit` so page labels are stamped after the real content is finished
-- Uses a locked two-column header layout so the website, email, and contact details do not break awkwardly
-- Provides a production-ready `server.js` with `/api/health` and `/api/assessment/submit`
+Optional email variables:
+- SMTP_HOST
+- SMTP_PORT
+- SMTP_SECURE
+- SMTP_USER
+- SMTP_PASS
+- SMTP_FROM
 
-## Install
+Important behaviour:
+- Payment verification now attaches payment and immediately generates the PDF by default.
+- Stripe webhook also queues and triggers generation.
+- Opening /api/assessment/:id/pdf will auto-generate the PDF if payment is already paid but the PDF is missing.
+- Dashboard status returns 'ready' whenever pdf_bytes exists.
+- GET /api/assessment/generate-pdf is intentionally blocked. Use POST with { assessmentId }.
 
-```bash
-npm install
-cp .env.example .env
+Render start command:
 npm start
-```
 
-## Routes
+Health check:
+/api/health
 
-### GET `/api/health`
-Returns backend health and whether SMTP is configured.
 
-### POST `/api/assessment/submit`
-Accepts assessment data and returns a generated PDF URL.
+PATCH ADDED - PAYMENT FINALISATION ROUTE
+This patched server also exposes:
+- POST /api/payments/finalise
+- POST /api/payment/finalise
+- POST /api/payments/finalize
+- GET  /api/payments/finalise
 
-Example body:
+Purpose:
+- fixes payment-complete.html error: Route not found: POST /api/payments/finalise
+- retrieves the Stripe Checkout session
+- attaches the paid session to the assessment
+- triggers PDF generation
+- restores bm_session cookie from the paid Stripe session email where the client account exists
+- returns redirectUrl to account-dashboard.html
 
-```json
-{
-  "clientEmail": "kenan@bircanmigration.com.au",
-  "answers": {
-    "fullName": "John Smith",
-    "email": "kenan@bircanmigration.com.au",
-    "dob": "1990-05-14",
-    "citizenship": "United Kingdom",
-    "location": "Outside Australia",
-    "occupation": "Software Engineer",
-    "employerName": "Tech Solutions Pty Ltd",
-    "nominationStatus": "Lodged and pending",
-    "skillsAssessment": "Completed successfully",
-    "englishScore": "IELTS 7.0 overall with at least 6.0 in each band",
-    "workYears": "5 years"
-  }
-}
-```
+Expected frontend payload:
+{ "session_id": "cs_test_..." }
+or
+{ "sessionId": "cs_test_..." }
 
-## Deployment notes for Render
+PATCH 10.0.1 - PAYMENT FINALISE DB MIGRATION SAFE
+- Adds POST /api/payments/finalise aliases for payment-complete pages.
+- Adds in-place ALTER TABLE migration for older PostgreSQL tables.
+- Fixes: column "client_id" of relation "payments" does not exist.
+- Also hardens older assessments/pdf_jobs schemas so missing PDF/status columns do not crash the server.
 
-- Use **Web Service**
-- Build command: `npm install`
-- Start command: `npm start`
-- Add env vars from `.env.example`
-- Set `PUBLIC_BASE_URL` to your Render backend URL
-- Optional: set `PDF_LOGO_PATH` if you want to include your logo from disk
-
-## Important implementation rule
-
-Do not run a second PDF pass in any other file. The PDF must be generated **only once** through `renderAssessment()` from `src/generateAssessmentPdf.js`.
-
-If you append any footer, page-number, or branding content outside this module, the duplicate-pages bug can return.
+After deploy, open /api/health once. If BOOTSTRAP_DB=true, the server applies the migration automatically at startup.
