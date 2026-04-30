@@ -1,0 +1,25 @@
+{
+  "name": "bircan-migration-backend-10-10-final",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "bcryptjs": "latest",
+    "cors": "latest",
+    "express": "latest",
+    "jsonwebtoken": "latest",
+    "mammoth": "latest",
+    "multer": "latest",
+    "nodemailer": "latest",
+    "pdfkit": "latest",
+    "pg": "latest",
+    "stripe": "latest"
+  }
+}
