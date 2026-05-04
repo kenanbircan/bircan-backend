@@ -1,0 +1,4 @@
+const Stripe=require('stripe'); const stripe=process.env.STRIPE_SECRET_KEY?new Stripe(process.env.STRIPE_SECRET_KEY):null;
+const prices={instant:30000,recommended:25000,value:15000,citizenship:4900};
+async function createCheckout({submissionId,plan='recommended',email,type}){ if(!stripe) return {checkoutUrl:null,skipped:true,reason:'Stripe not configured'}; const session=await stripe.checkout.sessions.create({mode:'payment',customer_email:email,line_items:[{price_data:{currency:'aud',unit_amount:prices[plan]||25000,product_data:{name:`Bircan ${type} assessment - ${plan}`}},quantity:1}],success_url:`${process.env.APP_BASE_URL}/account-dashboard.html?paid=1&submissionId=${submissionId}`,cancel_url:`${process.env.APP_BASE_URL}/account-dashboard.html?cancelled=1&submissionId=${submissionId}`,metadata:{submissionId,plan,type}}); return {checkoutUrl:session.url,sessionId:session.id}; }
+module.exports={createCheckout};
