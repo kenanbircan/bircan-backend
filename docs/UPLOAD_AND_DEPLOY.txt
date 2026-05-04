@@ -1,0 +1,63 @@
+BIRCAN FINAL UNIFIED BACKEND — UPLOAD AND DEPLOY
+
+Upload this whole package to your backend repo root, replacing or merging with your existing backend.
+
+1. Put these files/folders at the same level as server.js:
+   server.js
+   package.json
+   engines/
+   services/
+   lib/
+   middleware/
+   public/admin/admin.html
+   public/client/account-dashboard.html
+   data/knowledgebase/
+
+2. Render settings:
+   Build command: npm install
+   Start command: node server.js
+
+3. Required environment variables:
+   ADMIN_TOKEN
+   OPENAI_API_KEY
+   OPENAI_MODEL_ANALYSIS
+   OPENAI_MODEL_HELPER
+   APP_BASE_URL
+   PUBLIC_SITE_URL=https://bircanmigration.com.au
+
+4. Optional production variables:
+   STRIPE_SECRET_KEY
+   STRIPE_WEBHOOK_SECRET
+   SMTP_HOST
+   SMTP_PORT
+   SMTP_USER
+   SMTP_PASS
+   MAIL_FROM
+   ADMIN_EMAIL
+
+5. Admin dashboard:
+   /admin/admin.html
+   Enter ADMIN_TOKEN in the token field and click Refresh.
+
+6. Client dashboard:
+   /account-dashboard.html?submissionId=YOUR_ID
+
+7. Main endpoints:
+   GET  /health
+   GET  /api/catalog
+   POST /api/assessments/start
+   POST /api/assessments/:id/run
+   GET  /api/assessments/:id/status
+   GET  /api/assessments/:id/download
+   GET  /api/admin/submissions
+   POST /api/admin/knowledgebase
+   POST /api/citizenship-test/submit
+
+8. Knowledgebase:
+   Upload subclass-specific policy text files through the admin dashboard.
+   Name files with subclass numbers, for example:
+   SUBCLASS 866.txt
+   SUBCLASS 309.txt
+   SUBCLASS 482.txt
+
+This package is designed around Bircan Migration & Education branding and public website direction: professional migration advice, clear written assessment, client dashboard delivery, and admin review control.
