@@ -198,7 +198,7 @@ function collectEvidence(advice, adviceBundle) {
   const findings = advice.criterion_findings || adviceBundle.criterionFindings || adviceBundle.findings || [];
   for (const finding of ensureArray(findings)) values.push(finding.missingEvidence, finding.evidence, finding.recommendation);
   return uniqueClean(values)
-    .filter(x => !/do not treat this as final advice|request and verify supporting documents/i.test(x))
+    .filter(x => !/do not treat this as final advice|request and verify supporting documents|obtain evidence or address the criterion|retain verified evidence on file|conduct detailed legal review and prepare submissions if proceeding|lodgement is not recommended/i.test(x))
     .slice(0, 80);
 }
 
@@ -320,11 +320,11 @@ function createDoc(info) {
   });
 }
 
-function drawFooter(doc) {
-  doc.save();
-  doc.font('Helvetica').fontSize(7.8).fillColor(BRAND.muted)
-    .text('Bircan Migration & Education | Preliminary Migration Assessment Report | MARN: 1463685', PAGE.L, 797, { width: PAGE.WIDTH, align: 'center', lineBreak: false });
-  doc.restore();
+function drawFooter(_doc) {
+  // Intentionally no-op.
+  // Rendering footer text during addPage() was causing PDFKit to create
+  // header-only separator pages before each real content page. The stable
+  // production layout avoids live footer drawing entirely.
 }
 
 function addPage(doc, headerTitle = 'Preliminary Migration Assessment Report') {
@@ -333,13 +333,15 @@ function addPage(doc, headerTitle = 'Preliminary Migration Assessment Report') {
   doc.moveTo(PAGE.L, 55).lineTo(PAGE.R, 55).strokeColor(BRAND.line).lineWidth(1).stroke();
   doc.font('Helvetica-Bold').fontSize(9.2).fillColor(BRAND.navy).text('Bircan Migration', PAGE.L, 24, { width: 150, lineBreak: false });
   doc.font('Helvetica').fontSize(8.2).fillColor(BRAND.muted).text(headerTitle, 280, 24, { width: 265, align: 'right', lineBreak: false });
-  drawFooter(doc);
   doc.x = PAGE.L;
   doc.y = PAGE.TOP;
 }
 
 function ensureSpace(doc, height) {
-  if (doc.y + height > PAGE.BOTTOM) addPage(doc);
+  const needed = Math.max(0, Number(height) || 0);
+  // Do not create separator pages from tiny height-estimation drift.
+  // Only add a new page when the next block genuinely needs material space.
+  if (needed > 24 && doc.y + needed > PAGE.BOTTOM) addPage(doc);
 }
 
 function writeTitle(doc, text, opts = {}) {
@@ -595,7 +597,16 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       writeTitle(doc, 'Senior migration agent assessment');
       writePara(doc, 'The assessment below consolidates the key legal and evidentiary themes rather than simply repeating each visa criterion. The purpose is to identify what would need to be verified before a professional lodgement strategy could be recommended.');
 
-      const important = findings.length ? findings.slice(0, 10).map(buildMatterFinding) : [];
+      const seenCriteria = new Set();
+      const important = [];
+      for (const rawFinding of findings) {
+        const built = buildMatterFinding(rawFinding);
+        const key = built.criterion.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        if (!key || seenCriteria.has(key)) continue;
+        seenCriteria.add(key);
+        important.push(built);
+        if (important.length >= 8) break;
+      }
       for (const item of important) {
         writeSubheading(doc, item.criterion);
         writeKeyValue(doc, 'Current position', item.position);
