@@ -352,7 +352,7 @@ function writeTitle(doc, text, opts = {}) {
   doc.font('Helvetica-Bold').fontSize(size).fillColor(BRAND.navy).text(t, PAGE.L, doc.y, { width: PAGE.WIDTH, lineGap: 2 });
   doc.moveDown(0.25);
   doc.moveTo(PAGE.L, doc.y).lineTo(PAGE.R, doc.y).strokeColor(opts.gold ? BRAND.gold : BRAND.line).lineWidth(opts.gold ? 1.3 : 1).stroke();
-  doc.moveDown(0.5);
+  doc.moveDown(0.95);
   doc.x = PAGE.L;
 }
 
@@ -361,7 +361,7 @@ function writeSubheading(doc, text) {
   const h = doc.font('Helvetica-Bold').fontSize(10.5).heightOfString(t, { width: PAGE.WIDTH }) + 8;
   ensureSpace(doc, h);
   doc.font('Helvetica-Bold').fontSize(10.5).fillColor(BRAND.navy).text(t, PAGE.L, doc.y, { width: PAGE.WIDTH });
-  doc.moveDown(0.2);
+  doc.moveDown(0.6);
   doc.x = PAGE.L;
 }
 
@@ -372,7 +372,7 @@ function writePara(doc, text, opts = {}) {
     const h = doc.font('Helvetica').fontSize(size).heightOfString(para, { width: PAGE.WIDTH, lineGap: 3 }) + 8;
     ensureSpace(doc, h);
     doc.font('Helvetica').fontSize(size).fillColor(BRAND.text).text(para, PAGE.L, doc.y, { width: PAGE.WIDTH, align: 'left', lineGap: 3 });
-    doc.moveDown(opts.after ?? 0.45);
+    doc.moveDown(opts.after ?? 0.75);
     doc.x = PAGE.L;
   }
 }
@@ -438,7 +438,7 @@ function writePathwayBlock(doc, pathway, position, strength, verification) {
   doc.font('Helvetica-Bold').fontSize(10.6).fillColor(BRAND.navy).text(cleanText(pathway), PAGE.L, doc.y, { width: PAGE.WIDTH });
   doc.moveDown(0.15);
   doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.text).text(body, PAGE.L + 12, doc.y, { width: 465, lineGap: 2 });
-  doc.moveDown(0.45);
+  doc.moveDown(0.8);
   doc.x = PAGE.L;
 }
 
@@ -574,16 +574,16 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       for (const row of buildPathwayRows(stream)) writePathwayBlock(doc, ...row);
 
       writeTitle(doc, 'Stream analysis');
-      writePara(doc, buildStreamNarrative(stream));
+      writePara(doc, buildStreamNarrative(stream), { after: 1.05 });
 
       writeTitle(doc, 'Sponsoring employer position');
-      writePara(doc, 'Based on the information presently available, the sponsoring employer position requires professional review against the business structure, operational activity, payroll capacity, commercial need for the role and availability of the nominated position. This is not an adverse finding. It simply means that the employer evidence should be organised so that the nomination can be assessed in a coherent and commercially credible way.');
+      writePara(doc, 'Based on the information presently available, the sponsoring employer position requires professional review against the business structure, operational activity, payroll capacity, commercial need for the role and availability of the nominated position. This is not an adverse finding. It simply means that the employer evidence should be organised so that the nomination can be assessed in a coherent and commercially credible way.', { after: 1.05 });
 
       writeTitle(doc, 'Occupation and ANZSCO alignment');
-      writePara(doc, 'The nominated role should be assessed against the proposed occupation classification, including actual duties, reporting hierarchy, seniority level, technical responsibilities, qualifications and employment history. Where a role contains mixed duties or broader operational responsibilities, the supporting evidence should explain why the nominated occupation remains the best fit for the position and for the applicant’s background.');
+      writePara(doc, 'The nominated role should be assessed against the proposed occupation classification, including actual duties, reporting hierarchy, seniority level, technical responsibilities, qualifications and employment history. Where a role contains mixed duties or broader operational responsibilities, the supporting evidence should explain why the nominated occupation remains the best fit for the position and for the applicant’s background.', { after: 1.05 });
 
       writeTitle(doc, 'Employment and timeline position');
-      writePara(doc, 'The employment chronology should be reconciled against visa history, payroll records, taxation records, superannuation records, employment references and any leave or stand-down periods. In employer-sponsored matters, inconsistencies between claimed employment periods and payroll or visa records may attract closer scrutiny and should be resolved before lodgement strategy is finalised.');
+      writePara(doc, 'The employment chronology should be reconciled against visa history, payroll records, taxation records, superannuation records, employment references and any leave or stand-down periods. In employer-sponsored matters, inconsistencies between claimed employment periods and payroll or visa records may attract closer scrutiny and should be resolved before lodgement strategy is finalised.', { after: 1.05 });
 
       const verification = uniqueClean([
         issue,
