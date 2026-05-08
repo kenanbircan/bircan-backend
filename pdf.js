@@ -129,33 +129,47 @@ function normaliseNextSteps(items, advice) {
 
 function writeHeading(doc, text) {
   if (doc.y > 690 && !doc._ending) doc.addPage();
+  doc.x = 50;
   doc.moveDown(0.8);
-  doc.fontSize(13).fillColor('#061936').font('Helvetica-Bold').text(cleanText(text));
+  doc.fontSize(13).fillColor('#061936').font('Helvetica-Bold').text(cleanText(text), 50, doc.y, { width: 495 });
+  doc.x = 50;
   doc.moveDown(0.25);
   doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor('#d8e2f0').stroke();
   doc.moveDown(0.45);
+  doc.x = 50;
   doc.font('Helvetica').fillColor('#1f2937');
 }
+
 
 function writeParagraph(doc, text) {
   const paras = cleanText(text || '').split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
   for (const p of paras.length ? paras : ['—']) {
     if (doc.y > 735 && !doc._ending) doc.addPage();
-    doc.fontSize(10.2).fillColor('#1f2937').font('Helvetica').text(p, { align: 'justify', lineGap: 3 });
+    doc.x = 50;
+    doc.fontSize(10.2).fillColor('#1f2937').font('Helvetica').text(p, 50, doc.y, { width: 495, align: 'justify', lineGap: 3 });
+    doc.x = 50;
     doc.moveDown(0.45);
   }
 }
 
+
 function writeBullet(doc, text) {
   if (doc.y > 735 && !doc._ending) doc.addPage();
-  doc.fontSize(10).fillColor('#1f2937').font('Helvetica').text(`• ${cleanText(text)}`, { indent: 14, lineGap: 2 });
+  const y = doc.y;
+  doc.fontSize(10).fillColor('#1f2937').font('Helvetica').text('•', 50, y, { width: 10, lineBreak: false });
+  doc.text(cleanText(text), 64, y, { width: 460, lineGap: 2 });
+  doc.x = 50;
 }
+
 
 function writePair(doc, label, value) {
   if (doc.y > 735 && !doc._ending) doc.addPage();
-  doc.fontSize(9).fillColor('#475467').font('Helvetica-Bold').text(label, { continued: true });
-  doc.fillColor('#101828').font('Helvetica').text(` ${cleanText(value)}`);
+  const y = doc.y;
+  doc.fontSize(9).fillColor('#475467').font('Helvetica-Bold').text(label, 50, y, { width: 120, lineBreak: false });
+  doc.fillColor('#101828').font('Helvetica').text(cleanText(value), 175, y, { width: 370 });
+  doc.x = 50;
 }
+
 
 function drawHeader(doc, title) {
   doc.rect(0, 0, 595.28, 84).fill('#061936');
@@ -381,7 +395,7 @@ function collectEvidence(advice, adviceBundle) {
   const sections = Array.isArray(advice.sections) ? advice.sections : [];
   for (const section of sections) values.push(section.evidence, section.evidenceRequired, section.bullets);
   const findings = advice.criterion_findings || adviceBundle.criterionFindings || adviceBundle.findings || [];
-  for (const finding of ensureArray(findings)) values.push(finding.missingEvidence, finding.evidence);
+  for (const finding of ensureArray(findings)) values.push(finding.missingEvidence, finding.evidence, finding.recommendation);
   return uniqueClean(values).slice(0, 80);
 }
 
@@ -486,38 +500,27 @@ function makeCriterionNarrative(item) {
 }
 
 function addPageFooter(doc) {
-  // PERMANENT FOOTER FIX:
-  // PDFKit's text() can trigger addPage() if footer text wraps near the bottom
-  // margin. This renderer is intentionally page-safe: it temporarily disables
-  // automatic page creation while drawing short, non-wrapping footer text.
+  // Footer renderer must never create pages. It uses short fixed strings, fixed
+  // coordinates and no wrapping, so PDFKit cannot auto-flow footer text into
+  // blank trailing pages.
   const range = doc.bufferedPageRange();
-  const originalAddPage = doc.addPage.bind(doc);
-  const originalY = doc.y;
-
-  try {
-    doc.addPage = function noFooterAutoPage() { return this; };
-
-    for (let i = range.start; i < range.start + range.count; i++) {
-      doc.switchToPage(i);
-      doc.save();
-
-      const footerY = 752;
-      doc.rect(0, footerY, 595.28, 30).fill(BRAND.navy);
-      doc.font('Helvetica').fontSize(6.6).fillColor('#ffffff')
-        .text('Bircan Migration & Education | Preliminary Migration Assessment Report | MARN: 1463685',
-          50, footerY + 10, { width: 360, lineBreak: false, ellipsis: true });
-      doc.font('Helvetica-Bold').fontSize(6.6).fillColor('#ffffff')
-        .text(`Page ${i - range.start + 1}`, 500, footerY + 10, { width: 45, align: 'right', lineBreak: false });
-
-      doc.restore();
-    }
-  } finally {
-    doc.addPage = originalAddPage;
-    const lastPageIndex = range.start + range.count - 1;
-    if (lastPageIndex >= range.start) doc.switchToPage(lastPageIndex);
-    doc.y = originalY;
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    const pageNo = i + 1;
+    doc.save();
+    const footerY = 768;
+    doc.rect(0, footerY, 595.28, 34).fill(BRAND.navy);
+    doc.fillColor('#ffffff').font('Helvetica').fontSize(7.2)
+      .text('Bircan Migration & Education | Preliminary Migration Assessment Report', 50, footerY + 11, { width: 320, lineBreak: false });
+    doc.font('Helvetica').fontSize(7.2)
+      .text('MARN: 1463685', 378, footerY + 11, { width: 84, align: 'right', lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(7.2)
+      .text(`Page ${pageNo}`, 500, footerY + 11, { width: 45, align: 'right', lineBreak: false });
+    doc.restore();
   }
+  doc.x = 50;
 }
+
 
 function ensurePremiumPage(doc, minY = 720) {
   if (doc.y > minY) doc.addPage();
@@ -566,41 +569,63 @@ function drawPremiumPageHeader(doc, title) {
   doc.font('Helvetica-Bold').fontSize(10).fillColor(BRAND.navy).text('Bircan Migration', 50, 24, { width: 160 });
   doc.font('Helvetica').fontSize(8.5).fillColor(BRAND.muted).text(cleanText(title), 315, 24, { width: 230, align: 'right' });
   doc.y = 82;
+  doc.x = 50;
 }
 
 function premiumHeading(doc, text, opts = {}) {
   ensurePremiumPage(doc, opts.minY || 705);
+  doc.x = 50;
   doc.moveDown(opts.before || 0.4);
-  doc.font('Helvetica-Bold').fontSize(opts.size || 15).fillColor(BRAND.navy).text(cleanText(text), { lineGap: 2 });
+  const y = doc.y;
+  doc.font('Helvetica-Bold').fontSize(opts.size || 15).fillColor(BRAND.navy)
+    .text(cleanText(text), 50, y, { width: 495, lineGap: 2 });
+  doc.x = 50;
   doc.moveDown(0.25);
   doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor(opts.gold ? BRAND.gold : BRAND.line).lineWidth(opts.gold ? 1.4 : 1).stroke();
   doc.moveDown(0.55);
+  doc.x = 50;
 }
+
 
 function premiumSubheading(doc, text) {
   ensurePremiumPage(doc, 725);
-  doc.font('Helvetica-Bold').fontSize(10.6).fillColor(BRAND.navy).text(cleanText(text));
+  doc.x = 50;
+  doc.font('Helvetica-Bold').fontSize(10.6).fillColor(BRAND.navy)
+    .text(cleanText(text), 50, doc.y, { width: 495 });
+  doc.x = 50;
   doc.moveDown(0.22);
 }
 
+
 function premiumParagraph(doc, text, options = {}) {
   const paras = cleanText(premiumPhrase(text || '')).split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
+  const width = options.width || 495;
   for (const p of paras.length ? paras : ['—']) {
     ensurePremiumPage(doc, 735);
-    doc.font('Helvetica').fontSize(options.size || 10.1).fillColor(BRAND.text).text(p, {
-      align: options.align || 'justify',
-      lineGap: options.lineGap === undefined ? 3 : options.lineGap,
-      width: options.width || 495
-    });
+    doc.x = 50;
+    doc.font('Helvetica').fontSize(options.size || 10.1).fillColor(BRAND.text)
+      .text(p, 50, doc.y, {
+        width,
+        align: options.align || 'left',
+        lineGap: options.lineGap === undefined ? 3 : options.lineGap
+      });
+    doc.x = 50;
     doc.moveDown(options.after === undefined ? 0.45 : options.after);
   }
 }
 
+
 function premiumBullet(doc, text) {
   ensurePremiumPage(doc, 733);
-  doc.font('Helvetica').fontSize(9.8).fillColor(BRAND.text).text('•', { continued: true });
-  doc.text(' ' + cleanText(premiumPhrase(text)), { indent: 12, lineGap: 2 });
+  const y = doc.y;
+  const body = cleanText(premiumPhrase(text));
+  doc.font('Helvetica').fontSize(9.8).fillColor(BRAND.text)
+    .text('•', 50, y, { width: 10, lineBreak: false });
+  doc.text(body, 64, y, { width: 460, lineGap: 2, align: 'left' });
+  doc.x = 50;
+  doc.moveDown(0.15);
 }
+
 
 function statusPill(doc, x, y, text, tone = 'review', width = 150) {
   const fill = tone === 'positive' ? '#eaf7f1' : tone === 'threshold' ? '#fff4e5' : BRAND.paleBlue;
@@ -625,6 +650,7 @@ function premiumInfoGrid(doc, rows) {
     yy += rowH;
   }
   doc.y = y + rows.length * rowH + 24;
+  doc.x = 50;
 }
 
 function premiumTable(doc, headers, rows, widths) {
@@ -669,6 +695,7 @@ function premiumTable(doc, headers, rows, widths) {
     y += rowH;
   });
   doc.y = y + 14;
+  doc.x = 50;
 }
 
 function buildPremiumExecutive(assessment, adviceBundle, advice, stream) {
@@ -774,14 +801,10 @@ function buildVerificationAreas(advice, adviceBundle, findings) {
 }
 
 function buildEvidenceRows(evidenceItems) {
-  const blockedEvidenceText = /request and verify|do not treat|final advice until verified|obtain evidence or address|retain verified evidence|review supporting evidence/i;
-  const cleanedEvidenceItems = uniqueClean(evidenceItems).filter(item => !blockedEvidenceText.test(item));
-  const grouped = groupEvidence(cleanedEvidenceItems);
+  const grouped = groupEvidence(evidenceItems);
   const rows = [];
   for (const [group, items] of grouped) {
-    const visibleItems = items.filter(item => !blockedEvidenceText.test(item)).slice(0, 4);
-    if (!visibleItems.length) continue;
-    rows.push([group, visibleItems.join('; '), priorityFromText(`${group} ${visibleItems.join(' ')}`)]);
+    rows.push([group, items.filter(item => !/Request and verify supporting documents before lodgement/i.test(item)).slice(0, 4).join('; '), priorityFromText(`${group} ${items.join(' ')}`)]);
   }
   if (!rows.length) {
     rows.push(['Sponsor / Nomination', 'Nomination approval, sponsor details and position documentation', 'High']);
@@ -929,13 +952,13 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       premiumTable(doc, ['Review area', 'Possible assessment focus', 'Preparation response'], buildDelegatePreparationRows(findings, verificationAreas), [115, 210, 170]);
 
       premiumHeading(doc, 'Alternative pathway observations');
-      // Do not print raw comparator narrative. It may contain backend labels or
-      // overly negative wording. The professionally controlled matrix above is
-      // the source of truth for pathway positioning.
       premiumParagraph(doc, 'Depending on the final evidence position, employer-sponsored and skilled migration alternatives may warrant further professional review. Any alternative pathway should be assessed only after the nomination structure, occupation position, employment history, stream requirements and applicant criteria have been verified.');
-      premiumBullet(doc, '186 stream positioning should be confirmed after the nomination and stream-specific evidence is reviewed.');
-      premiumBullet(doc, 'Temporary employer-sponsored alternatives may remain relevant depending on sponsor, occupation and visa history.');
-      premiumBullet(doc, 'Regional or skilled pathways should be considered only after occupation, points and location factors are separately assessed.');
+      [
+        '186 stream positioning should be confirmed after the nomination and stream-specific evidence is reviewed.',
+        'Temporary employer-sponsored alternatives may remain relevant depending on sponsor, occupation and visa history.',
+        'Regional pathways should only be assessed if location, employer and occupation requirements can be supported.',
+        'No alternative pathway should be treated as confirmed until original documents and current legal settings are reviewed.'
+      ].forEach(step => premiumBullet(doc, step));
 
       premiumHeading(doc, 'Recommended professional next steps');
       const nextSteps = normaliseNextSteps(advice.client_next_steps || adviceBundle.recommendedNextSteps || adviceBundle.nextSteps || verificationAreas, advice);
