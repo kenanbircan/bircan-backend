@@ -381,7 +381,7 @@ function collectEvidence(advice, adviceBundle) {
   const sections = Array.isArray(advice.sections) ? advice.sections : [];
   for (const section of sections) values.push(section.evidence, section.evidenceRequired, section.bullets);
   const findings = advice.criterion_findings || adviceBundle.criterionFindings || adviceBundle.findings || [];
-  for (const finding of ensureArray(findings)) values.push(finding.missingEvidence, finding.evidence, finding.recommendation);
+  for (const finding of ensureArray(findings)) values.push(finding.missingEvidence, finding.evidence);
   return uniqueClean(values).slice(0, 80);
 }
 
@@ -486,23 +486,36 @@ function makeCriterionNarrative(item) {
 }
 
 function addPageFooter(doc) {
-  // Footer renderer must never create pages. Keep all footer drawing within the
-  // printable page area to avoid PDFKit auto-generating blank trailing pages.
+  // PERMANENT FOOTER FIX:
+  // PDFKit's text() can trigger addPage() if footer text wraps near the bottom
+  // margin. This renderer is intentionally page-safe: it temporarily disables
+  // automatic page creation while drawing short, non-wrapping footer text.
   const range = doc.bufferedPageRange();
-  for (let i = range.start; i < range.start + range.count; i++) {
-    doc.switchToPage(i);
-    const pageNo = i + 1;
-    doc.save();
+  const originalAddPage = doc.addPage.bind(doc);
+  const originalY = doc.y;
 
-    const footerY = 768;
-    doc.rect(0, footerY, 595.28, 34).fill(BRAND.navy);
-    doc.fillColor('#ffffff').font('Helvetica').fontSize(7.2)
-      .text('Bircan Migration & Education | Preliminary Migration Assessment Report | Prepared for professional migration review purposes only | MARN: 1463685',
-        50, footerY + 11, { width: 405, lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(7.2)
-      .text(`Page ${pageNo}`, 500, footerY + 11, { width: 45, align: 'right', lineBreak: false });
+  try {
+    doc.addPage = function noFooterAutoPage() { return this; };
 
-    doc.restore();
+    for (let i = range.start; i < range.start + range.count; i++) {
+      doc.switchToPage(i);
+      doc.save();
+
+      const footerY = 752;
+      doc.rect(0, footerY, 595.28, 30).fill(BRAND.navy);
+      doc.font('Helvetica').fontSize(6.6).fillColor('#ffffff')
+        .text('Bircan Migration & Education | Preliminary Migration Assessment Report | MARN: 1463685',
+          50, footerY + 10, { width: 360, lineBreak: false, ellipsis: true });
+      doc.font('Helvetica-Bold').fontSize(6.6).fillColor('#ffffff')
+        .text(`Page ${i - range.start + 1}`, 500, footerY + 10, { width: 45, align: 'right', lineBreak: false });
+
+      doc.restore();
+    }
+  } finally {
+    doc.addPage = originalAddPage;
+    const lastPageIndex = range.start + range.count - 1;
+    if (lastPageIndex >= range.start) doc.switchToPage(lastPageIndex);
+    doc.y = originalY;
   }
 }
 
@@ -761,10 +774,14 @@ function buildVerificationAreas(advice, adviceBundle, findings) {
 }
 
 function buildEvidenceRows(evidenceItems) {
-  const grouped = groupEvidence(evidenceItems);
+  const blockedEvidenceText = /request and verify|do not treat|final advice until verified|obtain evidence or address|retain verified evidence|review supporting evidence/i;
+  const cleanedEvidenceItems = uniqueClean(evidenceItems).filter(item => !blockedEvidenceText.test(item));
+  const grouped = groupEvidence(cleanedEvidenceItems);
   const rows = [];
   for (const [group, items] of grouped) {
-    rows.push([group, items.slice(0, 4).join('; '), priorityFromText(`${group} ${items.join(' ')}`)]);
+    const visibleItems = items.filter(item => !blockedEvidenceText.test(item)).slice(0, 4);
+    if (!visibleItems.length) continue;
+    rows.push([group, visibleItems.join('; '), priorityFromText(`${group} ${visibleItems.join(' ')}`)]);
   }
   if (!rows.length) {
     rows.push(['Sponsor / Nomination', 'Nomination approval, sponsor details and position documentation', 'High']);
@@ -912,13 +929,13 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       premiumTable(doc, ['Review area', 'Possible assessment focus', 'Preparation response'], buildDelegatePreparationRows(findings, verificationAreas), [115, 210, 170]);
 
       premiumHeading(doc, 'Alternative pathway observations');
-      const comparison = adviceBundle.pathwayComparison;
-      if (comparison && (comparison.pdfSection || comparison.narrative)) {
-        premiumParagraph(doc, comparison.pdfSection?.body || comparison.narrative || 'Alternative pathway information is available for professional review.');
-        for (const b of uniqueClean(comparison.pdfSection?.bullets || comparison.bullets || [])) premiumBullet(doc, b);
-      } else {
-        premiumParagraph(doc, 'Depending on the final evidence position, employer-sponsored and skilled migration alternatives may warrant further professional review. Any alternative pathway should be assessed only after the nomination structure, occupation position, employment history and applicant criteria have been verified.');
-      }
+      // Do not print raw comparator narrative. It may contain backend labels or
+      // overly negative wording. The professionally controlled matrix above is
+      // the source of truth for pathway positioning.
+      premiumParagraph(doc, 'Depending on the final evidence position, employer-sponsored and skilled migration alternatives may warrant further professional review. Any alternative pathway should be assessed only after the nomination structure, occupation position, employment history, stream requirements and applicant criteria have been verified.');
+      premiumBullet(doc, '186 stream positioning should be confirmed after the nomination and stream-specific evidence is reviewed.');
+      premiumBullet(doc, 'Temporary employer-sponsored alternatives may remain relevant depending on sponsor, occupation and visa history.');
+      premiumBullet(doc, 'Regional or skilled pathways should be considered only after occupation, points and location factors are separately assessed.');
 
       premiumHeading(doc, 'Recommended professional next steps');
       const nextSteps = normaliseNextSteps(advice.client_next_steps || adviceBundle.recommendedNextSteps || adviceBundle.nextSteps || verificationAreas, advice);
