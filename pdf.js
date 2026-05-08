@@ -839,22 +839,31 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       const advice = getAdvice(adviceBundle);
       if (!advice) return reject(new Error('Advice-grade PDF generation requires adviceBundle.advice.'));
 
+      const PAGE = { width: 595.28, height: 841.89, left: 54, right: 54, top: 72, bottom: 72 };
+      PAGE.contentWidth = PAGE.width - PAGE.left - PAGE.right;
+      PAGE.footerY = 802;
+      PAGE.safeBottom = 760;
+
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
       const subclass = advice.subclass || assessment.visa_type || pickFirst(facts, ['subclass', 'visaSubclass', 'visa_type'], '186');
       const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const title = `Subclass ${subclass} Employer Nomination Scheme preliminary assessment`;
-      const applicantName = pickFirst(facts, ['name', 'applicantName', 'applicant_name', 'fullName', 'full_name'], assessment.applicant_name || '—');
-      const applicantEmail = pickFirst(facts, ['email', 'applicantEmail', 'applicant_email'], assessment.applicant_email || assessment.client_email || '—');
+      const applicantName = cleanText(pickFirst(facts, [
+        'applicantName', 'applicant_name', 'applicant-name', 'fullName', 'full_name', 'full-name',
+        'primaryApplicantName', 'primary_applicant_name', 'clientName', 'client_name', 'name'
+      ], assessment.applicant_name || ''), 'Not provided');
+      const applicantEmail = cleanText(pickFirst(facts, ['email', 'email-address', 'applicantEmail', 'applicant_email', 'applicant-email'], assessment.applicant_email || assessment.client_email || '—'));
       const findings = (advice.criterion_findings || adviceBundle.criterionFindings || adviceBundle.findings || []).map(normaliseCriterionFinding);
-      const evidenceItems = collectEvidence(advice, adviceBundle);
+      const evidenceItems = collectEvidence(advice, adviceBundle).filter(item => !/request and verify supporting documents/i.test(item));
       const finalPosition = getFinalPosition(adviceBundle, advice);
       const currentPosition = displayPosition(advice.lodgement_position || adviceBundle.lodgementPosition || finalPosition.lodgementPosition || 'Further review required');
       const primaryIssue = premiumPhrase(finalPosition.primaryReason || adviceBundle.primaryReason || advice.primaryReason || 'Evidence verification and professional review');
+      const verificationAreas = buildVerificationAreas(advice || {}, adviceBundle || {}, findings).filter(item => !/request and verify supporting documents/i.test(item));
 
       const doc = new PDFDocument({
         size: 'A4',
-        margin: 50,
+        margin: 0,
         bufferPages: true,
         info: {
           Title: `Bircan Migration - ${title}`,
@@ -868,121 +877,243 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       doc.on('error', reject);
       doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-      drawPremiumCover(doc, {
-        title,
-        reference: assessment.id || '—',
-        applicantName,
-        clientEmail: assessment.client_email || applicantEmail,
-        subclass,
-        stream,
-        generatedAt
-      });
+      function resetCursor(y) {
+        doc.x = PAGE.left;
+        if (typeof y === 'number') doc.y = y;
+      }
 
-      doc.addPage();
-      drawPremiumPageHeader(doc, title);
+      function addContentPage() {
+        doc.addPage({ margin: 0 });
+        drawPageHeader();
+        resetCursor(PAGE.top);
+      }
 
-      premiumHeading(doc, 'Executive overview', { gold: true, size: 17 });
-      premiumParagraph(doc, buildPremiumExecutive(assessment || {}, adviceBundle || {}, advice || {}, stream), { size: 10.5 });
+      function ensureSpace(height = 60) {
+        if (doc.y + height > PAGE.safeBottom) addContentPage();
+        resetCursor();
+      }
 
-      premiumInfoGrid(doc, [
-        ['Current information position', currentPosition],
-        ['Primary professional review focus', primaryIssue],
-        ['Selected stream indicator', stream],
-        ['Assessment type', 'Preliminary migration assessment — subject to verification'],
-        ['Professional boundary', 'No lodgement action should occur until original documents and current legal settings are reviewed']
-      ]);
+      function para(text, opts = {}) {
+        const size = opts.size || 10;
+        const font = opts.bold ? 'Helvetica-Bold' : 'Helvetica';
+        const color = opts.color || BRAND.text;
+        const width = opts.width || PAGE.contentWidth;
+        const x = opts.x || PAGE.left;
+        const gap = opts.gap === undefined ? 3 : opts.gap;
+        const after = opts.after === undefined ? 8 : opts.after;
+        const parts = cleanText(premiumPhrase(text || ''), '').split(/\n{2,}/).map(v => v.trim()).filter(Boolean);
+        for (const part of parts.length ? parts : ['—']) {
+          doc.font(font).fontSize(size).fillColor(color);
+          const h = doc.heightOfString(part, { width, lineGap: gap, align: 'left' });
+          ensureSpace(h + after + 4);
+          doc.text(part, x, doc.y, { width, lineGap: gap, align: 'left' });
+          resetCursor(doc.y + after);
+        }
+      }
 
-      premiumHeading(doc, 'Matter snapshot');
-      premiumTable(doc, ['Item', 'Current information'], [
-        ['Reference', assessment.id || '—'],
-        ['Applicant', applicantName],
-        ['Applicant email', applicantEmail],
-        ['Client account email', assessment.client_email || '—'],
-        ['Subclass', subclass],
-        ['Stream', stream],
-        ['Generated', generatedAt]
-      ], [150, 345]);
+      function heading(text, opts = {}) {
+        ensureSpace(40);
+        resetCursor();
+        doc.font('Helvetica-Bold').fontSize(opts.size || 15).fillColor(BRAND.navy)
+          .text(cleanText(text), PAGE.left, doc.y, { width: PAGE.contentWidth, align: 'left' });
+        resetCursor(doc.y + 6);
+        doc.moveTo(PAGE.left, doc.y).lineTo(PAGE.left + PAGE.contentWidth, doc.y).strokeColor(opts.gold ? BRAND.gold : BRAND.line).lineWidth(opts.gold ? 1.4 : 1).stroke();
+        resetCursor(doc.y + 12);
+      }
 
-      premiumHeading(doc, 'Pathway positioning matrix');
-      premiumParagraph(doc, 'The following matrix is a professional positioning tool only. It does not replace final legal advice and should be read together with the evidence verification areas identified below.', { size: 9.8 });
-      premiumTable(doc, ['Pathway', 'Current position', 'Potential strength', 'Verification area'], buildPathwayRows(adviceBundle || {}, stream), [92, 138, 132, 133]);
+      function labelValue(label, value) {
+        ensureSpace(24);
+        const y = doc.y;
+        doc.font('Helvetica-Bold').fontSize(8.2).fillColor(BRAND.muted)
+          .text(String(label).toUpperCase(), PAGE.left, y, { width: 170, align: 'left' });
+        doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.ink)
+          .text(cleanText(value), PAGE.left + 185, y, { width: PAGE.contentWidth - 185, align: 'left' });
+        resetCursor(Math.max(doc.y, y + 17));
+      }
 
-      premiumHeading(doc, 'Stream analysis');
-      premiumParagraph(doc, buildStreamNarrative(stream));
+      function bullet(text) {
+        const clean = cleanText(premiumPhrase(text), '');
+        if (!clean) return;
+        doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.text);
+        const width = PAGE.contentWidth - 18;
+        const h = doc.heightOfString(clean, { width, lineGap: 2 });
+        ensureSpace(h + 12);
+        const y = doc.y;
+        doc.font('Helvetica-Bold').text('•', PAGE.left, y, { width: 10, align: 'left' });
+        doc.font('Helvetica').text(clean, PAGE.left + 18, y, { width, lineGap: 2, align: 'left' });
+        resetCursor(doc.y + 5);
+      }
 
-      premiumHeading(doc, 'Employer position review');
-      premiumParagraph(doc, 'The employer and nomination position should be reviewed by reference to the sponsoring business structure, operational activity, payroll capacity, role necessity and the availability of the nominated position. The current information should be verified against business records, organisational material and nomination documents before any lodgement strategy is finalised.');
+      function card(titleText, bodyText, opts = {}) {
+        const body = cleanText(premiumPhrase(bodyText), '—');
+        const titleH = 18;
+        doc.font('Helvetica').fontSize(opts.size || 9.4);
+        const bodyH = doc.heightOfString(body, { width: PAGE.contentWidth - 28, lineGap: 2, align: 'left' });
+        const h = Math.max(52, titleH + bodyH + 26);
+        ensureSpace(h + 8);
+        const y = doc.y;
+        doc.roundedRect(PAGE.left, y, PAGE.contentWidth, h, 10).fillAndStroke(opts.fill || '#fbfdff', BRAND.line);
+        doc.font('Helvetica-Bold').fontSize(10.2).fillColor(BRAND.navy)
+          .text(cleanText(titleText), PAGE.left + 14, y + 12, { width: PAGE.contentWidth - 28, align: 'left' });
+        doc.font('Helvetica').fontSize(opts.size || 9.4).fillColor(BRAND.text)
+          .text(body, PAGE.left + 14, y + 34, { width: PAGE.contentWidth - 28, lineGap: 2, align: 'left' });
+        resetCursor(y + h + 10);
+      }
 
-      premiumHeading(doc, 'Occupation and ANZSCO alignment review');
-      premiumParagraph(doc, 'The nominated role should be assessed against the occupation classification, actual day-to-day duties, seniority, reporting structure, qualifications and work experience. Where the role is specialised or mixed, the evidence should clearly explain why the selected occupation is the best fit for the position and the applicant’s background.');
+      function drawPageHeader() {
+        doc.rect(0, 0, PAGE.width, 52).fill('#ffffff');
+        doc.moveTo(PAGE.left, 52).lineTo(PAGE.width - PAGE.right, 52).strokeColor(BRAND.line).lineWidth(1).stroke();
+        doc.font('Helvetica-Bold').fontSize(9.5).fillColor(BRAND.navy)
+          .text('Bircan Migration', PAGE.left, 23, { width: 150, align: 'left' });
+        doc.font('Helvetica').fontSize(8).fillColor(BRAND.muted)
+          .text('Preliminary Migration Assessment Report', 310, 23, { width: 230, align: 'right' });
+        resetCursor(PAGE.top);
+      }
 
-      premiumHeading(doc, 'Employment and timeline intelligence');
-      premiumTable(doc, ['Timeline area', 'Current position'], buildTimelineRows(facts, assessment || {}, adviceBundle || {}), [180, 315]);
+      function drawCover() {
+        doc.rect(0, 0, PAGE.width, PAGE.height).fill('#ffffff');
+        doc.rect(0, 0, PAGE.width, 250).fill(BRAND.navy);
+        doc.rect(0, 250, PAGE.width, 9).fill(BRAND.gold);
+        doc.circle(520, 86, 98).fillOpacity(0.12).fill(BRAND.blue).fillOpacity(1);
+        doc.circle(470, 170, 48).fillOpacity(0.12).fill(BRAND.gold).fillOpacity(1);
+        doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(28).text('Bircan Migration', PAGE.left, 56, { width: 430, align: 'left' });
+        doc.font('Helvetica').fontSize(11).fillColor('#dce7f8').text('Migration & Education | Professional Migration Assessment', PAGE.left, 92, { width: 430, align: 'left' });
+        doc.moveTo(PAGE.left, 126).lineTo(PAGE.left + 185, 126).strokeColor(BRAND.gold).lineWidth(1.5).stroke();
+        doc.font('Helvetica-Bold').fontSize(31).fillColor('#ffffff').text('Preliminary Migration\nAssessment Report', PAGE.left, 142, { width: 420, lineGap: 5, align: 'left' });
+        doc.font('Helvetica').fontSize(12).fillColor('#dce7f8').text(title, PAGE.left, 220, { width: 450, align: 'left' });
 
-      const verificationAreas = buildVerificationAreas(advice || {}, adviceBundle || {}, findings);
-      premiumHeading(doc, 'Verification priority areas');
-      premiumParagraph(doc, 'These areas should be clarified before final advice is issued or any lodgement strategy is confirmed. They are expressed as professional verification priorities rather than client-facing risk conclusions.');
-      verificationAreas.forEach(area => premiumBullet(doc, area));
+        const y = 315;
+        doc.roundedRect(PAGE.left, y, PAGE.contentWidth, 278, 18).fillAndStroke(BRAND.soft, '#d8e2f0');
+        doc.fillColor(BRAND.navy).font('Helvetica-Bold').fontSize(15).text('Matter details', PAGE.left + 24, y + 26, { width: PAGE.contentWidth - 48, align: 'left' });
+        const rows = [
+          ['Reference', assessment.id || '—'],
+          ["Applicant's name", applicantName],
+          ['Applicant email', applicantEmail],
+          ['Client email', assessment.client_email || applicantEmail],
+          ['Subclass', subclass],
+          ['Stream', stream],
+          ['Generated', generatedAt]
+        ];
+        let yy = y + 62;
+        for (const [label, value] of rows) {
+          doc.font('Helvetica-Bold').fontSize(8.6).fillColor(BRAND.muted).text(String(label).toUpperCase(), PAGE.left + 24, yy, { width: 140, align: 'left' });
+          doc.font('Helvetica').fontSize(10.2).fillColor(BRAND.ink).text(cleanText(value), PAGE.left + 180, yy, { width: PAGE.contentWidth - 210, align: 'left' });
+          yy += 28;
+        }
+        doc.roundedRect(PAGE.left, 625, PAGE.contentWidth, 92, 16).fillAndStroke('#fffaf0', '#f0d99b');
+        doc.font('Helvetica-Bold').fontSize(11).fillColor(BRAND.navy).text('Confidential preliminary advice', PAGE.left + 24, 645, { width: PAGE.contentWidth - 48, align: 'left' });
+        doc.font('Helvetica').fontSize(9.2).fillColor(BRAND.text).text('This report is prepared for preliminary migration assessment purposes only. It is based on the information provided through the assessment system and remains subject to verification of original documents, conflict checks, current law and professional review before any lodgement action.', PAGE.left + 24, 666, { width: PAGE.contentWidth - 48, lineGap: 2, align: 'left' });
+      }
 
-      premiumHeading(doc, 'Criterion-by-criterion professional analysis');
+      function addFooters() {
+        const range = doc.bufferedPageRange();
+        for (let i = range.start; i < range.start + range.count; i++) {
+          doc.switchToPage(i);
+          doc.save();
+          doc.rect(0, PAGE.footerY, PAGE.width, 26).fill(BRAND.navy);
+          doc.font('Helvetica').fontSize(7).fillColor('#ffffff')
+            .text('Bircan Migration & Education | Preliminary Migration Assessment Report | MARN: 1463685', PAGE.left, PAGE.footerY + 9, { width: 360, lineBreak: false, align: 'left' });
+          doc.font('Helvetica-Bold').fontSize(7).fillColor('#ffffff')
+            .text(`Page ${i + 1}`, PAGE.width - PAGE.right - 60, PAGE.footerY + 9, { width: 60, lineBreak: false, align: 'right' });
+          doc.restore();
+        }
+        doc.switchToPage(range.start + range.count - 1);
+        resetCursor();
+      }
+
+      drawCover();
+      addContentPage();
+
+      heading('Executive overview', { gold: true, size: 17 });
+      para(buildPremiumExecutive(assessment || {}, adviceBundle || {}, advice || {}, stream), { size: 10.3 });
+
+      heading('Current information position');
+      labelValue('Current information position', currentPosition);
+      labelValue('Primary professional review focus', primaryIssue);
+      labelValue('Selected stream indicator', stream);
+      labelValue('Assessment type', 'Preliminary migration assessment — subject to verification');
+      labelValue('Professional boundary', 'No lodgement action should occur until original documents and current legal settings are reviewed');
+
+      heading('Matter snapshot');
+      labelValue('Reference', assessment.id || '—');
+      labelValue("Applicant's name", applicantName);
+      labelValue('Applicant email', applicantEmail);
+      labelValue('Client account email', assessment.client_email || '—');
+      labelValue('Subclass', subclass);
+      labelValue('Stream', stream);
+      labelValue('Generated', generatedAt);
+
+      heading('Pathway positioning matrix');
+      para('The following positioning summary is a professional planning tool only. It does not replace final legal advice and should be read together with the evidence verification areas identified below.', { size: 9.6 });
+      for (const row of buildPathwayRows(adviceBundle || {}, stream)) {
+        card(row[0], `Current position: ${row[1]}\nPotential strength: ${row[2]}\nVerification area: ${row[3]}`);
+      }
+
+      heading('Stream analysis');
+      para(buildStreamNarrative(stream));
+
+      heading('Employer position review');
+      para('The employer and nomination position should be reviewed by reference to the sponsoring business structure, operational activity, payroll capacity, role necessity and the availability of the nominated position. The current information should be verified against business records, organisational material and nomination documents before any lodgement strategy is finalised.');
+
+      heading('Occupation and ANZSCO alignment review');
+      para('The nominated role should be assessed against the occupation classification, actual day-to-day duties, seniority, reporting structure, qualifications and work experience. Where the role is specialised or mixed, the evidence should clearly explain why the selected occupation is the best fit for the position and the applicant’s background.');
+
+      heading('Employment and timeline intelligence');
+      for (const [label, value] of buildTimelineRows(facts, assessment || {}, adviceBundle || {})) labelValue(label, value);
+
+      heading('Verification priority areas');
+      para('These areas should be clarified before final advice is issued or any lodgement strategy is confirmed. They are expressed as professional verification priorities rather than client-facing risk conclusions.', { size: 9.6 });
+      verificationAreas.slice(0, 10).forEach(area => bullet(area));
+
+      heading('Criterion-by-criterion professional analysis');
       if (findings.length) {
         for (const raw of findings) {
           const item = makeCriterionNarrative(raw);
-          ensurePremiumPage(doc, 650);
-          const y = doc.y;
-          doc.roundedRect(50, y, 495, 34, 12).fillAndStroke(BRAND.soft, BRAND.line);
-          doc.font('Helvetica-Bold').fontSize(10.6).fillColor(BRAND.navy).text(item.criterion, 66, y + 11, { width: 265, lineBreak: false });
-          statusPill(doc, 360, y + 7, item.position, criterionTone(raw), 168);
-          doc.y = y + 45;
-          premiumParagraph(doc, item.body, { size: 9.9 });
-          premiumSubheading(doc, 'Professional consequence');
-          premiumParagraph(doc, item.consequence, { size: 9.5, after: 0.2 });
-          premiumSubheading(doc, 'Recommended evidence response');
-          premiumParagraph(doc, item.recommendation, { size: 9.5 });
+          heading(item.criterion, { size: 12 });
+          labelValue('Current position', item.position);
+          para(item.body, { size: 9.6 });
+          labelValue('Professional consequence', item.consequence);
+          labelValue('Recommended evidence response', item.recommendation);
         }
       } else {
-        premiumParagraph(doc, 'No criterion-specific findings were supplied in the advice bundle. The matter should be reviewed against Schedule 1 validity, common Subclass 186 criteria, the selected stream criteria and applicable public interest or special return criteria.');
+        para('No criterion-specific findings were supplied in the advice bundle. The matter should be reviewed against Schedule 1 validity, common Subclass 186 criteria, the selected stream criteria and applicable public interest or special return criteria.');
       }
 
-      premiumHeading(doc, 'Evidence intelligence matrix');
-      premiumTable(doc, ['Evidence category', 'Documents or information to verify', 'Priority'], buildEvidenceRows(evidenceItems), [135, 285, 75]);
+      heading('Evidence intelligence matrix');
+      for (const row of buildEvidenceRows(evidenceItems).slice(0, 8)) {
+        card(row[0], `Documents or information to verify: ${row[1]}\nPriority: ${row[2]}`);
+      }
 
-      premiumHeading(doc, 'Delegate concern preparation layer');
-      premiumParagraph(doc, 'The following preparation points are designed to assist professional review of issues that commonly require careful evidence support in employer-sponsored matters. They are not allegations or findings against the applicant or sponsor.');
-      premiumTable(doc, ['Review area', 'Possible assessment focus', 'Preparation response'], buildDelegatePreparationRows(findings, verificationAreas), [115, 210, 170]);
+      heading('Delegate concern preparation layer');
+      para('The following preparation points are designed to assist professional review of issues that commonly require careful evidence support in employer-sponsored matters. They are not allegations or findings against the applicant or sponsor.', { size: 9.6 });
+      for (const row of buildDelegatePreparationRows(findings, verificationAreas)) {
+        card(row[0], `Possible assessment focus: ${row[1]}\nPreparation response: ${row[2]}`);
+      }
 
-      premiumHeading(doc, 'Alternative pathway observations');
-      premiumParagraph(doc, 'Depending on the final evidence position, employer-sponsored and skilled migration alternatives may warrant further professional review. Any alternative pathway should be assessed only after the nomination structure, occupation position, employment history, stream requirements and applicant criteria have been verified.');
-      [
-        '186 stream positioning should be confirmed after the nomination and stream-specific evidence is reviewed.',
-        'Temporary employer-sponsored alternatives may remain relevant depending on sponsor, occupation and visa history.',
-        'Regional pathways should only be assessed if location, employer and occupation requirements can be supported.',
-        'No alternative pathway should be treated as confirmed until original documents and current legal settings are reviewed.'
-      ].forEach(step => premiumBullet(doc, step));
+      heading('Alternative pathway observations');
+      para('Depending on the final evidence position, employer-sponsored and skilled migration alternatives may warrant further professional review. Any alternative pathway should be assessed only after the nomination structure, occupation position, employment history, stream requirements and applicant criteria have been verified.');
+      bullet('186 stream positioning should be confirmed after the nomination and stream-specific evidence is reviewed.');
+      bullet('Temporary employer-sponsored alternatives may remain relevant depending on sponsor, occupation and visa history.');
+      bullet('Regional or skilled pathways should be considered only after occupation, points and location factors are separately assessed.');
 
-      premiumHeading(doc, 'Recommended professional next steps');
+      heading('Recommended professional next steps');
       const nextSteps = normaliseNextSteps(advice.client_next_steps || adviceBundle.recommendedNextSteps || adviceBundle.nextSteps || verificationAreas, advice);
-      nextSteps.forEach(step => premiumBullet(doc, step));
+      nextSteps.forEach(step => bullet(step));
 
-      premiumHeading(doc, 'Final professional position', { gold: true });
-      premiumParagraph(doc, `Based on the currently available information, the matter appears capable of progressing to further detailed professional review subject to verification of supporting documentation, clarification of the identified evidence areas and confirmation of the applicable legislative and policy settings at the relevant time.
+      heading('Final professional position', { gold: true });
+      para(`Based on the currently available information, the matter appears capable of progressing to further detailed professional review subject to verification of supporting documentation, clarification of the identified evidence areas and confirmation of the applicable legislative and policy settings at the relevant time.
 
 This report should be treated as a preliminary professional migration assessment prepared for evidence planning, strategic review and migration-agent consideration before any lodgement strategy is finalised.`);
 
-      premiumHeading(doc, 'Important notice');
-      premiumParagraph(doc, advice.disclaimer || 'This preliminary advice is based only on questionnaire answers, available evidence metadata and system-generated assessment material. Final advice requires review of original documents, conflict checks, confirmation of current law and policy, and professional assessment by a registered migration agent before any lodgement action.');
+      heading('Important notice');
+      para(advice.disclaimer || 'This preliminary advice is based only on questionnaire answers, available evidence metadata and system-generated assessment material. Final advice requires review of original documents, conflict checks, confirmation of current law and policy, and professional assessment by a registered migration agent before any lodgement action.');
 
-      doc.moveDown(0.8);
-      doc.fontSize(10).fillColor(BRAND.ink).font('Helvetica').text('Yours faithfully,');
-      doc.moveDown(0.6);
-      doc.font('Helvetica-Bold').text('Kenan Bircan JP');
-      doc.font('Helvetica').text('Registered Migration Agent | MARN: 1463685');
-      doc.text('Bircan Migration & Education');
-      doc.moveDown(0.8);
-      doc.fontSize(8).fillColor(BRAND.muted).text('This document is preliminary migration advice and is subject to professional review, verification of original documents and confirmation of current law and policy.', { align: 'center' });
+      para('Yours faithfully,', { size: 10, after: 5 });
+      para('Kenan Bircan JP\nRegistered Migration Agent | MARN: 1463685\nBircan Migration & Education', { bold: true, size: 10, after: 8 });
+      para('This document is preliminary migration advice and is subject to professional review, verification of original documents and confirmation of current law and policy.', { size: 8.2, color: BRAND.muted });
 
       doc._ending = true;
-      addPageFooter(doc);
+      addFooters();
       doc.end();
     } catch (err) {
       reject(err);
