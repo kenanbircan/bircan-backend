@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const PDFDocument = require('pdfkit');
 
 function sha256(buffer) {
@@ -305,6 +307,45 @@ function buildMatterFinding(item) {
   return { criterion, position: pos, body, evidence };
 }
 
+
+function resolveLogoPath() {
+  const candidates = [
+    process.env.BIRCAN_LOGO_PATH,
+    path.join(__dirname, 'assets', 'branding', 'Bircan-Migration-Logo-PNG.png'),
+    path.join(__dirname, 'Bircan-Migration-Logo-PNG.png'),
+    path.join(__dirname, 'assets', 'branding', 'bircan-logo.png'),
+    path.join(__dirname, 'assets', 'branding', 'logo.png'),
+    path.join(__dirname, 'public', 'assets', 'branding', 'Bircan-Migration-Logo-PNG.png'),
+    path.join(__dirname, 'public', 'assets', 'branding', 'logo.png'),
+    path.join(process.cwd(), 'assets', 'branding', 'Bircan-Migration-Logo-PNG.png'),
+    path.join(process.cwd(), 'public', 'assets', 'branding', 'Bircan-Migration-Logo-PNG.png')
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch (_err) {
+      // Ignore unreadable paths and continue to text fallback.
+    }
+  }
+  return null;
+}
+
+function drawCoverLogo(doc) {
+  const logoPath = resolveLogoPath();
+  if (!logoPath) return false;
+  try {
+    doc.save();
+    doc.roundedRect(PAGE.L, 35, 154, 72, 14).fill('#ffffff');
+    doc.image(logoPath, PAGE.L + 13, 44, { width: 128, height: 52, fit: [128, 52], align: 'center', valign: 'center' });
+    doc.restore();
+    return true;
+  } catch (_err) {
+    try { doc.restore(); } catch (__err) {}
+    return false;
+  }
+}
+
 const BRAND = {
   navy: '#061936', blue: '#1f5eff', gold: '#d6a845', ink: '#101828', text: '#1f2937', muted: '#667085', line: '#d8e2f0', soft: '#f4f7fb'
 };
@@ -347,12 +388,14 @@ function ensureSpace(doc, height) {
 function writeTitle(doc, text, opts = {}) {
   const size = opts.size || 15;
   const t = cleanText(text);
-  const h = doc.font('Helvetica-Bold').fontSize(size).heightOfString(t, { width: PAGE.WIDTH, lineGap: 2 }) + 15;
+  const topSpace = doc.y > PAGE.TOP + 4 ? 10 : 0;
+  const h = doc.font('Helvetica-Bold').fontSize(size).heightOfString(t, { width: PAGE.WIDTH, lineGap: 2 }) + 30 + topSpace;
   ensureSpace(doc, h);
+  if (topSpace) doc.moveDown(0.45);
   doc.font('Helvetica-Bold').fontSize(size).fillColor(BRAND.navy).text(t, PAGE.L, doc.y, { width: PAGE.WIDTH, lineGap: 2 });
   doc.moveDown(0.25);
   doc.moveTo(PAGE.L, doc.y).lineTo(PAGE.R, doc.y).strokeColor(opts.gold ? BRAND.gold : BRAND.line).lineWidth(opts.gold ? 1.3 : 1).stroke();
-  doc.moveDown(0.95);
+  doc.moveDown(1.1);
   doc.x = PAGE.L;
 }
 
@@ -361,7 +404,7 @@ function writeSubheading(doc, text) {
   const h = doc.font('Helvetica-Bold').fontSize(10.5).heightOfString(t, { width: PAGE.WIDTH }) + 8;
   ensureSpace(doc, h);
   doc.font('Helvetica-Bold').fontSize(10.5).fillColor(BRAND.navy).text(t, PAGE.L, doc.y, { width: PAGE.WIDTH });
-  doc.moveDown(0.6);
+  doc.moveDown(0.75);
   doc.x = PAGE.L;
 }
 
@@ -369,10 +412,10 @@ function writePara(doc, text, opts = {}) {
   const content = cleanText(text || '').split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
   const size = opts.size || 10.1;
   for (const para of content.length ? content : ['—']) {
-    const h = doc.font('Helvetica').fontSize(size).heightOfString(para, { width: PAGE.WIDTH, lineGap: 3 }) + 8;
+    const h = doc.font('Helvetica').fontSize(size).heightOfString(para, { width: PAGE.WIDTH, lineGap: 4.2 }) + 10;
     ensureSpace(doc, h);
-    doc.font('Helvetica').fontSize(size).fillColor(BRAND.text).text(para, PAGE.L, doc.y, { width: PAGE.WIDTH, align: 'left', lineGap: 3 });
-    doc.moveDown(opts.after ?? 0.75);
+    doc.font('Helvetica').fontSize(size).fillColor(BRAND.text).text(para, PAGE.L, doc.y, { width: PAGE.WIDTH, align: 'left', lineGap: 4.2 });
+    doc.moveDown(opts.after ?? 0.7);
     doc.x = PAGE.L;
   }
 }
@@ -384,7 +427,7 @@ function writeBullet(doc, text) {
   const y = doc.y;
   doc.font('Helvetica-Bold').fontSize(9.7).fillColor(BRAND.navy).text('•', PAGE.L, y, { width: 12, lineBreak: false });
   doc.font('Helvetica').fontSize(9.7).fillColor(BRAND.text).text(t, PAGE.L + 16, y, { width: 465, lineGap: 2 });
-  doc.moveDown(0.22);
+  doc.moveDown(0.38);
   doc.x = PAGE.L;
 }
 
@@ -450,8 +493,13 @@ function drawCover(doc, meta) {
   doc.circle(520, 80, 95).fillOpacity(0.12).fill(BRAND.blue).fillOpacity(1);
   doc.circle(470, 170, 48).fillOpacity(0.12).fill(BRAND.gold).fillOpacity(1);
 
-  doc.font('Helvetica-Bold').fontSize(28).fillColor('#ffffff').text('Bircan Migration', PAGE.L, 56, { width: 360 });
-  doc.font('Helvetica').fontSize(11).fillColor('#dce7f8').text('Migration & Education | Professional Migration Assessment', PAGE.L, 92, { width: 420 });
+  const logoDrawn = drawCoverLogo(doc);
+  if (!logoDrawn) {
+    doc.font('Helvetica-Bold').fontSize(28).fillColor('#ffffff').text('Bircan Migration', PAGE.L, 56, { width: 360 });
+    doc.font('Helvetica').fontSize(11).fillColor('#dce7f8').text('Migration & Education | Professional Migration Assessment', PAGE.L, 92, { width: 420 });
+  } else {
+    doc.font('Helvetica').fontSize(11).fillColor('#dce7f8').text('Migration & Education | Professional Migration Assessment', PAGE.L + 172, 64, { width: 310 });
+  }
   doc.moveTo(PAGE.L, 126).lineTo(236, 126).strokeColor(BRAND.gold).lineWidth(1.5).stroke();
   doc.font('Helvetica-Bold').fontSize(31).fillColor('#ffffff').text('Preliminary Migration\nAssessment Report', PAGE.L, 142, { width: 430, lineGap: 5 });
   doc.font('Helvetica').fontSize(12).fillColor('#dce7f8').text(meta.title, PAGE.L, 220, { width: 450 });
