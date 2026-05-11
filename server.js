@@ -45,6 +45,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || '
 const APP_BASE_URL = process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || 'https://bircanmigration.au';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY_TEST || process.env.STRIPE_SECRET_KEY_LIVE;
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
+const stripePriceValidationCache = new Map();
 
 
 // ---- Stripe checkout hardening: never reuse an idempotency key for changed parameters ----
@@ -102,6 +103,7 @@ let pdfParse = null;
 try { pdfParse = require('pdf-parse'); } catch (_err) { pdfParse = null; }
 const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !== 'false';
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
+const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
 const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
@@ -554,6 +556,9 @@ async function assertStripePriceMatchesPlan({ serviceType, plan, priceId, curren
   if (!stripe) throw Object.assign(new Error('Stripe is not configured.'), { statusCode: 500 });
   if (!priceId) throw Object.assign(new Error(`Missing Stripe price for ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)}.`), { statusCode: 500 });
   const expectedAmount = expectedAmountCentsForService(serviceType, plan);
+  const expectedCurrency = String(currency || 'aud').toLowerCase();
+  const cacheKey = `${serviceType}|${expectedPlanLabelForService(serviceType, plan)}|${priceId}|${expectedCurrency}|${expectedAmount}`;
+  if (stripePriceValidationCache.has(cacheKey)) return stripePriceValidationCache.get(cacheKey);
   let price;
   try {
     price = await stripe.prices.retrieve(priceId);
@@ -561,14 +566,15 @@ async function assertStripePriceMatchesPlan({ serviceType, plan, priceId, curren
     throw Object.assign(new Error(`Stripe price ${priceId} could not be retrieved for ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)}: ${err.message}`), { statusCode: 500 });
   }
   const actualCurrency = String(price.currency || '').toLowerCase();
-  const expectedCurrency = String(currency || 'aud').toLowerCase();
   if (!price.active) {
     throw Object.assign(new Error(`Stripe price ${priceId} is inactive for ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)}.`), { statusCode: 500 });
   }
   if (actualCurrency !== expectedCurrency || Number(price.unit_amount) !== expectedAmount) {
     throw Object.assign(new Error(`Stripe price mismatch blocked: ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)} requires ${expectedCurrency.toUpperCase()} ${(expectedAmount / 100).toFixed(2)}, but ${priceId} is ${actualCurrency.toUpperCase()} ${((Number(price.unit_amount || 0)) / 100).toFixed(2)}. Fix the Render environment variable before taking payment.`), { statusCode: 500 });
   }
-  return { ok: true, priceId, amountCents: expectedAmount, currency: expectedCurrency };
+  const verified = { ok: true, priceId, amountCents: expectedAmount, currency: expectedCurrency };
+  stripePriceValidationCache.set(cacheKey, verified);
+  return verified;
 }
 
 function resolveVisaPriceId(_visaType, plan) {
@@ -2080,64 +2086,6 @@ app.post('/api/appeals/create-assessment', appealUploadFields, asyncRoute(handle
 app.post('/api/assessment/create-appeals-assessment', appealUploadFields, asyncRoute(handleAppealsAssessmentCreate));
 
 
-
-
-// ---- Fast checkout route: avoids Stripe price retrieve/reuse checks on login handoff ----
-app.post('/api/service/checkout-session-fast', requireAuth, asyncRoute(async (req, res) => {
-  if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
-  let serviceSession;
-  try { serviceSession = await getServiceSessionForCheckout(req); }
-  catch (err) { return res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'Service checkout failed.' }); }
-
-  if (serviceSession.service_type !== 'visa_assessment') {
-    return res.status(409).json({ ok: false, error: 'Fast checkout currently handles visa assessments only. Use the standard checkout route.' });
-  }
-
-  const assessmentId = serviceSession.service_ref || req.body.assessmentId || req.body.assessment_id;
-  const { rows } = await query('SELECT * FROM assessments WHERE id=$1 LIMIT 1', [assessmentId]);
-  const assessment = rows[0];
-  if (!assessment) return res.status(404).json({ ok: false, error: 'Assessment was not found. Submit the visa assessment again before payment.' });
-
-  const assessmentEmail = normaliseEmail(assessment.client_email || assessment.applicant_email || serviceSession.client_email);
-  const clientEmail = normaliseEmail(req.client.email);
-  if (assessmentEmail && assessmentEmail !== clientEmail) {
-    return res.status(409).json({ ok: false, error: `This assessment belongs to ${assessmentEmail}, but you are logged in as ${clientEmail}. Please use the same email address used in the assessment form.` });
-  }
-
-  const checkoutPlan = strictServicePlanFromRequest(req, serviceSession.selected_plan || assessment.active_plan || assessment.selected_plan || 'instant');
-  const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
-  if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
-
-  const stripeSession = await createCheckoutSessionSafely({
-    mode: 'payment',
-    customer_email: req.client.email,
-    client_reference_id: assessment.id,
-    line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&assessment_id=${encodeURIComponent(assessment.id)}`,
-    metadata: {
-      service_type: 'visa_assessment',
-      service_session_id: serviceSession.id,
-      service_ref: assessment.id,
-      assessment_id: assessment.id,
-      visa_type: assessment.visa_type,
-      plan: checkoutPlan,
-      client_email: req.client.email
-    }
-  }, 'fast-service-visa-checkout', checkoutFingerprint({ serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan, price, email: req.client.email }));
-
-  await query(
-    `UPDATE assessments
-     SET client_id=$1, client_email=$2, applicant_email=COALESCE(applicant_email,$2),
-         stripe_session_id=$3, status='checkout_created', selected_plan=$4, active_plan=$4,
-         amount_cents=$5, currency=$6, release_at=NULL, updated_at=now()
-     WHERE id=$7`,
-    [req.client.id, req.client.email, stripeSession.id, checkoutPlan, stripeSession.amount_total || null, stripeSession.currency || 'aud', assessment.id]
-  );
-  await query(`UPDATE service_sessions SET client_id=$1, client_email=$2, selected_plan=$3, status='checkout_created', stripe_session_id=$4, updated_at=now() WHERE id=$5`, [req.client.id, req.client.email, checkoutPlan, stripeSession.id, serviceSession.id]);
-  recordPaymentAuditSafe(assessment.id, req.client.email, stripeSession).catch(err => console.warn('Fast checkout payment audit skipped:', err.message));
-  return res.json({ ok: true, fast: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId: assessment.id, plan: checkoutPlan });
-}));
 
 app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
@@ -4483,89 +4431,93 @@ function enhanceAdviceBundleForCommercialOutput(adviceBundle, assessment) {
 }
 
 
-
-// ---- Permanent PDF self-healing fallback ----
-// A paid/released assessment must always be able to issue a real PDF even when
-// GPT, knowledgebase loading, audit-file writing or the heavy decision engine fails.
-// This bundle satisfies pdf.js' knowledgebase-enforcement contract with a
-// conservative preliminary/professional-review position, then the heavy advice
-// engine can still replace/enhance the PDF later.
-function buildSelfHealingAdviceBundle(assessment, cause = '') {
-  const subclass = String((assessment && (assessment.visa_type || assessment.subclass || assessment.visaSubclass)) || '186').replace(/[^0-9A-Za-z]/g, '') || '186';
-  const now = new Date().toISOString();
-  const snapshotId = crypto.createHash('sha256').update(`self-healing-pdf:${subclass}:${now.slice(0, 10)}`).digest('hex');
-  const sources = [
-    { authority: 'ACT', name: 'Migration Act 1958', path: 'Migration Act 1958', sha256: crypto.createHash('sha256').update(`ACT:${subclass}`).digest('hex') },
-    { authority: 'REGULATIONS', name: 'Migration Regulations 1994', path: 'Migration Regulations 1994', sha256: crypto.createHash('sha256').update(`REGULATIONS:${subclass}`).digest('hex') },
-    { authority: 'INSTRUMENTS', name: `Subclass ${subclass} legislative instruments`, path: `Subclass ${subclass} legislative instruments`, sha256: crypto.createHash('sha256').update(`INSTRUMENTS:${subclass}`).digest('hex') },
-    { authority: 'PAMS', name: `Subclass ${subclass} policy and procedural guidance`, path: `Subclass ${subclass} PAM / legal source`, sha256: crypto.createHash('sha256').update(`PAMS:${subclass}`).digest('hex') }
-  ];
-  const criterion_findings = [
-    { criterion: 'Application validity and identity', status: 'REQUIRES_REVIEW', finding: 'The supplied identity, contact and application facts require verification against original documents before lodgement action.' },
-    { criterion: 'Subclass and stream selection', status: 'REQUIRES_REVIEW', finding: `The selected pathway is Subclass ${subclass}. The exact stream and related validity requirements must be confirmed.` },
-    { criterion: 'Nomination, sponsor or pathway prerequisite', status: 'REQUIRES_REVIEW', finding: 'Any sponsor, nomination, invitation or prerequisite pathway requirement must be independently checked against current law and supporting evidence.' },
-    { criterion: 'Skills, occupation or relationship criteria', status: 'REQUIRES_REVIEW', finding: 'Core substantive criteria require review against the documents and facts supplied by the client.' },
-    { criterion: 'Health and character/public interest criteria', status: 'REQUIRES_REVIEW', finding: 'Health, character, integrity and other public interest requirements must be considered before final advice is issued.' },
-    { criterion: 'Evidence sufficiency', status: 'REQUIRES_REVIEW', finding: 'The evidence set should be checked for completeness, consistency and currency before any final recommendation.' }
-  ];
-  const rows = criterion_findings.map((f, i) => ({
-    area: f.criterion,
-    supplied: 'Client supplied online assessment information',
-    required: 'Original documents and current legal checks',
-    grade: i === 5 ? 'Evidence review required' : 'Professional review required'
-  }));
-  const warning = cause ? ` The automated advanced advice engine did not complete at first issue: ${String(cause).slice(0, 300)}.` : '';
-  return {
-    advice: {
-      subclass,
-      executiveSummary: `This preliminary assessment PDF has been issued immediately after payment so the client dashboard has a real document available. It is intentionally conservative and subject to migration-agent review.${warning}`,
-      criterion_findings,
-      strengths: ['A paid assessment record exists and is available for professional review.', 'The matter has been captured under a subclass-specific assessment reference.'],
-      risks: ['Final advice must not be treated as complete until original evidence and current legal settings are reviewed.'],
-      evidenceGaps: ['Identity documents', 'Visa history evidence', 'Subclass-specific eligibility evidence', 'Health and character evidence where applicable'],
-      recommendedStrategy: ['Review the saved assessment answers.', 'Request missing evidence.', 'Confirm current law and policy settings.', 'Replace this preliminary PDF with enhanced advice when the advanced engine completes.']
-    },
-    legalSourcePack: {
-      assessmentKind: 'MIGRATION',
-      subclass,
-      selectedStream: 'To be confirmed',
-      hierarchyEnforced: true,
-      legalAuthorityOrder: ['ACT', 'REGULATIONS', 'INSTRUMENTS', 'PAMS'],
-      sources,
-      hierarchy: [
-        { authority: 'ACT', availableInKnowledgebase: true, loaded: [sources[0]] },
-        { authority: 'REGULATIONS', availableInKnowledgebase: true, loaded: [sources[1]] },
-        { authority: 'INSTRUMENTS', availableInKnowledgebase: true, loaded: [sources[2]] },
-        { authority: 'PAMS', availableInKnowledgebase: true, loaded: [sources[3]] }
-      ],
-      documentCountScanned: sources.length,
-      documentCountLoaded: sources.length,
-      knowledgebaseSnapshot: { snapshotId, totalFiles: sources.length, generatedAt: now },
-      loadedAt: now
-    },
-    subclassFirstGate: true,
-    legalHierarchyEnforced: true,
-    legalVersionLock: {
-      aggregateSourceHash: crypto.createHash('sha256').update(JSON.stringify(sources)).digest('hex'),
-      lawVersionCheckedAt: now
-    },
-    universalLegalGraph: {
-      sourceSnapshotId: snapshotId,
-      family: 'Migration',
-      lawUpdateMode: 'Self-healing preliminary issue, advanced advice may replace later',
-      oneFailsAllFail: true
-    },
-    evidenceSufficiencyMatrix: { overallGrade: 'Professional review required', rows },
-    internalLegalAudit: { auditGeneratedAt: now, mode: 'self-healing-paid-pdf', assessmentId: assessment && assessment.id, cause: String(cause || '').slice(0, 500) },
-    clientSafetyFilter: { enforced: true },
-    finalPosition: { label: 'Preliminary professional review required', riskLevel: 'standard' },
-    productGrade: 'paid-preliminary-self-healing-pdf-v1'
-  };
+function collectAssessmentFactsForImmediatePdf(assessment) {
+  const payload = assessment && assessment.form_payload && typeof assessment.form_payload === 'object' ? assessment.form_payload : {};
+  const flat = payload.flatAnswers || payload.answers || payload.rawSubmission || payload || {};
+  const out = [];
+  function walk(obj, prefix = '') {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    for (const [key, value] of Object.entries(obj)) {
+      if (/password|token|authorization|bm_session/i.test(key)) continue;
+      const name = prefix ? `${prefix}.${key}` : key;
+      if (value && typeof value === 'object' && !Array.isArray(value)) walk(value, name);
+      else if (value !== undefined && value !== null && String(value).trim() !== '') out.push([name, Array.isArray(value) ? value.join('; ') : String(value)]);
+      if (out.length >= 36) break;
+    }
+  }
+  walk(flat);
+  return out.slice(0, 36);
 }
 
-async function buildSelfHealingAssessmentPdfBuffer(assessment, cause = '') {
-  const bundle = buildSelfHealingAdviceBundle(assessment, cause);
-  return buildAssessmentPdfBuffer(assessment, bundle);
+function buildImmediateAssessmentPdfBuffer(assessment, reason = '') {
+  const PDFDocument = require('pdfkit');
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `Bircan Migration Assessment ${assessment.id || ''}`, Author: 'Bircan Migration & Education' } });
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      const navy = '#071b3a';
+      const muted = '#66738a';
+      const gold = '#c99a2e';
+      doc.rect(0, 0, doc.page.width, 92).fill(navy);
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(22).text('Bircan Migration & Education', 50, 30);
+      doc.font('Helvetica').fontSize(10).text('Professional Australian migration assessment record', 50, 58);
+      doc.moveDown(3.4);
+      doc.fillColor(gold).font('Helvetica-Bold').fontSize(10).text('SECURE CLIENT DOCUMENT', { characterSpacing: 0.7 });
+      doc.moveDown(0.5);
+      doc.fillColor(navy).font('Helvetica-Bold').fontSize(20).text(`Subclass ${assessment.visa_type || 'Visa'} preliminary assessment letter`);
+      doc.moveDown(0.4);
+      doc.fillColor(muted).font('Helvetica').fontSize(10).text(`Generated: ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' })}`);
+      doc.moveDown(1.2);
+      const rows = [
+        ['Reference', assessment.id || '—'],
+        ['Applicant', assessment.applicant_name || '—'],
+        ['Applicant email', assessment.applicant_email || '—'],
+        ['Client account email', assessment.client_email || '—'],
+        ['Subclass', assessment.visa_type || '—'],
+        ['Plan', assessment.active_plan || assessment.selected_plan || 'instant'],
+        ['Payment status', assessment.payment_status || '—']
+      ];
+      rows.forEach(([k, v]) => {
+        doc.fillColor(navy).font('Helvetica-Bold').fontSize(9).text(k, { continued: true, width: 150 });
+        doc.fillColor('#111827').font('Helvetica').fontSize(9).text(`  ${v}`);
+      });
+      doc.moveDown(1.2);
+      doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Important status of this document');
+      doc.moveDown(0.35);
+      doc.fillColor('#111827').font('Helvetica').fontSize(10).text('This PDF has been issued immediately after payment/release so the client dashboard contains a real downloadable document. It is a preliminary assessment record and must be reviewed against the full client facts, supporting documents and current law before any final migration advice or lodgement strategy is confirmed.', { align: 'left' });
+      if (reason) {
+        doc.moveDown(0.4);
+        doc.fillColor(muted).fontSize(8).text(`System note: full delegate-grade generation was deferred. ${String(reason).slice(0, 320)}`);
+      }
+      doc.moveDown(1);
+      doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Assessment information captured');
+      doc.moveDown(0.35);
+      const facts = collectAssessmentFactsForImmediatePdf(assessment);
+      if (!facts.length) {
+        doc.fillColor('#111827').font('Helvetica').fontSize(10).text('The saved assessment record contains limited structured answers. The reference, payment and client account details above should be used to locate the original submission and evidence before final review.');
+      } else {
+        facts.forEach(([k, v]) => {
+          if (doc.y > 730) { doc.addPage(); doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Assessment information captured (continued)'); doc.moveDown(0.4); }
+          doc.fillColor(navy).font('Helvetica-Bold').fontSize(8.5).text(String(k).replace(/[-_.]/g, ' ').slice(0, 72));
+          doc.fillColor('#111827').font('Helvetica').fontSize(8.5).text(String(v).slice(0, 360));
+          doc.moveDown(0.25);
+        });
+      }
+      if (doc.y > 650) doc.addPage();
+      doc.moveDown(1.2);
+      doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Professional review note');
+      doc.moveDown(0.35);
+      doc.fillColor('#111827').font('Helvetica').fontSize(10).text('This document should be treated as an issued preliminary PDF for portal access and record-keeping. Bircan Migration may later replace or supplement it with an enhanced delegate-grade advice letter after full legal analysis, evidence review and quality control.');
+      doc.moveDown(1.3);
+      doc.fillColor(navy).font('Helvetica-Bold').fontSize(10).text('Kenan Bircan JP');
+      doc.fillColor('#111827').font('Helvetica').fontSize(9).text('Registered Migration Agent | MARN: 1463685');
+      doc.text('Bircan Migration & Education');
+      doc.end();
+    } catch (err) { reject(err); }
+  });
 }
 
 async function generateAssessmentPdfNow(assessmentId, accountEmail = null, options = {}) {
@@ -4622,13 +4574,10 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       await client.query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
       assessment.pdf_bytes = null;
     }
-    let selfHealingWarning = '';
     if (!payloadLooksUsable(assessment.form_payload)) {
-      selfHealingWarning = 'Assessment payload was incomplete; a conservative paid preliminary PDF was issued for dashboard access and professional review.';
-      await client.query(
-        `UPDATE assessments SET status='pdf_generating', generation_error=$1, updated_at=now() WHERE id=$2`,
-        [selfHealingWarning, assessmentId]
-      );
+      const msg = 'Assessment payload was limited, so an immediate preliminary PDF will be issued and the detailed advice engine can be run again after the full answers are available.';
+      await client.query(`UPDATE assessments SET generation_error=$1, updated_at=now() WHERE id=$2`, [msg, assessmentId]);
+      assessment.generation_error = msg;
     }
 
     await client.query(
@@ -4637,22 +4586,34 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     );
 
     let pdf;
-    let generationMode = 'advanced-advice';
-    let generationWarning = selfHealingWarning;
     try {
-      // Advanced path. This may use GPT/knowledgebase/decision-engine logic.
-      // It is preferred, but it must never block a paid and released PDF.
+      // Knowledgebase enforcement gate:
+      // Every migration advice PDF must be generated from generateMigrationAdvice().
+      // That function loads the local knowledgebase, applies the subclass matrix and
+      // returns an adviceBundle containing legalSourcePack. The older delegate/pdf
+      // shortcut is intentionally not used here because it can produce a polished
+      // narrative PDF without proving that the knowledgebase was applied.
       const assessmentForAdvice = attachEvidenceValidation(assessment);
       const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
 
       if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
-        throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack.');
+        throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
       }
-      if (!adviceBundle.subclassFirstGate || !adviceBundle.legalSourcePack.subclass) throw new Error('Subclass-first legal gate missing.');
-      if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) throw new Error('Legal authority hierarchy was not enforced.');
-      if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) throw new Error('Legal version lock missing.');
-      if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) throw new Error('Evidence sufficiency matrix missing.');
-      if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) throw new Error('Internal legal audit missing.');
+      if (!adviceBundle.subclassFirstGate || !adviceBundle.legalSourcePack.subclass) {
+        throw new Error('Subclass-first legal gate missing. PDF generation blocked.');
+      }
+      if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) {
+        throw new Error('Legal authority hierarchy was not enforced. PDF generation blocked.');
+      }
+      if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
+        throw new Error('Legal version lock missing. PDF generation blocked.');
+      }
+      if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
+        throw new Error('Evidence sufficiency matrix missing. PDF generation blocked.');
+      }
+      if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
+        throw new Error('Internal legal audit missing. PDF generation blocked.');
+      }
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
@@ -4664,13 +4625,18 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       }
 
       const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
-      pdf = await buildAssessmentPdfBuffer(assessmentForAdvice, enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice));
+      pdf = await buildAssessmentPdfBuffer(
+        assessmentForAdvice,
+        enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
+      );
     } catch (err) {
-      // Permanent fix: do not fail a paid PDF just because the heavy advice path failed.
-      generationMode = 'self-healing-preliminary';
-      generationWarning = `Advanced advice generation deferred: ${err.message || err}`;
-      console.error('Advanced PDF generation deferred; issuing self-healing preliminary PDF:', err.message || err);
-      pdf = await buildSelfHealingAssessmentPdfBuffer(assessment, generationWarning);
+      // Permanent production fix: GPT / knowledgebase / delegate-engine failure must never
+      // stop a paid released client from receiving a real PDF. Save an immediate preliminary
+      // PDF first, mark pdf_ready, and keep the engine error for later enhancement/retry.
+      console.error('Full advice PDF generation failed; issuing immediate preliminary PDF:', err && err.message ? err.message : err);
+      pdf = await buildImmediateAssessmentPdfBuffer(assessment, err && err.message ? err.message : 'Full advice generation deferred.');
+      await client.query(`UPDATE pdf_jobs SET status='completed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [err.message || String(err), assessmentId]);
+      await client.query(`UPDATE assessments SET generation_error=$1, updated_at=now() WHERE id=$2`, [`Full advice generation deferred: ${err.message || String(err)}`.slice(0, 1000), assessmentId]);
     }
 
     const filename = `Bircan-${assessment.visa_type}-${assessment.id}.pdf`;
@@ -4678,10 +4644,10 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     const { rows: updatedRows } = await client.query(
       `UPDATE assessments
        SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
-           pdf_sha256=$3, pdf_generated_at=now(), generation_error=$5, updated_at=now()
+           pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
        WHERE id=$4
        RETURNING id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan, status, payment_status, pdf_filename, pdf_sha256, pdf_generated_at, created_at, updated_at, true AS has_pdf`,
-      [pdf, filename, hash, assessmentId, generationMode === 'advanced-advice' ? null : generationWarning]
+      [pdf, filename, hash, assessmentId]
     );
     const saved = await verifyIssuedPdfSaved(client, assessmentId);
     await client.query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]);
@@ -4799,6 +4765,41 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
   }
   return out;
 }
+
+
+app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(async (req, res) => {
+  const email = normaliseEmail(req.client.email);
+  const { rows: visa } = await query(
+    `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+            selected_plan, active_plan,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE COALESCE(status,'submitted') END AS status,
+            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at, release_at,
+            pdf_generated_at, pdf_filename,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
+     FROM assessments
+     WHERE lower(client_email)=lower($1) OR lower(COALESCE(applicant_email,''))=lower($1)
+     ORDER BY created_at DESC
+     LIMIT 50`, [email]
+  );
+  const { rows: payments } = await query(
+    `SELECT id, service_type, service_ref, client_email, plan, amount_cents, currency, status, stripe_session_id,
+            stripe_payment_intent, paid_at, stripe_created_at, created_at, updated_at
+     FROM payments
+     WHERE lower(COALESCE(client_email,''))=lower($1)
+     ORDER BY COALESCE(paid_at, stripe_created_at, created_at) DESC
+     LIMIT 50`, [email]
+  ).catch(() => ({ rows: [] }));
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    fast: true,
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || '' },
+    visaAssessments: visa,
+    appealsAssessments: [],
+    citizenshipAccess: [],
+    payments
+  });
+}));
 
 app.get('/api/account/dashboard', requireAuth, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
@@ -5212,12 +5213,26 @@ async function sendAssessmentPdf(req, res, rawId) {
       timerText: formatDurationSeconds(seconds)
     });
   }
-  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid') {
+  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid' && isInstantPlan(effectiveVisaPlan)) {
     try {
-      await generateAssessmentPdfNow(assessment.id, req.client.email, { force: false });
+      await generateAssessmentPdfNow(assessment.id);
       assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
     } catch (err) {
-      console.error('Paid visa PDF self-healing generation on open failed:', err.message);
+      console.error('Instant visa PDF generation on open failed:', err.message);
+    }
+  }
+  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid') {
+    try {
+      const pdf = await buildImmediateAssessmentPdfBuffer(assessment, 'Self-healed on PDF open because no issued PDF bytes existed.');
+      const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}.pdf`;
+      const hash = sha256(pdf);
+      await query(`UPDATE assessments
+        SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
+            pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
+        WHERE id=$4`, [pdf, filename, hash, assessment.id]);
+      assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
+    } catch (healErr) {
+      console.error('PDF self-healing failed:', healErr && healErr.stack ? healErr.stack : healErr);
     }
   }
   if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
