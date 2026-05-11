@@ -27,7 +27,7 @@ const Stripe = require('stripe');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
 const { query, tx } = require('./db');
-const { buildAssessmentPdfBuffer, buildProvisionalAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
+const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
@@ -4430,25 +4430,6 @@ function enhanceAdviceBundleForCommercialOutput(adviceBundle, assessment) {
   };
 }
 
-
-async function saveImmediateAssessmentPdf(client, assessment, note = '') {
-  const pdf = await buildProvisionalAssessmentPdfBuffer(assessment);
-  if (!hasIssuedPdfBytes(pdf)) throw new Error('Immediate provisional PDF generation produced empty bytes.');
-  const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}-preliminary.pdf`;
-  const hash = sha256(pdf);
-  const message = note || 'Immediate provisional PDF issued. Delegate-grade enhancement may continue separately.';
-  await client.query(
-    `UPDATE assessments
-     SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
-         pdf_sha256=$3, pdf_generated_at=now(), generation_error=$4, updated_at=now()
-     WHERE id=$5`,
-    [pdf, filename, hash, message, assessment.id]
-  );
-  const saved = await verifyIssuedPdfSaved(client, assessment.id);
-  await client.query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessment.id]);
-  return toPublicAssessment(saved);
-}
-
 async function generateAssessmentPdfNow(assessmentId, accountEmail = null, options = {}) {
   if (!assessmentId) throw new Error('assessmentId is required');
   const requestedId = String(assessmentId || '').trim();
@@ -4503,26 +4484,17 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       await client.query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
       assessment.pdf_bytes = null;
     }
+    if (!payloadLooksUsable(assessment.form_payload)) {
+      const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
+      await client.query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [msg, assessmentId]);
+      await client.query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [msg, assessmentId]);
+      throw new Error(msg);
+    }
 
     await client.query(
       `UPDATE assessments SET status='pdf_generating', generation_attempts=COALESCE(generation_attempts,0)+1, generation_locked_at=now(), generation_error=NULL, updated_at=now() WHERE id=$1`,
       [assessmentId]
     );
-
-    // Permanent dashboard-readiness fix:
-    // Always save a real PDF byte stream first. This prevents paid clients/admins from
-    // waiting on OpenAI, the legal-source graph, pathway comparison, audit-file writes,
-    // or any other heavy enhancement step before the dashboard can open a document.
-    if (!options || options.final !== true) {
-      const note = payloadLooksUsable(assessment.form_payload)
-        ? 'Immediate provisional PDF issued. Delegate-grade enhancement may continue separately.'
-        : 'Immediate provisional PDF issued with limited stored answers. Review the matter payload before relying on final advice.';
-      return await saveImmediateAssessmentPdf(client, assessment, note);
-    }
-
-    if (!payloadLooksUsable(assessment.form_payload)) {
-      return await saveImmediateAssessmentPdf(client, assessment, 'Final enhancement skipped because assessment payload is missing or incomplete.');
-    }
 
     let pdf;
     try {
@@ -4626,7 +4598,7 @@ async function runOnePdfJob() {
   });
   if (!job) return false;
   try {
-    await generateAssessmentPdfNow(job.assessment_id, null, { final: false });
+    await generateAssessmentPdfNow(job.assessment_id);
   } catch (err) {
     const nextAttempts = Number(job.attempts || 0) + 1;
     const retry = nextAttempts < 3;
@@ -4641,12 +4613,6 @@ async function runOnePdfJob() {
 app.post('/api/admin/run-pdf-worker-once', asyncRoute(async (_req, res) => {
   const ran = await runOnePdfJob();
   res.json({ ok: true, ran });
-}));
-
-
-app.post('/api/admin/enhance-assessment-pdf/:id', asyncRoute(async (req, res) => {
-  const result = await generateAssessmentPdfNow(req.params.id, null, { force: true, final: true });
-  res.json({ ok: true, enhanced: true, assessment: result });
 }));
 
 
