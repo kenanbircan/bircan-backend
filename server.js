@@ -12,6 +12,7 @@ const multer = require('multer');
 const { query, tx } = require('./db');
 const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
+const { buildKnowledgebaseLegalPack, assertKnowledgebasePack } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
 const hardening = require('./backendHardening');
@@ -4227,6 +4228,8 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
 
     let pdf;
     try {
+      const legalSourcePack = await buildKnowledgebaseLegalPack(assessment);
+      assertKnowledgebasePack(legalSourcePack);
       const legalEngineInputs = buildLegalEnginePdfInputs(assessment);
       if (legalEngineInputs) {
         const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(
