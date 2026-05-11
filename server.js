@@ -45,6 +45,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || '
 const APP_BASE_URL = process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || 'https://bircanmigration.au';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY_TEST || process.env.STRIPE_SECRET_KEY_LIVE;
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
+const stripePriceValidationCache = new Map();
 
 
 // ---- Stripe checkout hardening: never reuse an idempotency key for changed parameters ----
@@ -102,6 +103,7 @@ let pdfParse = null;
 try { pdfParse = require('pdf-parse'); } catch (_err) { pdfParse = null; }
 const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !== 'false';
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
+const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
 const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
@@ -554,6 +556,9 @@ async function assertStripePriceMatchesPlan({ serviceType, plan, priceId, curren
   if (!stripe) throw Object.assign(new Error('Stripe is not configured.'), { statusCode: 500 });
   if (!priceId) throw Object.assign(new Error(`Missing Stripe price for ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)}.`), { statusCode: 500 });
   const expectedAmount = expectedAmountCentsForService(serviceType, plan);
+  const expectedCurrency = String(currency || 'aud').toLowerCase();
+  const cacheKey = `${serviceType}|${expectedPlanLabelForService(serviceType, plan)}|${priceId}|${expectedCurrency}|${expectedAmount}`;
+  if (stripePriceValidationCache.has(cacheKey)) return stripePriceValidationCache.get(cacheKey);
   let price;
   try {
     price = await stripe.prices.retrieve(priceId);
@@ -561,14 +566,15 @@ async function assertStripePriceMatchesPlan({ serviceType, plan, priceId, curren
     throw Object.assign(new Error(`Stripe price ${priceId} could not be retrieved for ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)}: ${err.message}`), { statusCode: 500 });
   }
   const actualCurrency = String(price.currency || '').toLowerCase();
-  const expectedCurrency = String(currency || 'aud').toLowerCase();
   if (!price.active) {
     throw Object.assign(new Error(`Stripe price ${priceId} is inactive for ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)}.`), { statusCode: 500 });
   }
   if (actualCurrency !== expectedCurrency || Number(price.unit_amount) !== expectedAmount) {
     throw Object.assign(new Error(`Stripe price mismatch blocked: ${serviceType} plan ${expectedPlanLabelForService(serviceType, plan)} requires ${expectedCurrency.toUpperCase()} ${(expectedAmount / 100).toFixed(2)}, but ${priceId} is ${actualCurrency.toUpperCase()} ${((Number(price.unit_amount || 0)) / 100).toFixed(2)}. Fix the Render environment variable before taking payment.`), { statusCode: 500 });
   }
-  return { ok: true, priceId, amountCents: expectedAmount, currency: expectedCurrency };
+  const verified = { ok: true, priceId, amountCents: expectedAmount, currency: expectedCurrency };
+  stripePriceValidationCache.set(cacheKey, verified);
+  return verified;
 }
 
 function resolveVisaPriceId(_visaType, plan) {
@@ -2080,157 +2086,6 @@ app.post('/api/appeals/create-assessment', appealUploadFields, asyncRoute(handle
 app.post('/api/assessment/create-appeals-assessment', appealUploadFields, asyncRoute(handleAppealsAssessmentCreate));
 
 
-
-
-// ---- Fast checkout route: avoids Stripe price retrieve/reuse checks on login handoff ----
-
-
-// ---- Direct visa checkout: one authenticated call creates assessment, handoff and Stripe session ----
-app.post('/api/visa/direct-checkout-session', requireAuth, asyncRoute(async (req, res) => {
-  if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
-
-  const built = buildAssessmentPayload(req.body, req.client);
-  const email = normaliseEmail(req.client && req.client.email);
-  if (!email || !email.includes('@')) return res.status(401).json({ ok: false, error: 'Login required.' });
-  if (!payloadLooksUsable(built)) {
-    return res.status(400).json({ ok: false, code: 'ASSESSMENT_PAYLOAD_MISSING', error: 'Assessment answers were not available for direct checkout. Submit the assessment again.' });
-  }
-
-  const visaType = String(req.body.visaType || req.body.visaSubclass || req.body.subclass || built.meta.visaType || 'visa').replace(/[^0-9A-Za-z]/g, '') || 'visa';
-  const checkoutPlan = planFromAssessmentBody(req.body, built.meta.selectedPlan || req.body.plan || req.body.selectedPlan || 'instant');
-  const price = resolveVisaPriceId(visaType, checkoutPlan);
-  if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
-
-  const id = makeAssessmentId(visaType);
-  const serviceSessionId = makeServiceSessionId('visa_assessment');
-
-  let created;
-  try {
-    created = await tx(async (client) => {
-      const assessmentRows = await client.query(
-        `INSERT INTO assessments (
-           id, client_id, client_email, applicant_email, applicant_name,
-           visa_type, selected_plan, active_plan, status, payment_status,
-           form_payload, pdf_bytes, pdf_generated_at, generation_error
-         ) VALUES ($1,$2,$3,$3,$4,$5,$6,$6,'submitted','unpaid',$7,NULL,NULL,NULL)
-         RETURNING id, client_id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status`,
-        [id, req.client.id, email, built.meta.applicantName || null, visaType, checkoutPlan, built]
-      );
-      const assessment = assessmentRows.rows[0];
-      if (!assessment || assessment.id !== id) throw Object.assign(new Error('The assessment record was not saved.'), { statusCode: 500 });
-
-      const serviceRows = await client.query(
-        `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
-         VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created','unpaid',NULL,$6::jsonb)
-         RETURNING *`,
-        [serviceSessionId, id, req.client.id, email, checkoutPlan, JSON.stringify({
-          visa_type: visaType,
-          assessment_id: id,
-          portal_login_email: email,
-          fresh_login_confirmed: true,
-          direct_checkout: true,
-          created_by: 'direct_visa_checkout_session'
-        })]
-      );
-      const serviceSession = serviceRows.rows[0];
-      if (!serviceSession || serviceSession.service_ref !== id) throw Object.assign(new Error('The checkout handoff session was not saved.'), { statusCode: 500 });
-      return { assessment, serviceSession };
-    });
-  } catch (err) {
-    return res.status(err.statusCode || 500).json({ ok: false, code: 'DIRECT_VISA_CHECKOUT_NOT_SAVED', error: err.message || 'Visa checkout could not be prepared.' });
-  }
-
-  const stripeSession = await createCheckoutSessionSafely({
-    mode: 'payment',
-    customer_email: email,
-    client_reference_id: created.assessment.id,
-    line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&service_session_id=${encodeURIComponent(created.serviceSession.id)}&assessment_id=${encodeURIComponent(created.assessment.id)}`,
-    metadata: {
-      service_type: 'visa_assessment',
-      service_session_id: created.serviceSession.id,
-      service_ref: created.assessment.id,
-      assessment_id: created.assessment.id,
-      visa_type: visaType,
-      plan: checkoutPlan,
-      client_email: email
-    }
-  }, 'direct-visa-checkout', checkoutFingerprint({ serviceType: 'visa_assessment', serviceRef: created.assessment.id, plan: checkoutPlan, price, email }));
-
-  await query(
-    `UPDATE assessments
-     SET stripe_session_id=$1, status='checkout_created', selected_plan=$2, active_plan=$2,
-         amount_cents=$3, currency=$4, release_at=NULL, updated_at=now()
-     WHERE id=$5`,
-    [stripeSession.id, checkoutPlan, stripeSession.amount_total || null, stripeSession.currency || 'aud', created.assessment.id]
-  );
-  await query(
-    `UPDATE service_sessions
-     SET selected_plan=$1, status='checkout_created', stripe_session_id=$2, updated_at=now()
-     WHERE id=$3`,
-    [checkoutPlan, stripeSession.id, created.serviceSession.id]
-  );
-  recordPaymentAuditSafe(created.assessment.id, email, stripeSession).catch(err => console.warn('Direct checkout payment audit skipped:', err.message));
-
-  return res.json({ ok: true, direct: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: created.serviceSession.id, assessmentId: created.assessment.id, plan: checkoutPlan });
-}));
-
-app.post('/api/service/checkout-session-fast', requireAuth, asyncRoute(async (req, res) => {
-  if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
-  let serviceSession;
-  try { serviceSession = await getServiceSessionForCheckout(req); }
-  catch (err) { return res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'Service checkout failed.' }); }
-
-  if (serviceSession.service_type !== 'visa_assessment') {
-    return res.status(409).json({ ok: false, error: 'Fast checkout currently handles visa assessments only. Use the standard checkout route.' });
-  }
-
-  const assessmentId = serviceSession.service_ref || req.body.assessmentId || req.body.assessment_id;
-  const { rows } = await query('SELECT * FROM assessments WHERE id=$1 LIMIT 1', [assessmentId]);
-  const assessment = rows[0];
-  if (!assessment) return res.status(404).json({ ok: false, error: 'Assessment was not found. Submit the visa assessment again before payment.' });
-
-  const assessmentEmail = normaliseEmail(assessment.client_email || assessment.applicant_email || serviceSession.client_email);
-  const clientEmail = normaliseEmail(req.client.email);
-  if (assessmentEmail && assessmentEmail !== clientEmail) {
-    return res.status(409).json({ ok: false, error: `This assessment belongs to ${assessmentEmail}, but you are logged in as ${clientEmail}. Please use the same email address used in the assessment form.` });
-  }
-
-  const checkoutPlan = strictServicePlanFromRequest(req, serviceSession.selected_plan || assessment.active_plan || assessment.selected_plan || 'instant');
-  const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
-  if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
-
-  const stripeSession = await createCheckoutSessionSafely({
-    mode: 'payment',
-    customer_email: req.client.email,
-    client_reference_id: assessment.id,
-    line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&assessment_id=${encodeURIComponent(assessment.id)}`,
-    metadata: {
-      service_type: 'visa_assessment',
-      service_session_id: serviceSession.id,
-      service_ref: assessment.id,
-      assessment_id: assessment.id,
-      visa_type: assessment.visa_type,
-      plan: checkoutPlan,
-      client_email: req.client.email
-    }
-  }, 'fast-service-visa-checkout', checkoutFingerprint({ serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan, price, email: req.client.email }));
-
-  await query(
-    `UPDATE assessments
-     SET client_id=$1, client_email=$2, applicant_email=COALESCE(applicant_email,$2),
-         stripe_session_id=$3, status='checkout_created', selected_plan=$4, active_plan=$4,
-         amount_cents=$5, currency=$6, release_at=NULL, updated_at=now()
-     WHERE id=$7`,
-    [req.client.id, req.client.email, stripeSession.id, checkoutPlan, stripeSession.amount_total || null, stripeSession.currency || 'aud', assessment.id]
-  );
-  await query(`UPDATE service_sessions SET client_id=$1, client_email=$2, selected_plan=$3, status='checkout_created', stripe_session_id=$4, updated_at=now() WHERE id=$5`, [req.client.id, req.client.email, checkoutPlan, stripeSession.id, serviceSession.id]);
-  recordPaymentAuditSafe(assessment.id, req.client.email, stripeSession).catch(err => console.warn('Fast checkout payment audit skipped:', err.message));
-  return res.json({ ok: true, fast: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId: assessment.id, plan: checkoutPlan });
-}));
 
 app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
