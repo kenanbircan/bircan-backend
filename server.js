@@ -2616,26 +2616,121 @@ async function handleCitizenshipCheckoutSession(req, res) {
 
 async function attachPaidCitizenshipSession(session) {
   const md = session.metadata || {};
-  const accessId = md.citizenship_access_id || session.client_reference_id;
-  const email = normaliseEmail(md.client_email || session.customer_email);
-  if (!accessId) throw new Error('Stripe citizenship session is missing citizenship_access_id metadata.');
+  const sessionEmail = session.customer_email || (session.customer_details && session.customer_details.email) || null;
+  let accessId = md.citizenship_access_id || md.service_ref || session.client_reference_id;
+  const email = normaliseEmail(md.client_email || sessionEmail);
   if (!email) throw new Error('Stripe citizenship session is missing client email.');
-
-  const { rows } = await query('SELECT * FROM citizenship_access WHERE id=$1', [accessId]);
-  const access = rows[0];
-  if (!access) throw new Error(`Citizenship access not found for Stripe session ${session.id}`);
-  if (normaliseEmail(access.client_email) !== email) throw new Error('Stripe email does not match citizenship account email.');
 
   const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
   if (!paid) throw new Error(`Stripe session is not paid yet. Current status: ${session.payment_status || session.status || 'unknown'}`);
 
-  const plan = normaliseCitizenshipPlan(md.plan || access.selected_plan || '20');
+  const plan = normaliseCitizenshipPlan(md.plan || '20');
+  let access = null;
+
+  if (accessId) {
+    access = (await query('SELECT * FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0] || null;
+  }
+
+  // Recovery path for paid Stripe sessions where the checkout completed but the
+  // local citizenship_access row was not written, was rolled back, or the return
+  // page only has the Stripe session id. Stripe is the verified source of truth.
+  if (!access) {
+    access = (await query(
+      `SELECT * FROM citizenship_access
+       WHERE stripe_session_id=$1 OR raw_payload->>'id'=$1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [session.id]
+    )).rows[0] || null;
+  }
+
+  if (!access) {
+    const serviceSession = (await query(
+      `SELECT *
+       FROM service_sessions
+       WHERE stripe_session_id=$1
+          OR metadata->>'citizenship_access_id'=$2
+          OR service_ref=$2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [session.id, accessId || '']
+    )).rows[0] || null;
+
+    if (serviceSession && serviceSession.service_ref) accessId = serviceSession.service_ref;
+  }
+
+  if (!access) {
+    accessId = accessId || makeCitizenshipAccessId(plan);
+
+    const client = (await query(
+      `SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1`,
+      [email]
+    )).rows[0] || null;
+
+    await query(
+      `INSERT INTO citizenship_access
+        (id, client_id, client_email, selected_plan, active_plan, exam_allowance, attempts_used,
+         status, payment_status, stripe_session_id, stripe_payment_intent, amount_cents, currency, raw_payload)
+       VALUES ($1,$2,$3,$4,$4,$5,0,'active','paid',$6,$7,$8,$9,$10)
+       ON CONFLICT (id) DO UPDATE SET
+         client_id=COALESCE(EXCLUDED.client_id, citizenship_access.client_id),
+         client_email=EXCLUDED.client_email,
+         selected_plan=EXCLUDED.selected_plan,
+         active_plan=EXCLUDED.active_plan,
+         exam_allowance=EXCLUDED.exam_allowance,
+         status='active',
+         payment_status='paid',
+         stripe_session_id=EXCLUDED.stripe_session_id,
+         stripe_payment_intent=EXCLUDED.stripe_payment_intent,
+         amount_cents=EXCLUDED.amount_cents,
+         currency=EXCLUDED.currency,
+         raw_payload=EXCLUDED.raw_payload,
+         updated_at=now()`,
+      [
+        accessId,
+        client ? client.id : null,
+        email,
+        plan,
+        citizenshipExamAllowance(plan),
+        session.id,
+        session.payment_intent || null,
+        session.amount_total || null,
+        session.currency || 'aud',
+        session
+      ]
+    );
+
+    access = (await query('SELECT * FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0];
+  }
+
+  accessId = access.id;
+
+  if (normaliseEmail(access.client_email) !== email) {
+    await query(
+      `UPDATE citizenship_access
+       SET client_email=$1, updated_at=now()
+       WHERE id=$2 AND (client_email IS NULL OR client_email='' OR payment_status <> 'paid')`,
+      [email, accessId]
+    );
+  }
+
   await query(
     `UPDATE citizenship_access
      SET status='active', payment_status='paid', stripe_session_id=$1, stripe_payment_intent=$2,
-         amount_cents=$3, currency=$4, active_plan=$5, exam_allowance=$6, raw_payload=$7, updated_at=now()
+         amount_cents=$3, currency=$4, active_plan=$5, selected_plan=COALESCE(selected_plan,$5),
+         exam_allowance=$6, raw_payload=$7, updated_at=now()
      WHERE id=$8`,
     [session.id, session.payment_intent || null, session.amount_total || null, session.currency || 'aud', plan, citizenshipExamAllowance(plan), session, accessId]
+  );
+
+  await query(
+    `UPDATE service_sessions
+     SET status='paid', payment_status='paid', service_ref=COALESCE(service_ref,$1),
+         stripe_session_id=$2,
+         metadata=COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+         updated_at=now()
+     WHERE stripe_session_id=$2 OR id=$4 OR service_ref=$1`,
+    [accessId, session.id, JSON.stringify({ citizenship_access_id: accessId, client_email: email, plan }), md.service_session_id || null]
   );
 
   const paymentAudit = await recordCitizenshipPaymentAuditSafe(accessId, email, session, plan);
