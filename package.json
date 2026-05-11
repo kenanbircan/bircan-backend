@@ -3,9 +3,8 @@
   "version": "10.5.0-final-research-grade-migration-intelligence",
   "main": "server.js",
   "scripts": {
-    "start": "node render-start.js",
-    "check": "node --check server.js && node --check db.js && node --check pdf.js && node --check adviceEngine.js && node --check knowledgebaseLoader.js",
-    "start:direct": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check db.js && node --check pdf.js && node --check adviceEngine.js && node --check knowledgebaseLoader.js"
   },
   "engines": {
     "node": "20.x"

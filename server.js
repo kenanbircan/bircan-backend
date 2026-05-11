@@ -1,20 +1,5 @@
 require('dotenv').config();
 
-
-// ---- Render runtime hardening: expose silent startup failures instead of exiting without logs ----
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err && err.stack ? err.stack : err);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION:', reason && reason.stack ? reason.stack : reason);
-});
-
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received: shutting down Bircan backend.');
-  process.exit(0);
-});
-
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -102,9 +87,7 @@ let pdfParse = null;
 try { pdfParse = require('pdf-parse'); } catch (_err) { pdfParse = null; }
 const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !== 'false';
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
-// Payment finalisation must be fast. By default it only records payment and queues PDF generation.
-// Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
-const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
+const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'true').toLowerCase() !== 'false';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -2633,121 +2616,26 @@ async function handleCitizenshipCheckoutSession(req, res) {
 
 async function attachPaidCitizenshipSession(session) {
   const md = session.metadata || {};
-  const sessionEmail = session.customer_email || (session.customer_details && session.customer_details.email) || null;
-  let accessId = md.citizenship_access_id || md.service_ref || session.client_reference_id;
-  const email = normaliseEmail(md.client_email || sessionEmail);
+  const accessId = md.citizenship_access_id || session.client_reference_id;
+  const email = normaliseEmail(md.client_email || session.customer_email);
+  if (!accessId) throw new Error('Stripe citizenship session is missing citizenship_access_id metadata.');
   if (!email) throw new Error('Stripe citizenship session is missing client email.');
+
+  const { rows } = await query('SELECT * FROM citizenship_access WHERE id=$1', [accessId]);
+  const access = rows[0];
+  if (!access) throw new Error(`Citizenship access not found for Stripe session ${session.id}`);
+  if (normaliseEmail(access.client_email) !== email) throw new Error('Stripe email does not match citizenship account email.');
 
   const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
   if (!paid) throw new Error(`Stripe session is not paid yet. Current status: ${session.payment_status || session.status || 'unknown'}`);
 
-  const plan = normaliseCitizenshipPlan(md.plan || '20');
-  let access = null;
-
-  if (accessId) {
-    access = (await query('SELECT * FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0] || null;
-  }
-
-  // Recovery path for paid Stripe sessions where the checkout completed but the
-  // local citizenship_access row was not written, was rolled back, or the return
-  // page only has the Stripe session id. Stripe is the verified source of truth.
-  if (!access) {
-    access = (await query(
-      `SELECT * FROM citizenship_access
-       WHERE stripe_session_id=$1 OR raw_payload->>'id'=$1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [session.id]
-    )).rows[0] || null;
-  }
-
-  if (!access) {
-    const serviceSession = (await query(
-      `SELECT *
-       FROM service_sessions
-       WHERE stripe_session_id=$1
-          OR metadata->>'citizenship_access_id'=$2
-          OR service_ref=$2
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [session.id, accessId || '']
-    )).rows[0] || null;
-
-    if (serviceSession && serviceSession.service_ref) accessId = serviceSession.service_ref;
-  }
-
-  if (!access) {
-    accessId = accessId || makeCitizenshipAccessId(plan);
-
-    const client = (await query(
-      `SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1`,
-      [email]
-    )).rows[0] || null;
-
-    await query(
-      `INSERT INTO citizenship_access
-        (id, client_id, client_email, selected_plan, active_plan, exam_allowance, attempts_used,
-         status, payment_status, stripe_session_id, stripe_payment_intent, amount_cents, currency, raw_payload)
-       VALUES ($1,$2,$3,$4,$4,$5,0,'active','paid',$6,$7,$8,$9,$10)
-       ON CONFLICT (id) DO UPDATE SET
-         client_id=COALESCE(EXCLUDED.client_id, citizenship_access.client_id),
-         client_email=EXCLUDED.client_email,
-         selected_plan=EXCLUDED.selected_plan,
-         active_plan=EXCLUDED.active_plan,
-         exam_allowance=EXCLUDED.exam_allowance,
-         status='active',
-         payment_status='paid',
-         stripe_session_id=EXCLUDED.stripe_session_id,
-         stripe_payment_intent=EXCLUDED.stripe_payment_intent,
-         amount_cents=EXCLUDED.amount_cents,
-         currency=EXCLUDED.currency,
-         raw_payload=EXCLUDED.raw_payload,
-         updated_at=now()`,
-      [
-        accessId,
-        client ? client.id : null,
-        email,
-        plan,
-        citizenshipExamAllowance(plan),
-        session.id,
-        session.payment_intent || null,
-        session.amount_total || null,
-        session.currency || 'aud',
-        session
-      ]
-    );
-
-    access = (await query('SELECT * FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0];
-  }
-
-  accessId = access.id;
-
-  if (normaliseEmail(access.client_email) !== email) {
-    await query(
-      `UPDATE citizenship_access
-       SET client_email=$1, updated_at=now()
-       WHERE id=$2 AND (client_email IS NULL OR client_email='' OR payment_status <> 'paid')`,
-      [email, accessId]
-    );
-  }
-
+  const plan = normaliseCitizenshipPlan(md.plan || access.selected_plan || '20');
   await query(
     `UPDATE citizenship_access
      SET status='active', payment_status='paid', stripe_session_id=$1, stripe_payment_intent=$2,
-         amount_cents=$3, currency=$4, active_plan=$5, selected_plan=COALESCE(selected_plan,$5),
-         exam_allowance=$6, raw_payload=$7, updated_at=now()
+         amount_cents=$3, currency=$4, active_plan=$5, exam_allowance=$6, raw_payload=$7, updated_at=now()
      WHERE id=$8`,
     [session.id, session.payment_intent || null, session.amount_total || null, session.currency || 'aud', plan, citizenshipExamAllowance(plan), session, accessId]
-  );
-
-  await query(
-    `UPDATE service_sessions
-     SET status='paid', payment_status='paid', service_ref=COALESCE(service_ref,$1),
-         stripe_session_id=$2,
-         metadata=COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
-         updated_at=now()
-     WHERE stripe_session_id=$2 OR id=$4 OR service_ref=$1`,
-    [accessId, session.id, JSON.stringify({ citizenship_access_id: accessId, client_email: email, plan }), md.service_session_id || null]
   );
 
   const paymentAudit = await recordCitizenshipPaymentAuditSafe(accessId, email, session, plan);
@@ -3087,92 +2975,7 @@ async function recordPaymentAuditSafe(assessmentId, email, session) {
   }
 }
 
-
-async function normalisePaidStripeSessionForAttachment(session) {
-  const md = { ...((session && session.metadata) || {}) };
-  const rawService = normaliseServiceType(md.service_type || '');
-  const ref = String(md.service_ref || md.assessment_id || md.appeal_assessment_id || md.citizenship_access_id || session.client_reference_id || '').trim();
-  const planText = String(md.plan || '').trim().toLowerCase();
-
-  // Strong identifiers always win over stale or wrong metadata.
-  if (md.assessment_id || /^sub_/.test(ref)) {
-    const assessmentId = md.assessment_id || ref;
-    const found = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [assessmentId])).rows[0];
-    if (found) {
-      md.service_type = 'visa_assessment';
-      md.assessment_id = found.id;
-      md.service_ref = found.id;
-      md.visa_type = md.visa_type || found.visa_type || 'visa';
-      md.plan = safePlan(md.plan || found.active_plan || found.selected_plan || 'instant');
-      return { ...session, metadata: md, client_reference_id: found.id };
-    }
-  }
-
-  if (md.appeal_assessment_id || rawService === 'appeals_assessment') {
-    const appealId = md.appeal_assessment_id || md.assessment_id || ref;
-    const found = appealId ? (await query('SELECT id, visa_subclass, selected_plan, active_plan FROM appeals_assessments WHERE id=$1 LIMIT 1', [appealId])).rows[0] : null;
-    if (found) {
-      md.service_type = 'appeals_assessment';
-      md.appeal_assessment_id = found.id;
-      md.assessment_id = found.id;
-      md.service_ref = found.id;
-      md.visa_type = md.visa_type || found.visa_subclass || 'appeals';
-      md.plan = safePlan(md.plan || found.active_plan || found.selected_plan || 'instant');
-      return { ...session, metadata: md, client_reference_id: found.id };
-    }
-  }
-
-  // Guard against the live bug: a visa assessment checkout can arrive with
-  // metadata.service_type='citizenship_test' while plan='instant'. Citizenship
-  // never uses instant/24h/3d plans. If the reference exists as an assessment,
-  // finalise it as a visa assessment instead of throwing a citizenship plan error.
-  if (rawService === 'citizenship_test' && /^(instant|24h|24hr|24hour|24hours|3d|3day|3days)$/i.test(planText || 'instant')) {
-    const candidate = md.assessment_id || md.service_ref || session.client_reference_id || '';
-    if (candidate) {
-      const found = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [candidate])).rows[0];
-      if (found) {
-        md.service_type = 'visa_assessment';
-        md.assessment_id = found.id;
-        md.service_ref = found.id;
-        md.visa_type = md.visa_type || found.visa_type || 'visa';
-        md.plan = safePlan(md.plan || found.active_plan || found.selected_plan || 'instant');
-        return { ...session, metadata: md, client_reference_id: found.id };
-      }
-    }
-  }
-
-  if (md.citizenship_access_id || /^cit_/.test(ref) || rawService === 'citizenship_test') {
-    const accessId = md.citizenship_access_id || ref || session.client_reference_id;
-    const found = accessId ? (await query('SELECT id, selected_plan, active_plan FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0] : null;
-    if (found) {
-      md.service_type = 'citizenship_test';
-      md.citizenship_access_id = found.id;
-      md.service_ref = found.id;
-      md.plan = normaliseCitizenshipPlan(md.plan || found.active_plan || found.selected_plan || '20');
-      return { ...session, metadata: md, client_reference_id: found.id };
-    }
-  }
-
-  if (!rawService) {
-    const candidate = session.client_reference_id || md.service_ref || md.assessment_id;
-    if (candidate) {
-      const foundAssessment = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [candidate])).rows[0];
-      if (foundAssessment) {
-        md.service_type = 'visa_assessment';
-        md.assessment_id = foundAssessment.id;
-        md.service_ref = foundAssessment.id;
-        md.visa_type = md.visa_type || foundAssessment.visa_type || 'visa';
-        md.plan = safePlan(md.plan || foundAssessment.active_plan || foundAssessment.selected_plan || 'instant');
-        return { ...session, metadata: md, client_reference_id: foundAssessment.id };
-      }
-    }
-  }
-
-  return { ...session, metadata: md };
-}
-
 async function attachPaidSession(session, options = {}) {
-  session = await normalisePaidStripeSessionForAttachment(session);
   await markServiceSessionPaidByStripe(session).catch(err => console.warn('Service session paid marker skipped:', err.message));
   const md = session.metadata || {};
   if (md.service_type === 'appeals_assessment') return attachPaidAppealsSession(session);
@@ -3238,15 +3041,14 @@ async function attachPaidSession(session, options = {}) {
       setImmediate(() => generateAssessmentPdfNow(assessmentId).catch(err => console.error('Immediate PDF generation failed:', err.message)));
     }
   }
-  return { attached: true, type: 'visa_assessment', assessmentId, plan: paidPlanForGeneration, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
+  return { attached: true, assessmentId, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
 }
 
 app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   const sessionId = req.body.sessionId || req.body.session_id || req.query.session_id;
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
-  let session = await stripe.checkout.sessions.retrieve(sessionId);
-  session = await normalisePaidStripeSessionForAttachment(session);
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
   const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
@@ -3275,8 +3077,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   const sessionId = req.query.session_id || req.query.sessionId;
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
-  let session = await stripe.checkout.sessions.retrieve(sessionId);
-  session = await normalisePaidStripeSessionForAttachment(session);
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
   const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
@@ -3778,8 +3579,7 @@ async function finaliseStripePayment(req, res) {
     return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   }
 
-  let session = await stripe.checkout.sessions.retrieve(sessionId);
-  session = await normalisePaidStripeSessionForAttachment(session);
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
   const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
@@ -5210,32 +5010,14 @@ async function ensureCriticalDashboardColumns() {
   }
 }
 
-async function runStartupTasks() {
+async function start() {
   if (BOOTSTRAP_DB) await ensureSchema();
   await ensureCriticalDashboardColumns();
-  console.log('Startup database checks completed.');
+  setInterval(() => runOnePdfJob().catch(err => console.error('PDF worker tick failed:', err)), PDF_WORKER_INTERVAL_MS);
+  app.listen(PORT, () => console.log(`Bircan FINAL PostgreSQL server listening on ${PORT}`));
 }
 
-function start() {
-  const host = '0.0.0.0';
-
-  const server = app.listen(PORT, host, () => {
-    console.log(`Bircan FINAL PostgreSQL server listening on ${host}:${PORT}`);
-  });
-
-  server.on('error', (err) => {
-    console.error('HTTP server failed to listen:', err && err.stack ? err.stack : err);
-  });
-
-  runStartupTasks().catch((err) => {
-    // Do not exit before Render detects the web port. Health/database routes will
-    // expose the failure, and logs will show the exact startup problem.
-    console.error('Startup database checks failed:', err && err.stack ? err.stack : err);
-  });
-
-  setInterval(() => {
-    runOnePdfJob().catch(err => console.error('PDF worker tick failed:', err && err.stack ? err.stack : err));
-  }, PDF_WORKER_INTERVAL_MS);
-}
-
-start();
+start().catch((err) => {
+  console.error('Server failed to start:', err);
+  process.exit(1);
+});
