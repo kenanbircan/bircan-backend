@@ -61,6 +61,39 @@ const LEGAL_AUTHORITY_ORDER = ['ACT', 'REGULATIONS', 'INSTRUMENTS', 'PAMS', 'OTH
 function authorityRank(authority) { const i = LEGAL_AUTHORITY_ORDER.indexOf(authority); return i === -1 ? 99 : i; }
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
+function buildLegalVersionLock({ extracted = [], subclass = '', selectedStream = '', assessmentKind = 'MIGRATION' } = {}) {
+  const checkedAt = new Date().toISOString();
+  const sourceHashes = (Array.isArray(extracted) ? extracted : []).map(s => ({
+    authority: s.authority || 'OTHER',
+    path: s.path || '',
+    sha256: s.sha256 || '',
+    modified: s.modified || null,
+    chars: Number(s.chars || 0)
+  })).filter(s => s.path && s.sha256);
+  const aggregateInput = sourceHashes
+    .map(s => [s.authority, s.path, s.sha256, s.modified || '', s.chars].join('|'))
+    .join('\n');
+  const latestSourceModifiedAt = sourceHashes
+    .map(s => s.modified)
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0] || null;
+  return {
+    checkedAt,
+    effectiveAsAt: checkedAt,
+    timezone: 'UTC',
+    assessmentKind,
+    subclass,
+    selectedStream: selectedStream || '',
+    legalAuthorityOrder: LEGAL_AUTHORITY_ORDER,
+    sourceCount: sourceHashes.length,
+    sourceHashes,
+    latestSourceModifiedAt,
+    sourceHashAggregate: crypto.createHash('sha256').update(aggregateInput || checkedAt).digest('hex'),
+    note: 'This version lock records the knowledgebase sources and hashes supplied to the advice engine at generation time.'
+  };
+}
+
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const name of fs.readdirSync(dir)) {
@@ -214,6 +247,7 @@ async function buildKnowledgebaseLegalPack(assessment = {}) {
     availableInKnowledgebase: !!allAuthoritiesAvailable[authority]
   }));
 
+  const legalVersionLock = buildLegalVersionLock({ extracted, subclass, selectedStream, assessmentKind });
   const manifest = scored.map(f => ({ path: f.rel, authority: f.authority, score: f.score, modified: f.stat.mtime.toISOString(), bytes: f.stat.size }));
   return {
     loadedAt: new Date().toISOString(),
@@ -224,6 +258,7 @@ async function buildKnowledgebaseLegalPack(assessment = {}) {
     subclassExtraction: { subclass, selectedStream, source: 'assessment-first-gate' },
     legalAuthorityOrder: LEGAL_AUTHORITY_ORDER,
     hierarchyEnforced: true,
+    legalVersionLock,
     documentCountScanned: files.length,
     documentCountLoaded: extracted.length,
     searchTerms: buildSearchTerms({ ...assessment, visa_type: subclass }),
@@ -252,6 +287,9 @@ function assertKnowledgebasePack(pack) {
   if (!pack.hierarchyEnforced || !Array.isArray(pack.legalAuthorityOrder)) {
     throw new Error('Legal authority hierarchy was not enforced. Advice generation blocked.');
   }
+  if (!pack.legalVersionLock || !pack.legalVersionLock.checkedAt || !pack.legalVersionLock.sourceHashAggregate) {
+    throw new Error('Legal version lock is missing from knowledgebase pack. Advice generation blocked.');
+  }
   const ranks = pack.sources.map(s => authorityRank(s.authority));
   for (let i = 1; i < ranks.length; i++) {
     if (ranks[i] < ranks[i - 1]) throw new Error('Legal sources are not ordered by authority. Advice generation blocked.');
@@ -259,4 +297,4 @@ function assertKnowledgebasePack(pack) {
   return true;
 }
 
-module.exports = { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream, classifyLegalAuthority, LEGAL_AUTHORITY_ORDER };
+module.exports = { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream, classifyLegalAuthority, LEGAL_AUTHORITY_ORDER, buildLegalVersionLock };

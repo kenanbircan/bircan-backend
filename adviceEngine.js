@@ -131,6 +131,68 @@ function validateAdvice(advice, subclass, matrix){
 
   return ensureMaraCommercialMinimums(sanitiseAdviceForClient(advice));
 }
+
+function hasAnyKey(flat, keyPattern, valuePattern) {
+  const matches = [];
+  for (const [k, v] of Object.entries(flat || {})) {
+    const key = String(k || '').toLowerCase();
+    const value = cleanText(v).toLowerCase();
+    if (keyPattern.test(key) && (!valuePattern || valuePattern.test(value))) matches.push({ key: k, value: cleanText(v) });
+  }
+  return matches;
+}
+
+function detectFactContradictions(facts = {}, assessment = {}) {
+  const flat = { ...((facts && facts.cleaned_answers) || {}) };
+  const blob = JSON.stringify({ facts, assessment }).toLowerCase();
+  const findings = [];
+  function add(code, severity, issue, evidence, action) {
+    findings.push({ code, severity, issue, evidence: evidence.slice(0, 6), action });
+  }
+  const refusalNo = hasAnyKey(flat, /(refusal|refused|cancellation|cancelled|visa history|migration history|aat|review)/i, /\b(no|none|never|not applicable|n\/a)\b/i);
+  const refusalYes = hasAnyKey(flat, /(refusal|refused|cancellation|cancelled|aat|tribunal|review|s48|section48)/i, /\b(yes|refused|cancelled|aat|tribunal|review|s48|section\s*48|appeal|merits)\b/i);
+  if (refusalNo.length && refusalYes.length) add('MIGRATION_HISTORY_CONFLICT', 'HIGH', 'Migration-history answers contain both a denial of refusal/cancellation/review history and a disclosure suggesting refusal, cancellation, AAT/review or s48 issues.', [...refusalNo, ...refusalYes], 'Do not treat migration history as clear until the client provides visa grant/refusal/cancellation notices and Department/AAT correspondence.');
+
+  const healthNo = hasAnyKey(flat, /(health|medical|condition|disability)/i, /\b(no|none|never|not applicable|n\/a)\b/i);
+  const healthYes = hasAnyKey(flat, /(health|medical|condition|disability|treatment|diagnosis)/i, /\b(yes|medical|condition|diagnos|treatment|hospital|specialist|report)\b/i);
+  if (healthNo.length && healthYes.length) add('HEALTH_CONFLICT', 'MEDIUM', 'Health answers contain both a denial of health concerns and information suggesting medical treatment, diagnosis or health evidence.', [...healthNo, ...healthYes], 'Request medical details and relevant reports before finalising health-risk advice.');
+
+  const characterNo = hasAnyKey(flat, /(character|criminal|police|conviction|charge|court|offence)/i, /\b(no|none|never|not applicable|n\/a)\b/i);
+  const characterYes = hasAnyKey(flat, /(character|criminal|police|conviction|charge|court|offence|sentence)/i, /\b(yes|charged|convicted|court|police|offence|sentence|criminal)\b/i);
+  if (characterNo.length && characterYes.length) add('CHARACTER_CONFLICT', 'HIGH', 'Character answers contain both a denial of criminal/character issues and information suggesting charges, convictions, court history or police matters.', [...characterNo, ...characterYes], 'Request police certificates, court documents and a chronology before finalising character advice.');
+
+  const stream = cleanText((facts.matter && facts.matter.stream) || assessment.selected_stream || extractSelectedStream(assessment)).toLowerCase();
+  const blobHasTRT = /\btrt\b|temporary residence transition/.test(blob);
+  const blobHasDE = /direct entry|\bde\b/.test(blob);
+  const blobHasLA = /labou?r agreement|\bdama\b/.test(blob);
+  const streamSignals = [stream.includes('temporary residence transition') || blobHasTRT, stream.includes('direct entry') || blobHasDE, stream.includes('labour agreement') || stream.includes('labor agreement') || blobHasLA].filter(Boolean).length;
+  if (streamSignals > 1) add('STREAM_CONFLICT', 'MEDIUM', 'The questionnaire appears to contain more than one stream signal for the same subclass.', [{ key: 'stream/blob', value: stream || 'multiple stream references detected' }], 'Confirm the intended stream before issuing final advice because stream selection changes applicable criteria and evidence.');
+
+  return findings;
+}
+
+function buildInternalLegalAuditRecord({ assessment = {}, facts = {}, rules = {}, matrix = {}, legalSourcePack = {}, advice = {}, contradictions = [] } = {}) {
+  const sourceHashes = (legalSourcePack.legalVersionLock && legalSourcePack.legalVersionLock.sourceHashes) || (legalSourcePack.sources || []).map(s => ({ authority: s.authority, path: s.path, sha256: s.sha256, modified: s.modified, chars: s.chars }));
+  return {
+    auditKind: 'INTERNAL_LEGAL_AUDIT_ONLY',
+    generatedAt: new Date().toISOString(),
+    assessmentId: assessment.id || facts.reference || null,
+    subclass: legalSourcePack.subclass || facts.visa_subclass || null,
+    selectedStream: legalSourcePack.selectedStream || (facts.matter && facts.matter.stream) || null,
+    lawVersionCheckedAsAt: legalSourcePack.legalVersionLock ? legalSourcePack.legalVersionLock.checkedAt : legalSourcePack.loadedAt,
+    sourceHashAggregate: legalSourcePack.legalVersionLock ? legalSourcePack.legalVersionLock.sourceHashAggregate : null,
+    legalAuthorityOrder: legalSourcePack.legalAuthorityOrder || [],
+    sourceHashes,
+    criteriaAssessed: (advice.criterion_findings || []).map(f => ({ criterion: f.criterion, finding: f.finding, legal_consequence: f.legal_consequence, evidence_gap: f.evidence_gap, recommendation: f.recommendation })),
+    deterministicRisk: { risk_level: rules.risk_level, lodgement_position: rules.lodgement_position, hard_fails: rules.hard_fails || [], review_flags: rules.review_flags || [] },
+    contradictions,
+    evidenceRequired: advice.evidence_required || [],
+    clientNextSteps: advice.client_next_steps || [],
+    qualityFlags: advice.quality_flags || [],
+    professionalBoundary: 'Internal quality-control record only. Not client-facing. Final legal advice remains subject to migration-agent review of original documents and current law.'
+  };
+}
+
 async function callOpenAIForAdvice(facts, rules, legalPack){
   assertKnowledgebasePack(legalPack);
   if(!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for migration-agent level GPT advice generation. Refusing to issue weak template PDF.');
@@ -181,7 +243,7 @@ MANDATORY KNOWLEDGEBASE LEGAL-SOURCE PACK. You must read and apply these sources
 The sources are already ordered by authority. Apply them sequentially: Act -> Regulations -> Instruments -> PAMs. Do not reverse this hierarchy.
 ${JSON.stringify(legalPack,null,2)}
 
-Deterministic decision-engine findings to treat as binding ground truth. Do not contradict or soften these findings:
+Deterministic decision-engine findings and contradiction-detection findings to treat as binding ground truth. Do not contradict or soften these findings:
 ${JSON.stringify(rules,null,2)}
 
 Cleaned matter facts:
@@ -204,6 +266,13 @@ async function generateMigrationAdvice(assessment){
   const subclass=normSubclass(extractedSubclass || facts.visa_subclass);
   const matrix=matrixFor(subclass);
   const rules=runDeterministicRules(subclass, facts.cleaned_answers||{});
+  const contradictions = detectFactContradictions(facts, assessmentForAdvice);
+  if (contradictions.length) {
+    rules.contradiction_flags = contradictions;
+    rules.review_flags = [...(rules.review_flags || []), ...contradictions.map(c => `${c.code}: ${c.issue}`)];
+    if (contradictions.some(c => c.severity === 'HIGH') && !['CRITICAL','HIGH'].includes(rules.risk_level)) rules.risk_level = 'HIGH';
+    if (contradictions.some(c => c.severity === 'HIGH') && rules.lodgement_position === 'SUITABLE_TO_PROCEED') rules.lodgement_position = 'PROCEED_AFTER_EVIDENCE_REVIEW';
+  }
   const legalPack=await buildKnowledgebaseLegalPack(assessmentForAdvice);
   assertKnowledgebasePack(legalPack);
   if(String(legalPack.subclass) !== String(subclass)) throw new Error('Knowledgebase subclass does not match extracted assessment subclass. Advice generation blocked.');
@@ -218,12 +287,14 @@ async function generateMigrationAdvice(assessment){
     legalAuthorityOrder:legalPack.legalAuthorityOrder,
     hierarchyEnforced:legalPack.hierarchyEnforced,
     hierarchy:legalPack.hierarchy,
+    legalVersionLock:legalPack.legalVersionLock,
     documentCountScanned:legalPack.documentCountScanned,
     documentCountLoaded:legalPack.documentCountLoaded,
     sources:legalPack.sources.map(s=>({authority:s.authority,path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
   };
   if(!legalSourcePack.sources || legalSourcePack.sources.length < 2) throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. Advice generation blocked.');
   const validatedAdvice = validateAdvice(advice,subclass,matrix);
-  return {facts,rules,matrix,legalSourcePack,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true};
+  const legalAudit = buildInternalLegalAuditRecord({ assessment: assessmentForAdvice, facts, rules, matrix, legalSourcePack, advice: validatedAdvice, contradictions });
+  return {facts,rules,matrix,legalSourcePack,advice:validatedAdvice,legalAudit,contradictions,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,legalVersionLocked:true,contradictionDetectionApplied:true,internalLegalAuditPrepared:true};
 }
-module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>Object.keys(matrices).sort()};
+module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,detectFactContradictions,buildInternalLegalAuditRecord,matrices,supportedSubclasses:()=>Object.keys(matrices).sort()};

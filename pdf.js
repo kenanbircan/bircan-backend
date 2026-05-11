@@ -169,7 +169,9 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
     ['Authority order enforced', Array.isArray(pack.legalAuthorityOrder) ? pack.legalAuthorityOrder.join(' → ') : 'ACT → REGULATIONS → INSTRUMENTS → PAMS'],
     ['Documents scanned', pack.documentCountScanned || sources.length],
     ['Documents loaded', pack.documentCountLoaded || sources.length],
-    ['Loaded at', pack.loadedAt || '—']
+    ['Loaded at', pack.loadedAt || '—'],
+    ['Law version checked as at', pack.legalVersionLock && pack.legalVersionLock.checkedAt ? pack.legalVersionLock.checkedAt : '—'],
+    ['Source hash aggregate', pack.legalVersionLock && pack.legalVersionLock.sourceHashAggregate ? String(pack.legalVersionLock.sourceHashAggregate).slice(0, 16) : '—']
   ]);
   if (Array.isArray(pack.hierarchy)) {
     writeSubheading(doc, 'Legal authority hierarchy applied');
@@ -178,6 +180,8 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
       writeBullet(doc, `${level.authority}: ${loaded} source(s) loaded${level.availableInKnowledgebase ? '' : ' (not available in knowledgebase)'}`);
     });
   }
+  writeSubheading(doc, 'Legal version lock');
+  writePara(doc, 'The legal-source version and source hashes have been locked internally for professional review and quality control.');
   writeSubheading(doc, 'Source materials applied in authority order');
   sources.slice(0, 12).forEach((source) => {
     const hash = source && source.sha256 ? ` — source hash ${String(source.sha256).slice(0, 12)}` : '';
