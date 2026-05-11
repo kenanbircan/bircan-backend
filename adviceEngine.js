@@ -1,6 +1,7 @@
 'use strict';
 const matrices = require('./advice-matrices.json');
 const { evaluateDecisionEngine } = require('./decisionEngines');
+const { buildKnowledgebaseLegalPack, assertKnowledgebasePack } = require('./knowledgebaseLoader');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-5.5';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
@@ -132,7 +133,8 @@ function validateAdvice(advice, subclass, matrix){
 
   return ensureMaraCommercialMinimums(sanitiseAdviceForClient(advice));
 }
-async function callOpenAIForAdvice(facts, rules){
+async function callOpenAIForAdvice(facts, rules, legalPack){
+  assertKnowledgebasePack(legalPack);
   if(!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for migration-agent level GPT advice generation. Refusing to issue weak template PDF.');
   const subclass=normSubclass(facts.visa_subclass);
   const m=matrixFor(subclass);
@@ -145,7 +147,9 @@ async function callOpenAIForAdvice(facts, rules){
     'Do not expose internal QA language, GPT/AI wording, matrix warnings, or system diagnostics to the client.',
     'Assume identity, document authenticity, conflict checks, service agreement status, and Consumer Guide delivery may require separate confirmation unless expressly confirmed in the facts.',
     'Your output must be structured legal reasoning, not generic immigration commentary.',
-    'Use only the supplied subclass matrix, deterministic findings, and cleaned matter facts.',
+    'Use only the supplied knowledgebase legal-source pack, subclass matrix, deterministic findings, and cleaned matter facts.',
+    'Treat the knowledgebase extracts as the current legal framework for this backend. Do not rely on general memory where the knowledgebase is silent or inconsistent.',
+    'Every material conclusion must be traceable to the supplied knowledgebase, questionnaire facts, and deterministic findings.',
     'Do not invent facts, evidence, dates, employment history, relationship facts, points, nominations, invitations, or legal provisions.',
     'If a required fact is absent, write: cannot be confirmed from the questionnaire.',
     'Every criterion finding must use this reasoning chain: criterion -> relevant facts from questionnaire -> evidence gap -> legal consequence -> recommendation.',
@@ -173,6 +177,9 @@ MANDATORY LEGAL-REASONING METHOD:
 
 ${framework(m)}
 
+MANDATORY KNOWLEDGEBASE LEGAL-SOURCE PACK. You must read and apply these sources before drafting. If the sources do not support a conclusion, say the issue requires manual legal review.
+${JSON.stringify(legalPack,null,2)}
+
 Deterministic decision-engine findings to treat as binding ground truth. Do not contradict or soften these findings:
 ${JSON.stringify(rules,null,2)}
 
@@ -186,5 +193,5 @@ ${JSON.stringify(facts,null,2)}`;
   if(!out) throw new Error('OpenAI advice generation returned no structured text.');
   return JSON.parse(out);
 }
-async function generateMigrationAdvice(assessment){ const facts=structuredFacts(assessment); const subclass=normSubclass(facts.visa_subclass); const matrix=matrixFor(subclass); const rules=runDeterministicRules(subclass, facts.cleaned_answers||{}); const advice=await callOpenAIForAdvice(facts,rules); return {facts,rules,matrix,advice:validateAdvice(advice,subclass,matrix),model:DEFAULT_MODEL}; }
+async function generateMigrationAdvice(assessment){ const facts=structuredFacts(assessment); const subclass=normSubclass(facts.visa_subclass); const matrix=matrixFor(subclass); const rules=runDeterministicRules(subclass, facts.cleaned_answers||{}); const legalPack=await buildKnowledgebaseLegalPack(assessment); assertKnowledgebasePack(legalPack); const advice=await callOpenAIForAdvice(facts,rules,legalPack); return {facts,rules,matrix,legalSourcePack:{loadedAt:legalPack.loadedAt,root:legalPack.root,assessmentKind:legalPack.assessmentKind,subclass:legalPack.subclass,documentCountScanned:legalPack.documentCountScanned,documentCountLoaded:legalPack.documentCountLoaded,sources:legalPack.sources.map(s=>({path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))},advice:validateAdvice(advice,subclass,matrix),model:DEFAULT_MODEL}; }
 module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>Object.keys(matrices).sort()};
