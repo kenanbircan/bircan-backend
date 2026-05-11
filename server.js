@@ -4673,6 +4673,145 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
   return out;
 }
 
+
+// ---------- Fast account dashboard feed ----------
+// This endpoint is intentionally lightweight: no PDF bytes, no full history joins,
+// no finalisation, and limited rows. It is used for the first dashboard paint.
+app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(async (req, res) => {
+  const email = req.client.email;
+  const clientId = req.client.id;
+
+  const { rows: assessmentRows } = await query(
+    `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+            selected_plan, active_plan,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready'
+                 WHEN status='pdf_ready' THEN 'processing'
+                 ELSE COALESCE(status,'submitted') END AS status,
+            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
+            CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END AS release_at,
+            pdf_generated_at, pdf_filename, generation_error,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
+            CASE WHEN payment_status='paid' AND now() >= CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END THEN true ELSE false END AS release_ready,
+            GREATEST(0, EXTRACT(EPOCH FROM ((CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END) - now())))::integer AS release_seconds_remaining
+     FROM assessments
+     WHERE lower(client_email)=lower($1) OR lower(COALESCE(applicant_email,''))=lower($1) OR client_id=$2
+     ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
+     LIMIT 25`,
+    [email, clientId]
+  );
+
+  const { rows: appealAssessmentRows } = await query(
+    `SELECT id, 'appeals_assessment' AS service_type, visa_subclass, decision_type, applicant_email, applicant_name,
+            selected_plan, active_plan,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'advice_ready'
+                 WHEN status IN ('pdf_ready','advice_ready') THEN 'processing'
+                 ELSE COALESCE(status,'submitted') END AS status,
+            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
+            CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END AS release_at,
+            pdf_generated_at, pdf_filename, generation_error,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
+            CASE WHEN payment_status='paid' AND now() >= CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END THEN true ELSE false END AS release_ready,
+            GREATEST(0, EXTRACT(EPOCH FROM ((CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END) - now())))::integer AS release_seconds_remaining
+     FROM appeals_assessments
+     WHERE lower(client_email)=lower($1) OR lower(COALESCE(applicant_email,''))=lower($1) OR client_id=$2
+     ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
+     LIMIT 25`,
+    [email, clientId]
+  );
+
+  const { rows: citizenshipAccessRows } = await query(
+    `SELECT id, 'citizenship_test' AS service_type, NULL::text AS visa_type, selected_plan, active_plan, exam_allowance, attempts_used,
+            GREATEST(0, exam_allowance - attempts_used) AS attempts_remaining,
+            status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at,
+            now() AS release_at, NULL::timestamptz AS pdf_generated_at, NULL::text AS pdf_filename, NULL::text AS generation_error,
+            true AS has_pdf, true AS release_ready, 0 AS release_seconds_remaining
+     FROM citizenship_access
+     WHERE lower(client_email)=lower($1) OR client_id=$2
+     ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
+     LIMIT 25`,
+    [email, clientId]
+  );
+
+  const { rows: paymentRows } = await query(
+    `SELECT service_type, service_ref, visa_type, plan, stripe_session_id, stripe_payment_intent,
+            amount_cents, currency, status, created_at, updated_at,
+            COALESCE(paid_at, stripe_created_at, created_at) AS payment_date
+     FROM payments
+     WHERE lower(client_email)=lower($1)
+     ORDER BY COALESCE(paid_at, stripe_created_at, created_at) DESC NULLS LAST
+     LIMIT 30`,
+    [email]
+  );
+
+  const assessments = dedupeDashboardRows(assessmentRows, ['id']);
+  const appealAssessments = dedupeDashboardRows(appealAssessmentRows, ['id']);
+  const citizenshipAccess = dedupeDashboardRows(citizenshipAccessRows, ['id']);
+  const payments = dedupeDashboardRows(paymentRows, ['stripe_session_id', 'service_ref']).map(p => ({
+    ...p,
+    stripeSessionId: p.stripe_session_id || null,
+    stripePaymentIntent: p.stripe_payment_intent || null,
+    amountCents: p.amount_cents || null,
+    paymentDate: p.payment_date || p.created_at || null,
+    date: p.payment_date || p.created_at || null,
+    service: p.visa_type ? `Subclass ${p.visa_type} assessment` : (p.service_type || 'Payment'),
+    reference: p.service_ref || null
+  }));
+  const serviceCards = dedupeDashboardCards([
+    ...assessments.map(buildUnifiedServiceCard),
+    ...appealAssessments.map(buildUnifiedServiceCard),
+    ...citizenshipAccess.map(buildUnifiedServiceCard)
+  ]).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  res.json({
+    ok: true,
+    fast: true,
+    client: req.client,
+    counts: {
+      activeServices: serviceCards.length,
+      visaMatters: assessments.length,
+      appealsMatters: appealAssessments.length,
+      documentsReady: serviceCards.filter(c => c.ready && c.hasPdf).length,
+      documentsLocked: serviceCards.filter(c => c.locked).length,
+      payments: payments.length,
+      citizenship: citizenshipAccess.filter(c => c.payment_status === 'paid' || c.status === 'active').length
+    },
+    serviceCards,
+    unifiedCards: serviceCards,
+    visa: assessments,
+    visaAssessments: assessments,
+    assessments,
+    appealsAssessments: appealAssessments,
+    appeals: appealAssessments,
+    citizenshipAccess,
+    citizenship: citizenshipAccess,
+    payments
+  });
+}));
+
 app.get('/api/account/dashboard', requireAuth, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
