@@ -1,27 +1,30 @@
-BIRCAN PAYMENT FINALISE NO-FAIL PAYMENTS PATCH
 
-This patch fixes the live PostgreSQL error:
-  null value in column "id" of relation "payments" violates not-null constraint
+# Bircan Migration - Delegate Grade Upgrade Pack
 
-What changed:
-- Payment finalisation no longer fails if the legacy payments table has an old id column with no default.
-- The assessment is marked paid/preparing/ready first.
-- The payments audit insert is now safe and non-blocking.
-- The server attempts to harden payments.id defaults where possible.
-- Finalisation still returns dashboard redirect data.
+This package upgrades the advice-generation architecture toward:
+- delegate-style scrutiny analysis
+- evidence weighting
+- contradiction detection
+- legislative mapping
+- refusal-risk modelling
+- lodgement readiness analysis
+- dynamic pathway comparison
 
-Upload/replace all backend files:
-- server.js
-- db.js
-- pdf.js
-- package.json
+## Included Files
+- delegateLegalReasoningEngine.js
+- contradictionDetectionEngine.js
+- legislativeMappingEngine.js
+- evidenceWeightEngine.js
+- riskScoringEngine.js
+- lodgementReadinessEngine.js
+- server.patch.js
+- pdf.patch.js
 
-Required Render env:
-- BOOTSTRAP_DB=true
-- DATABASE_URL
-- SESSION_SECRET
-- STRIPE_SECRET_KEY or STRIPE_SECRET_KEY_TEST
-- APP_BASE_URL=https://bircanmigration.au
+## Integration
+1. Copy all *.js files into your backend root.
+2. Merge the imports from server.patch.js into server.js.
+3. Merge the PDF rendering sections from pdf.patch.js into pdf.js.
+4. Restart Render deployment.
 
-After redeploy, test:
-- /api/health should show version 10.0.2-payment-audit-safe-id-hardened
+## Purpose
+This package moves the platform from template-driven assessments toward senior migration-agent and delegate-style strategic reasoning.
