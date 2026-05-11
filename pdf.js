@@ -914,4 +914,101 @@ function renderStrategicIntelligenceSummary(doc, bundle, ctx) {
   }
 }
 
-module.exports = { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 };
+
+// Fast, non-GPT PDF used immediately after payment so the dashboard never waits on the
+// heavy advice engine. This is a real issued PDF byte stream, but it is deliberately
+// labelled as preliminary intake/provisional review rather than final legal advice.
+function buildProvisionalAssessmentPdfBuffer(assessment) {
+  return new Promise((resolve, reject) => {
+    try {
+      const a = assessment || {};
+      const payload = a.form_payload && typeof a.form_payload === 'object' ? a.form_payload : {};
+      const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
+      const flat = {};
+      function flatten(obj, prefix) {
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+        Object.entries(obj).forEach(([k, v]) => {
+          const key = prefix ? prefix + '.' + k : k;
+          if (v && typeof v === 'object' && !Array.isArray(v)) flatten(v, key);
+          else if (v !== undefined && v !== null && String(v).trim() !== '') flat[key] = Array.isArray(v) ? v.join('; ') : String(v);
+        });
+      }
+      flatten(answers, '');
+      const pick = (...keys) => {
+        for (const wanted of keys) {
+          const normWanted = String(wanted).toLowerCase().replace(/[^a-z0-9]/g, '');
+          for (const [k, v] of Object.entries(flat)) {
+            const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (nk === normWanted || nk.includes(normWanted) || normWanted.includes(nk)) return String(v).trim();
+          }
+        }
+        return '';
+      };
+      const subclass = String(a.visa_type || a.visaType || pick('subclass','visaSubclass','visa_type') || 'Visa').replace(/[^0-9A-Za-z]/g, '') || 'Visa';
+      const applicantName = String(a.applicant_name || pick('full-name','fullName','applicantName','clientName') || 'Client').trim();
+      const applicantEmail = String(a.applicant_email || pick('email-address','email','applicantEmail','clientEmail') || a.client_email || '').trim();
+      const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
+      const doc = new PDFDocument({ size: 'A4', margin: 50, autoFirstPage: true, info: {
+        Title: `Bircan Migration - Subclass ${subclass} preliminary assessment receipt`,
+        Author: 'Bircan Migration & Education',
+        Subject: `Fast provisional assessment PDF for ${a.id || ''}`
+      }});
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('error', reject);
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      try {
+        const logoSource = typeof getLogoImageSource === 'function' ? getLogoImageSource() : null;
+        if (logoSource) doc.image(logoSource, 50, 38, { fit: [135, 58] });
+      } catch (_err) {}
+      doc.moveDown(4);
+      doc.font('Helvetica-Bold').fontSize(20).fillColor('#061936').text('Bircan Migration & Education', { align: 'left' });
+      doc.moveDown(0.3);
+      doc.font('Helvetica-Bold').fontSize(16).fillColor('#1f5eff').text(`Subclass ${subclass} preliminary assessment PDF`);
+      doc.moveDown(0.8);
+      doc.font('Helvetica').fontSize(10).fillColor('#344054').text('This PDF was issued immediately after payment so the matter is available in the dashboard. It records the assessment intake and confirms that professional review can proceed. It is not a final migration advice letter and must be read subject to document review, conflict checks, current law and policy verification, and professional assessment by Bircan Migration.');
+      doc.moveDown(1);
+      const rows = [
+        ['Assessment reference', a.id || '—'],
+        ['Applicant name', applicantName || '—'],
+        ['Applicant email', applicantEmail || '—'],
+        ['Client account email', a.client_email || '—'],
+        ['Subclass', subclass],
+        ['Selected plan', a.selected_plan || a.active_plan || '—'],
+        ['Payment status', a.payment_status || '—'],
+        ['Issued', generatedAt],
+        ['Document stage', 'Immediate provisional PDF — pending professional/legal enhancement']
+      ];
+      rows.forEach(([label, value]) => {
+        doc.font('Helvetica-Bold').fontSize(9).fillColor('#061936').text(label, { continued: true, width: 160 });
+        doc.font('Helvetica').fontSize(9).fillColor('#344054').text('  ' + String(value || '—'));
+      });
+      doc.moveDown(1);
+      doc.font('Helvetica-Bold').fontSize(13).fillColor('#061936').text('Assessment information received');
+      doc.moveDown(0.4);
+      const answerRows = Object.entries(flat).filter(([k]) => !/password|token|auth|bm_session/i.test(k)).slice(0, 40);
+      if (!answerRows.length) {
+        doc.font('Helvetica').fontSize(9).fillColor('#344054').text('The backend did not receive a complete answer payload. Bircan Migration should review the matter record and request re-submission if the answer set is incomplete.');
+      } else {
+        answerRows.forEach(([k, v]) => {
+          const label = String(k).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).slice(0, 72);
+          const val = String(v).replace(/\s+/g, ' ').slice(0, 220);
+          doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#061936').text(label + ':', { continued: true });
+          doc.font('Helvetica').fontSize(8.5).fillColor('#344054').text(' ' + val);
+        });
+      }
+      doc.moveDown(1);
+      doc.font('Helvetica-Bold').fontSize(13).fillColor('#061936').text('Professional review note');
+      doc.font('Helvetica').fontSize(9).fillColor('#344054').text('A delegate-grade advice letter may replace or supplement this provisional PDF after the legal engine, evidence review and any GPT-assisted drafting process complete successfully. The client dashboard should not be blocked while that enhancement is pending.');
+      doc.moveDown(1.3);
+      doc.font('Helvetica').fontSize(10).fillColor('#101828').text('Yours faithfully,');
+      doc.moveDown(0.5);
+      doc.font('Helvetica-Bold').text('Kenan Bircan JP');
+      doc.font('Helvetica').text('Registered Migration Agent | MARN: 1463685');
+      doc.text('Bircan Migration & Education');
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
+
+module.exports = { buildAssessmentPdfBuffer, buildProvisionalAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 };
