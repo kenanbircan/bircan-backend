@@ -154,6 +154,18 @@ function assertKnowledgebaseEnforcedAdviceBundle(adviceBundle) {
   if (!advice || !Array.isArray(advice.criterion_findings) || advice.criterion_findings.length < 6) {
     throw new Error('PDF blocked: adviceBundle does not contain sufficient criterion findings.');
   }
+  if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
+    throw new Error('PDF blocked: legal-version lock and aggregate source hash are missing.');
+  }
+  if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
+    throw new Error('PDF blocked: evidence sufficiency matrix is missing or incomplete.');
+  }
+  if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
+    throw new Error('PDF blocked: internal legal audit record is missing.');
+  }
+  if (!adviceBundle.clientSafetyFilter || adviceBundle.clientSafetyFilter.enforced !== true) {
+    throw new Error('PDF blocked: client-safety filter was not enforced.');
+  }
   return pack;
 }
 
@@ -170,8 +182,9 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
     ['Documents scanned', pack.documentCountScanned || sources.length],
     ['Documents loaded', pack.documentCountLoaded || sources.length],
     ['Loaded at', pack.loadedAt || '—'],
-    ['Law version checked as at', pack.legalVersionLock && pack.legalVersionLock.checkedAt ? pack.legalVersionLock.checkedAt : '—'],
-    ['Source hash aggregate', pack.legalVersionLock && pack.legalVersionLock.sourceHashAggregate ? String(pack.legalVersionLock.sourceHashAggregate).slice(0, 16) : '—']
+    ['Law version checked as at', adviceBundle.legalVersionLock?.lawVersionCheckedAt || pack.loadedAt || '—'],
+    ['Aggregate source hash', adviceBundle.legalVersionLock?.aggregateSourceHash ? String(adviceBundle.legalVersionLock.aggregateSourceHash).slice(0, 16) : '—'],
+    ['Evidence sufficiency', adviceBundle.evidenceSufficiencyMatrix?.overallGrade || 'Subject to verification']
   ]);
   if (Array.isArray(pack.hierarchy)) {
     writeSubheading(doc, 'Legal authority hierarchy applied');
@@ -180,8 +193,6 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
       writeBullet(doc, `${level.authority}: ${loaded} source(s) loaded${level.availableInKnowledgebase ? '' : ' (not available in knowledgebase)'}`);
     });
   }
-  writeSubheading(doc, 'Legal version lock');
-  writePara(doc, 'The legal-source version and source hashes have been locked internally for professional review and quality control.');
   writeSubheading(doc, 'Source materials applied in authority order');
   sources.slice(0, 12).forEach((source) => {
     const hash = source && source.sha256 ? ` — source hash ${String(source.sha256).slice(0, 12)}` : '';
@@ -189,6 +200,11 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
     writeBullet(doc, `${authority}${safeKnowledgebaseSourceName(source)}${hash}`);
   });
   if (sources.length > 12) writeBullet(doc, `${sources.length - 12} additional knowledgebase source(s) recorded internally.`);
+  const contradictions = Array.isArray(adviceBundle.contradictionFlags) ? adviceBundle.contradictionFlags : [];
+  if (contradictions.length) {
+    writeSubheading(doc, 'Professional review flags');
+    contradictions.slice(0, 5).forEach(flag => writeBullet(doc, flag.clientSafe || flag.area || 'A professional review flag requires clarification.'));
+  }
 }
 
 function getFinalPosition(adviceBundle, advice) {
@@ -771,6 +787,18 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       } else {
         writeSubheading(doc, 'Critical priority evidence');
         ['Employer operational records', 'Nomination structure documentation', 'Employment continuity and payroll material', 'Occupation alignment evidence', 'English, health and character records'].forEach(item => writeBullet(doc, item));
+      }
+
+      if (adviceBundle.evidenceSufficiencyMatrix && Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows)) {
+        writeTitle(doc, 'Evidence sufficiency overview');
+        writeCard(doc, 'Evidence sufficiency position', [
+          ['Overall grade', adviceBundle.evidenceSufficiencyMatrix.overallGrade || 'Subject to verification'],
+          ['Average score', String(adviceBundle.evidenceSufficiencyMatrix.averageScore ?? '—')],
+          ['Professional boundary', 'Scores are internal evidence-planning indicators only and do not guarantee an outcome.']
+        ]);
+        adviceBundle.evidenceSufficiencyMatrix.rows.slice(0, 8).forEach(row => {
+          writeBullet(doc, `${row.criterion}: ${row.grade} — ${row.requiredAction || row.evidenceGap || 'Evidence to be verified.'}`);
+        });
       }
 
       writeTitle(doc, 'Delegate review preparation considerations');

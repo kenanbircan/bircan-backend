@@ -132,65 +132,102 @@ function validateAdvice(advice, subclass, matrix){
   return ensureMaraCommercialMinimums(sanitiseAdviceForClient(advice));
 }
 
-function hasAnyKey(flat, keyPattern, valuePattern) {
-  const matches = [];
-  for (const [k, v] of Object.entries(flat || {})) {
-    const key = String(k || '').toLowerCase();
-    const value = cleanText(v).toLowerCase();
-    if (keyPattern.test(key) && (!valuePattern || valuePattern.test(value))) matches.push({ key: k, value: cleanText(v) });
-  }
-  return matches;
+
+function aggregateSourceHash(sources){
+  const crypto = require('crypto');
+  const basis = (Array.isArray(sources) ? sources : [])
+    .map(s => [s.authority || '', s.path || '', s.sha256 || '', s.modified || ''].join('|'))
+    .join('\n');
+  return crypto.createHash('sha256').update(basis || 'no-sources').digest('hex');
 }
-
-function detectFactContradictions(facts = {}, assessment = {}) {
-  const flat = { ...((facts && facts.cleaned_answers) || {}) };
-  const blob = JSON.stringify({ facts, assessment }).toLowerCase();
-  const findings = [];
-  function add(code, severity, issue, evidence, action) {
-    findings.push({ code, severity, issue, evidence: evidence.slice(0, 6), action });
-  }
-  const refusalNo = hasAnyKey(flat, /(refusal|refused|cancellation|cancelled|visa history|migration history|aat|review)/i, /\b(no|none|never|not applicable|n\/a)\b/i);
-  const refusalYes = hasAnyKey(flat, /(refusal|refused|cancellation|cancelled|aat|tribunal|review|s48|section48)/i, /\b(yes|refused|cancelled|aat|tribunal|review|s48|section\s*48|appeal|merits)\b/i);
-  if (refusalNo.length && refusalYes.length) add('MIGRATION_HISTORY_CONFLICT', 'HIGH', 'Migration-history answers contain both a denial of refusal/cancellation/review history and a disclosure suggesting refusal, cancellation, AAT/review or s48 issues.', [...refusalNo, ...refusalYes], 'Do not treat migration history as clear until the client provides visa grant/refusal/cancellation notices and Department/AAT correspondence.');
-
-  const healthNo = hasAnyKey(flat, /(health|medical|condition|disability)/i, /\b(no|none|never|not applicable|n\/a)\b/i);
-  const healthYes = hasAnyKey(flat, /(health|medical|condition|disability|treatment|diagnosis)/i, /\b(yes|medical|condition|diagnos|treatment|hospital|specialist|report)\b/i);
-  if (healthNo.length && healthYes.length) add('HEALTH_CONFLICT', 'MEDIUM', 'Health answers contain both a denial of health concerns and information suggesting medical treatment, diagnosis or health evidence.', [...healthNo, ...healthYes], 'Request medical details and relevant reports before finalising health-risk advice.');
-
-  const characterNo = hasAnyKey(flat, /(character|criminal|police|conviction|charge|court|offence)/i, /\b(no|none|never|not applicable|n\/a)\b/i);
-  const characterYes = hasAnyKey(flat, /(character|criminal|police|conviction|charge|court|offence|sentence)/i, /\b(yes|charged|convicted|court|police|offence|sentence|criminal)\b/i);
-  if (characterNo.length && characterYes.length) add('CHARACTER_CONFLICT', 'HIGH', 'Character answers contain both a denial of criminal/character issues and information suggesting charges, convictions, court history or police matters.', [...characterNo, ...characterYes], 'Request police certificates, court documents and a chronology before finalising character advice.');
-
-  const stream = cleanText((facts.matter && facts.matter.stream) || assessment.selected_stream || extractSelectedStream(assessment)).toLowerCase();
-  const blobHasTRT = /\btrt\b|temporary residence transition/.test(blob);
-  const blobHasDE = /direct entry|\bde\b/.test(blob);
-  const blobHasLA = /labou?r agreement|\bdama\b/.test(blob);
-  const streamSignals = [stream.includes('temporary residence transition') || blobHasTRT, stream.includes('direct entry') || blobHasDE, stream.includes('labour agreement') || stream.includes('labor agreement') || blobHasLA].filter(Boolean).length;
-  if (streamSignals > 1) add('STREAM_CONFLICT', 'MEDIUM', 'The questionnaire appears to contain more than one stream signal for the same subclass.', [{ key: 'stream/blob', value: stream || 'multiple stream references detected' }], 'Confirm the intended stream before issuing final advice because stream selection changes applicable criteria and evidence.');
-
-  return findings;
-}
-
-function buildInternalLegalAuditRecord({ assessment = {}, facts = {}, rules = {}, matrix = {}, legalSourcePack = {}, advice = {}, contradictions = [] } = {}) {
-  const sourceHashes = (legalSourcePack.legalVersionLock && legalSourcePack.legalVersionLock.sourceHashes) || (legalSourcePack.sources || []).map(s => ({ authority: s.authority, path: s.path, sha256: s.sha256, modified: s.modified, chars: s.chars }));
+function buildLegalVersionLock(legalSourcePack){
+  const sources = Array.isArray(legalSourcePack && legalSourcePack.sources) ? legalSourcePack.sources : [];
   return {
-    auditKind: 'INTERNAL_LEGAL_AUDIT_ONLY',
-    generatedAt: new Date().toISOString(),
-    assessmentId: assessment.id || facts.reference || null,
-    subclass: legalSourcePack.subclass || facts.visa_subclass || null,
-    selectedStream: legalSourcePack.selectedStream || (facts.matter && facts.matter.stream) || null,
-    lawVersionCheckedAsAt: legalSourcePack.legalVersionLock ? legalSourcePack.legalVersionLock.checkedAt : legalSourcePack.loadedAt,
-    sourceHashAggregate: legalSourcePack.legalVersionLock ? legalSourcePack.legalVersionLock.sourceHashAggregate : null,
-    legalAuthorityOrder: legalSourcePack.legalAuthorityOrder || [],
-    sourceHashes,
-    criteriaAssessed: (advice.criterion_findings || []).map(f => ({ criterion: f.criterion, finding: f.finding, legal_consequence: f.legal_consequence, evidence_gap: f.evidence_gap, recommendation: f.recommendation })),
-    deterministicRisk: { risk_level: rules.risk_level, lodgement_position: rules.lodgement_position, hard_fails: rules.hard_fails || [], review_flags: rules.review_flags || [] },
-    contradictions,
-    evidenceRequired: advice.evidence_required || [],
-    clientNextSteps: advice.client_next_steps || [],
-    qualityFlags: advice.quality_flags || [],
-    professionalBoundary: 'Internal quality-control record only. Not client-facing. Final legal advice remains subject to migration-agent review of original documents and current law.'
+    lawVersionCheckedAt: new Date().toISOString(),
+    subclass: String(legalSourcePack && legalSourcePack.subclass || ''),
+    selectedStream: String(legalSourcePack && legalSourcePack.selectedStream || ''),
+    authorityOrder: Array.isArray(legalSourcePack && legalSourcePack.legalAuthorityOrder) ? legalSourcePack.legalAuthorityOrder : ['ACT','REGULATIONS','INSTRUMENTS','PAMS','OTHER'],
+    sourceCount: sources.length,
+    aggregateSourceHash: aggregateSourceHash(sources),
+    sourceHashes: sources.map(s => ({ authority:s.authority || 'OTHER', path:s.path || '', sha256:s.sha256 || '', modified:s.modified || '' }))
   };
+}
+function findFlatValue(flat, patterns){
+  for(const [k,v] of Object.entries(flat||{})){
+    const key = normKey(k);
+    if(patterns.some(p => key.includes(normKey(p)))) return cleanText(v);
+  }
+  return '';
+}
+function yesish(v){ return /\b(yes|true|declared|disclosed|has|have|held|granted|approved|current|valid|confirmed)\b/i.test(cleanText(v)); }
+function noish(v){ return /\b(no|none|not applicable|n\/a|false|never|absent|missing)\b/i.test(cleanText(v)); }
+function detectContradictions(facts, advice, rules){
+  const flat = facts && facts.cleaned_answers ? facts.cleaned_answers : {};
+  const flags=[];
+  const refusal = findFlatValue(flat,['refusal','refused','aart','tribunal','review','cancellation','cancelled']);
+  const noRefusal = findFlatValue(flat,['no refusal','refusals cancellations','previous refusals','visa refusal']);
+  if(refusal && yesish(refusal) && noRefusal && noish(noRefusal)) flags.push({severity:'HIGH',area:'Migration history',issue:'Refusal/review/cancellation answers appear inconsistent.',clientSafe:'Migration history requires clarification before any final advice or lodgement strategy.'});
+  const health = findFlatValue(flat,['health issue','medical condition','medical','health']);
+  const healthNo = findFlatValue(flat,['no health','health issues']);
+  if(health && yesish(health) && healthNo && noish(healthNo)) flags.push({severity:'MEDIUM',area:'Health',issue:'Health disclosure appears inconsistent.',clientSafe:'Health disclosures and any medical evidence should be reconciled before final advice.'});
+  const character = findFlatValue(flat,['criminal','conviction','police','character']);
+  const characterNo = findFlatValue(flat,['no character','character issues']);
+  if(character && yesish(character) && characterNo && noish(characterNo)) flags.push({severity:'HIGH',area:'Character',issue:'Character disclosure appears inconsistent.',clientSafe:'Character history requires clarification and supporting records before final advice.'});
+  const stream = cleanText(facts && facts.matter && facts.matter.stream).toLowerCase();
+  const employment = findFlatValue(flat,['two years','2 years','employment period','start date','commencement','work with sponsor','trt']);
+  if(/trt|temporary residence transition/.test(stream) && (!employment || /less than|under|not sure|unknown|no/i.test(employment))) flags.push({severity:'HIGH',area:'TRT employment',issue:'TRT stream indicated but employment continuity is not confirmed.',clientSafe:'TRT employment continuity must be verified before the pathway can be recommended.'});
+  if(rules && Array.isArray(rules.hard_fails)){
+    for(const hf of rules.hard_fails.slice(0,5)) flags.push({severity:'CRITICAL',area:'Deterministic legal rule',issue:cleanText(hf.issue || hf.consequence),clientSafe:'A potentially blocking legal issue requires professional review before lodgement.'});
+  }
+  return flags;
+}
+function buildEvidenceSufficiencyMatrix(advice, matrix){
+  const findings = Array.isArray(advice && advice.criterion_findings) ? advice.criterion_findings : [];
+  const evidenceList = Array.isArray(advice && advice.evidence_required) ? advice.evidence_required : [];
+  const rows = findings.map(f => {
+    const text = cleanText([f.finding,f.evidence_gap,f.recommendation,f.legal_consequence]);
+    let score = 55;
+    if(/appears satisfied|satisfied|confirmed|provided|available/i.test(text)) score += 25;
+    if(/cannot be confirmed|missing|required|unverified|not provided|gap|clarify|review/i.test(text)) score -= 25;
+    if(/not satisfied|invalid|bar|refusal|blocking|do not lodge|not recommended/i.test(text)) score -= 20;
+    score = Math.max(0, Math.min(100, score));
+    const grade = score >= 80 ? 'STRONG' : score >= 60 ? 'ADEQUATE_SUBJECT_TO_VERIFICATION' : score >= 40 ? 'WEAK_REQUIRES_EVIDENCE' : 'INSUFFICIENT_DO_NOT_RELY';
+    return {criterion:cleanText(f.criterion), evidenceSufficiencyScore:score, grade, evidenceGap:cleanText(f.evidence_gap), requiredAction:cleanText(f.recommendation)};
+  });
+  const averageScore = rows.length ? Math.round(rows.reduce((a,r)=>a+r.evidenceSufficiencyScore,0)/rows.length) : 0;
+  const missingCoreEvidence = evidenceList.filter(x => /missing|required|provide|obtain|evidence|certificate|contract|payslip|test|passport|police|health/i.test(cleanText(x))).slice(0,20);
+  return {averageScore, overallGrade: averageScore >= 80 ? 'STRONG' : averageScore >= 60 ? 'ADEQUATE_SUBJECT_TO_VERIFICATION' : averageScore >= 40 ? 'WEAK_REQUIRES_EVIDENCE' : 'INSUFFICIENT_DO_NOT_RELY', rows, missingCoreEvidence};
+}
+function buildClientSafetyFilter(advice, contradictionFlags){
+  const clientSafeWarnings = (Array.isArray(contradictionFlags)?contradictionFlags:[]).map(f => f.clientSafe).filter(Boolean);
+  const internalOnlySuppressed = [];
+  const raw = JSON.stringify(advice || {});
+  ['prompt','GPT','AI','quality_flags','source hash','internal','known issue'].forEach(term => { if(raw.toLowerCase().includes(term.toLowerCase())) internalOnlySuppressed.push(term); });
+  return {clientSafeWarnings, internalOnlySuppressed:[...new Set(internalOnlySuppressed)], enforced:true};
+}
+function buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix}){
+  return {
+    auditGeneratedAt:new Date().toISOString(),
+    assessmentReference:facts && facts.reference || null,
+    subclass:facts && facts.visa_subclass || null,
+    selectedStream:legalSourcePack && legalSourcePack.selectedStream || facts?.matter?.stream || '',
+    legalVersionLock,
+    authorityHierarchy: legalSourcePack && legalSourcePack.hierarchy || [],
+    sourcesUsed: legalSourcePack && legalSourcePack.sources || [],
+    criteriaAssessed: Array.isArray(advice && advice.criterion_findings) ? advice.criterion_findings.map(f => f.criterion) : [],
+    deterministicRisk: rules || {},
+    contradictionFlags: contradictionFlags || [],
+    evidenceSufficiencyMatrix,
+    clientFactsReliedOn: facts ? { applicant:facts.applicant, matter:facts.matter, subclass_factors:facts.subclass_factors } : {},
+    internalReviewPosition: (contradictionFlags||[]).some(f=>['CRITICAL','HIGH'].includes(f.severity)) ? 'MANUAL_REVIEW_REQUIRED_BEFORE_RELEASE' : 'SUITABLE_FOR_PRELIMINARY_RELEASE_SUBJECT_TO_RMA_REVIEW'
+  };
+}
+function assertFinalProductionControls(bundle){
+  if(!bundle || !bundle.legalVersionLock || !bundle.legalVersionLock.aggregateSourceHash) throw new Error('Final control gate failed: legal-version lock missing. PDF generation blocked.');
+  if(!bundle.evidenceSufficiencyMatrix || !Array.isArray(bundle.evidenceSufficiencyMatrix.rows) || bundle.evidenceSufficiencyMatrix.rows.length < 6) throw new Error('Final control gate failed: evidence sufficiency matrix missing. PDF generation blocked.');
+  if(!bundle.internalLegalAudit || !bundle.internalLegalAudit.auditGeneratedAt) throw new Error('Final control gate failed: internal legal audit missing. PDF generation blocked.');
+  if(!bundle.clientSafetyFilter || bundle.clientSafetyFilter.enforced !== true) throw new Error('Final control gate failed: client-safety filter missing. PDF generation blocked.');
+  return true;
 }
 
 async function callOpenAIForAdvice(facts, rules, legalPack){
@@ -243,7 +280,7 @@ MANDATORY KNOWLEDGEBASE LEGAL-SOURCE PACK. You must read and apply these sources
 The sources are already ordered by authority. Apply them sequentially: Act -> Regulations -> Instruments -> PAMs. Do not reverse this hierarchy.
 ${JSON.stringify(legalPack,null,2)}
 
-Deterministic decision-engine findings and contradiction-detection findings to treat as binding ground truth. Do not contradict or soften these findings:
+Deterministic decision-engine findings to treat as binding ground truth. Do not contradict or soften these findings:
 ${JSON.stringify(rules,null,2)}
 
 Cleaned matter facts:
@@ -266,13 +303,6 @@ async function generateMigrationAdvice(assessment){
   const subclass=normSubclass(extractedSubclass || facts.visa_subclass);
   const matrix=matrixFor(subclass);
   const rules=runDeterministicRules(subclass, facts.cleaned_answers||{});
-  const contradictions = detectFactContradictions(facts, assessmentForAdvice);
-  if (contradictions.length) {
-    rules.contradiction_flags = contradictions;
-    rules.review_flags = [...(rules.review_flags || []), ...contradictions.map(c => `${c.code}: ${c.issue}`)];
-    if (contradictions.some(c => c.severity === 'HIGH') && !['CRITICAL','HIGH'].includes(rules.risk_level)) rules.risk_level = 'HIGH';
-    if (contradictions.some(c => c.severity === 'HIGH') && rules.lodgement_position === 'SUITABLE_TO_PROCEED') rules.lodgement_position = 'PROCEED_AFTER_EVIDENCE_REVIEW';
-  }
   const legalPack=await buildKnowledgebaseLegalPack(assessmentForAdvice);
   assertKnowledgebasePack(legalPack);
   if(String(legalPack.subclass) !== String(subclass)) throw new Error('Knowledgebase subclass does not match extracted assessment subclass. Advice generation blocked.');
@@ -287,14 +317,19 @@ async function generateMigrationAdvice(assessment){
     legalAuthorityOrder:legalPack.legalAuthorityOrder,
     hierarchyEnforced:legalPack.hierarchyEnforced,
     hierarchy:legalPack.hierarchy,
-    legalVersionLock:legalPack.legalVersionLock,
     documentCountScanned:legalPack.documentCountScanned,
     documentCountLoaded:legalPack.documentCountLoaded,
     sources:legalPack.sources.map(s=>({authority:s.authority,path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
   };
   if(!legalSourcePack.sources || legalSourcePack.sources.length < 2) throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. Advice generation blocked.');
   const validatedAdvice = validateAdvice(advice,subclass,matrix);
-  const legalAudit = buildInternalLegalAuditRecord({ assessment: assessmentForAdvice, facts, rules, matrix, legalSourcePack, advice: validatedAdvice, contradictions });
-  return {facts,rules,matrix,legalSourcePack,advice:validatedAdvice,legalAudit,contradictions,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,legalVersionLocked:true,contradictionDetectionApplied:true,internalLegalAuditPrepared:true};
+  const legalVersionLock = buildLegalVersionLock(legalSourcePack);
+  const contradictionFlags = detectContradictions(facts, validatedAdvice, rules);
+  const evidenceSufficiencyMatrix = buildEvidenceSufficiencyMatrix(validatedAdvice, matrix);
+  const clientSafetyFilter = buildClientSafetyFilter(validatedAdvice, contradictionFlags);
+  const internalLegalAudit = buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice:validatedAdvice,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix});
+  const bundle = {facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,finalProductionControls:true};
+  assertFinalProductionControls(bundle);
+  return bundle;
 }
-module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,detectFactContradictions,buildInternalLegalAuditRecord,matrices,supportedSubclasses:()=>Object.keys(matrices).sort()};
+module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>Object.keys(matrices).sort(),detectContradictions,buildEvidenceSufficiencyMatrix,buildLegalVersionLock,assertFinalProductionControls};

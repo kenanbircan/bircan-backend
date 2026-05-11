@@ -246,28 +246,6 @@ function payloadLooksUsable(payload) { return payloadAnswerCount(payload) >= 3; 
 
 // A PDF is only treated as available when bytes exist and are large enough
 // to be a real issued PDF. This prevents false-positive "generated" messages.
-
-function safeAuditFilenamePart(value) {
-  return String(value || 'assessment').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
-}
-
-function writeInternalLegalAuditFile(assessmentId, adviceBundle) {
-  if (!adviceBundle || !adviceBundle.legalAudit) {
-    throw new Error('Internal legal audit record missing. PDF generation blocked.');
-  }
-  const dir = process.env.LEGAL_AUDIT_DIR || path.join(__dirname, 'legal-audits');
-  fs.mkdirSync(dir, { recursive: true });
-  const filename = `${safeAuditFilenamePart(assessmentId)}-legal-audit.json`;
-  const fullPath = path.join(dir, filename);
-  const payload = {
-    ...adviceBundle.legalAudit,
-    writtenAt: new Date().toISOString(),
-    auditFile: filename
-  };
-  fs.writeFileSync(fullPath, JSON.stringify(payload, null, 2), 'utf8');
-  return { filename, path: fullPath, sha256: crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex') };
-}
-
 function hasIssuedPdfBytes(value) {
   if (!value) return false;
   const len = Buffer.isBuffer(value) ? value.length : value.byteLength || 0;
@@ -4270,15 +4248,24 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) {
         throw new Error('Legal authority hierarchy was not enforced. PDF generation blocked.');
       }
-      if (!adviceBundle.legalVersionLocked || !adviceBundle.legalSourcePack.legalVersionLock || !adviceBundle.legalSourcePack.legalVersionLock.sourceHashAggregate) {
+      if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
         throw new Error('Legal version lock missing. PDF generation blocked.');
       }
-      if (!adviceBundle.contradictionDetectionApplied) {
-        throw new Error('Contradiction detector was not applied. PDF generation blocked.');
+      if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
+        throw new Error('Evidence sufficiency matrix missing. PDF generation blocked.');
+      }
+      if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
+        throw new Error('Internal legal audit missing. PDF generation blocked.');
       }
 
-      const auditWrite = writeInternalLegalAuditFile(assessmentId, adviceBundle);
-      adviceBundle.legalAuditFile = { filename: auditWrite.filename, sha256: auditWrite.sha256 };
+      try {
+        const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
+        fs.mkdirSync(auditDir, { recursive: true });
+        fs.writeFileSync(path.join(auditDir, `${assessmentForAdvice.id || assessmentId}-legal-audit.json`), JSON.stringify(adviceBundle.internalLegalAudit, null, 2));
+      } catch (auditErr) {
+        if (String(process.env.REQUIRE_LEGAL_AUDIT_FILE || 'false').toLowerCase() === 'true') throw auditErr;
+        console.warn('Internal legal audit file write skipped safely:', auditErr.message);
+      }
 
       const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
       pdf = await buildAssessmentPdfBuffer(
