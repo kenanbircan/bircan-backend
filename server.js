@@ -5327,6 +5327,86 @@ app.get('/api/assessments/:id/final-pdf', requireAuth, asyncRoute(async (req, re
   await sendAssessmentPdf(req, res, req.params.id);
 }));
 
+
+// ---- Signed PDF document access links for dashboard buttons ----
+// Purpose: dashboard buttons must not open protected backend PDF URLs directly.
+// The dashboard asks this authenticated endpoint for a short-lived signed URL,
+// then opens the signed URL in a new tab. This avoids fragile cross-domain cookie forwarding.
+function makeDocumentAccessToken(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+
+function readDocumentAccessToken(token) {
+  const raw = String(token || '');
+  const parts = raw.split('.');
+  if (parts.length !== 2) return null;
+  const [body, sig] = parts;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let payload = null;
+  try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch (_err) { return null; }
+  if (!payload || !payload.id || !payload.email || !payload.type || !payload.exp) return null;
+  if (Date.now() > Number(payload.exp)) return null;
+  return payload;
+}
+
+async function assertDocumentCanBeOpenedByEmail(type, id, email) {
+  const cleanType = normaliseServiceType(type);
+  const cleanId = String(id || '').trim();
+  const cleanEmail = normaliseEmail(email);
+  if (!cleanId || !cleanEmail) throw Object.assign(new Error('Document reference is missing.'), { statusCode: 400 });
+  if (cleanType === 'visa_assessment') {
+    const assessment = await resolveAssessmentForAccount(cleanId, cleanEmail);
+    if (!assessment) throw Object.assign(new Error('Assessment was not found for this account.'), { statusCode: 404 });
+    const plan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
+    if (!isInstantPlan(plan) && assessment.release_at && new Date(assessment.release_at).getTime() > Date.now()) {
+      throw Object.assign(new Error('PDF is still locked under the selected release plan.'), { statusCode: 423 });
+    }
+    return { ok: true, type: 'visa_assessment', id: assessment.id };
+  }
+  if (cleanType === 'appeals_assessment') {
+    const rows = (await query(`SELECT id, active_plan, selected_plan, release_at FROM appeals_assessments WHERE id=$1 AND lower(client_email)=lower($2) LIMIT 1`, [cleanId, cleanEmail])).rows;
+    const assessment = rows[0];
+    if (!assessment) throw Object.assign(new Error('Appeals assessment was not found for this account.'), { statusCode: 404 });
+    const plan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
+    if (!isInstantPlan(plan) && assessment.release_at && new Date(assessment.release_at).getTime() > Date.now()) {
+      throw Object.assign(new Error('Appeals PDF is still locked under the selected release plan.'), { statusCode: 423 });
+    }
+    return { ok: true, type: 'appeals_assessment', id: assessment.id };
+  }
+  throw Object.assign(new Error('Unsupported document type.'), { statusCode: 400 });
+}
+
+app.post('/api/documents/pdf-link', requireAuth, asyncRoute(async (req, res) => {
+  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type);
+  const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
+  const checked = await assertDocumentCanBeOpenedByEmail(requestedType, requestedId, req.client.email);
+  const token = makeDocumentAccessToken({
+    type: checked.type,
+    id: checked.id,
+    email: normaliseEmail(req.client.email),
+    iat: Date.now(),
+    exp: Date.now() + 10 * 60 * 1000
+  });
+  res.json({ ok: true, url: `/api/documents/pdf-view?token=${encodeURIComponent(token)}`, expiresInSeconds: 600 });
+}));
+
+app.get('/api/documents/pdf-view', asyncRoute(async (req, res) => {
+  const payload = readDocumentAccessToken(req.query.token);
+  if (!payload) return res.status(401).json({ ok: false, error: 'Document link expired. Return to the dashboard and click Open PDF again.' });
+  if (payload.type === 'visa_assessment') {
+    return sendAssessmentPdf({ client: { email: payload.email } }, res, payload.id);
+  }
+  if (payload.type === 'appeals_assessment') {
+    return sendAppealAssessmentPdf({ client: { email: payload.email } }, res, payload.id);
+  }
+  return res.status(400).json({ ok: false, error: 'Unsupported document type.' });
+}));
+
 app.get('/api/assessment/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
   // Legacy compatibility only. Do not generate/serve a separate template PDF here.
   res.redirect(307, `/api/assessment/${encodeURIComponent(req.params.id)}/final-pdf`);
