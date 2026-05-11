@@ -26,6 +26,7 @@ const bcrypt = require('bcryptjs');
 const Stripe = require('stripe');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
+const PDFDocument = require('pdfkit');
 const { query, tx } = require('./db');
 const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
@@ -4431,93 +4432,137 @@ function enhanceAdviceBundleForCommercialOutput(adviceBundle, assessment) {
 }
 
 
-function collectAssessmentFactsForImmediatePdf(assessment) {
-  const payload = assessment && assessment.form_payload && typeof assessment.form_payload === 'object' ? assessment.form_payload : {};
-  const flat = payload.flatAnswers || payload.answers || payload.rawSubmission || payload || {};
-  const out = [];
-  function walk(obj, prefix = '') {
-    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
-    for (const [key, value] of Object.entries(obj)) {
-      if (/password|token|authorization|bm_session/i.test(key)) continue;
-      const name = prefix ? `${prefix}.${key}` : key;
-      if (value && typeof value === 'object' && !Array.isArray(value)) walk(value, name);
-      else if (value !== undefined && value !== null && String(value).trim() !== '') out.push([name, Array.isArray(value) ? value.join('; ') : String(value)]);
-      if (out.length >= 36) break;
-    }
-  }
-  walk(flat);
-  return out.slice(0, 36);
+function textLineSafe(value, fallback = '') {
+  return String(value === undefined || value === null || value === '' ? fallback : value).replace(/\s+/g, ' ').trim();
 }
 
-function buildImmediateAssessmentPdfBuffer(assessment, reason = '') {
-  const PDFDocument = require('pdfkit');
+function extractAssessmentAnswerSummary(payload, maxItems = 24) {
+  const out = [];
+  function walk(obj, prefix = '', depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 3 || out.length >= maxItems) return;
+    for (const [key, value] of Object.entries(obj)) {
+      if (out.length >= maxItems) break;
+      if (/password|token|auth|authorization|session/i.test(key)) continue;
+      const label = prefix ? `${prefix}.${key}` : key;
+      if (value && typeof value === 'object' && !Array.isArray(value)) walk(value, label, depth + 1);
+      else if (Array.isArray(value)) {
+        const txt = value.map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)).join('; ').slice(0, 220);
+        if (txt) out.push([label, txt]);
+      } else if (value !== undefined && value !== null && String(value).trim() !== '') {
+        out.push([label, String(value).replace(/\s+/g, ' ').slice(0, 220)]);
+      }
+    }
+  }
+  walk(payload || {});
+  return out;
+}
+
+function buildFastAssessmentPdfBuffer(assessment) {
   return new Promise((resolve, reject) => {
     try {
-      const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `Bircan Migration Assessment ${assessment.id || ''}`, Author: 'Bircan Migration & Education' } });
+      const doc = new PDFDocument({ size: 'A4', margin: 54, bufferPages: true });
       const chunks = [];
-      doc.on('data', c => chunks.push(c));
+      doc.on('data', chunk => chunks.push(chunk));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
+
       const navy = '#071b3a';
       const muted = '#66738a';
+      const blue = '#2563eb';
       const gold = '#c99a2e';
-      doc.rect(0, 0, doc.page.width, 92).fill(navy);
-      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(22).text('Bircan Migration & Education', 50, 30);
-      doc.font('Helvetica').fontSize(10).text('Professional Australian migration assessment record', 50, 58);
-      doc.moveDown(3.4);
-      doc.fillColor(gold).font('Helvetica-Bold').fontSize(10).text('SECURE CLIENT DOCUMENT', { characterSpacing: 0.7 });
-      doc.moveDown(0.5);
-      doc.fillColor(navy).font('Helvetica-Bold').fontSize(20).text(`Subclass ${assessment.visa_type || 'Visa'} preliminary assessment letter`);
+      const width = doc.page.width - 108;
+      const line = () => { doc.moveTo(54, doc.y).lineTo(doc.page.width - 54, doc.y).strokeColor('#d9e2ef').lineWidth(1).stroke(); doc.moveDown(0.8); };
+      const h = (txt) => { doc.moveDown(0.55); doc.font('Helvetica-Bold').fontSize(14).fillColor(navy).text(txt, { width }); doc.moveDown(0.25); };
+      const p = (txt) => doc.font('Helvetica').fontSize(10.5).fillColor('#13213c').text(txt, { width, lineGap: 3 });
+
+      doc.font('Helvetica-Bold').fontSize(19).fillColor(navy).text('Bircan Migration & Education', { width });
+      doc.font('Helvetica').fontSize(9).fillColor(muted).text('Professional Australian migration assessment pathway', { width });
+      doc.moveDown(0.6); line();
+
+      doc.font('Helvetica-Bold').fontSize(18).fillColor(navy).text(`Preliminary Assessment Letter — Subclass ${textLineSafe(assessment.visa_type, 'Visa')}`, { width });
       doc.moveDown(0.4);
-      doc.fillColor(muted).font('Helvetica').fontSize(10).text(`Generated: ${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' })}`);
-      doc.moveDown(1.2);
-      const rows = [
-        ['Reference', assessment.id || '—'],
-        ['Applicant', assessment.applicant_name || '—'],
-        ['Applicant email', assessment.applicant_email || '—'],
-        ['Client account email', assessment.client_email || '—'],
-        ['Subclass', assessment.visa_type || '—'],
-        ['Plan', assessment.active_plan || assessment.selected_plan || 'instant'],
-        ['Payment status', assessment.payment_status || '—']
-      ];
-      rows.forEach(([k, v]) => {
-        doc.fillColor(navy).font('Helvetica-Bold').fontSize(9).text(k, { continued: true, width: 150 });
-        doc.fillColor('#111827').font('Helvetica').fontSize(9).text(`  ${v}`);
-      });
-      doc.moveDown(1.2);
-      doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Important status of this document');
-      doc.moveDown(0.35);
-      doc.fillColor('#111827').font('Helvetica').fontSize(10).text('This PDF has been issued immediately after payment/release so the client dashboard contains a real downloadable document. It is a preliminary assessment record and must be reviewed against the full client facts, supporting documents and current law before any final migration advice or lodgement strategy is confirmed.', { align: 'left' });
-      if (reason) {
-        doc.moveDown(0.4);
-        doc.fillColor(muted).fontSize(8).text(`System note: full delegate-grade generation was deferred. ${String(reason).slice(0, 320)}`);
-      }
-      doc.moveDown(1);
-      doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Assessment information captured');
-      doc.moveDown(0.35);
-      const facts = collectAssessmentFactsForImmediatePdf(assessment);
-      if (!facts.length) {
-        doc.fillColor('#111827').font('Helvetica').fontSize(10).text('The saved assessment record contains limited structured answers. The reference, payment and client account details above should be used to locate the original submission and evidence before final review.');
+      doc.font('Helvetica').fontSize(10).fillColor(muted).text(`Reference: ${assessment.id}`, { width });
+      doc.text(`Generated: ${new Date().toLocaleString('en-AU')}`, { width });
+      doc.text(`Plan: ${textLineSafe(assessment.active_plan || assessment.selected_plan, 'instant')}`, { width });
+      doc.moveDown(0.7);
+
+      h('Client and matter details');
+      p(`Applicant: ${textLineSafe(assessment.applicant_name, 'Not stated')}`);
+      p(`Email: ${textLineSafe(assessment.applicant_email || assessment.client_email, 'Not stated')}`);
+      p(`Payment status: ${textLineSafe(assessment.payment_status, 'paid')}`);
+      p(`Assessment status: preliminary PDF issued pending enhanced legal review.`);
+
+      h('Purpose of this document');
+      p('This document is issued immediately after payment verification so the client dashboard contains a real downloadable PDF. It is a preliminary assessment record based on the information submitted through the online questionnaire. It is not a final lodgement opinion and remains subject to registered migration agent review, evidence verification, and confirmation of the law and policy settings current at the relevant time.');
+
+      h('Preliminary position');
+      p('The matter has been received and payment-linked. The submitted facts indicate that a migration assessment file has been opened. The final legal position must not be treated as settled until original evidence, sponsorship or nomination material, visa history, health, character, and any relevant integrity issues have been reviewed.');
+
+      h('Information captured from the questionnaire');
+      const items = extractAssessmentAnswerSummary(assessment.form_payload || assessment.raw_payload || {}, 28);
+      if (!items.length) {
+        p('No detailed questionnaire answers were available in the saved payload. The assessment should be reviewed manually and the client may need to re-submit missing answers if the record is incomplete.');
       } else {
-        facts.forEach(([k, v]) => {
-          if (doc.y > 730) { doc.addPage(); doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Assessment information captured (continued)'); doc.moveDown(0.4); }
-          doc.fillColor(navy).font('Helvetica-Bold').fontSize(8.5).text(String(k).replace(/[-_.]/g, ' ').slice(0, 72));
-          doc.fillColor('#111827').font('Helvetica').fontSize(8.5).text(String(v).slice(0, 360));
+        items.forEach(([k, v]) => {
+          if (doc.y > doc.page.height - 90) doc.addPage();
+          doc.font('Helvetica-Bold').fontSize(9.5).fillColor(navy).text(String(k).replace(/[-_]/g, ' ').slice(0, 80), { continued: false, width });
+          doc.font('Helvetica').fontSize(9.2).fillColor('#344054').text(v, { width, lineGap: 2 });
           doc.moveDown(0.25);
         });
       }
-      if (doc.y > 650) doc.addPage();
+
+      if (doc.y > doc.page.height - 170) doc.addPage();
+      h('Required professional review before reliance');
+      [
+        'Verify identity, passport and visa-history documents.',
+        'Confirm the correct subclass, stream and any nomination or sponsorship prerequisites.',
+        'Check health, character, prior refusal/cancellation, section 48, condition 8503 and PIC 4020 issues.',
+        'Review all supporting evidence before providing final eligibility or lodgement advice.',
+        'Replace or supplement this preliminary PDF with enhanced legal advice where required.'
+      ].forEach(item => { doc.font('Helvetica').fontSize(10).fillColor('#13213c').text(`• ${item}`, { width, lineGap: 3 }); });
+
+      h('Important notice');
+      p('This PDF is automatically generated as a preliminary client-dashboard document. It is not a guarantee of visa grant, nomination approval, sponsorship approval, merits review success or citizenship outcome. Bircan Migration must review evidence and the applicable legal framework before final advice is relied upon.');
+
       doc.moveDown(1.2);
-      doc.fillColor(navy).font('Helvetica-Bold').fontSize(14).text('Professional review note');
-      doc.moveDown(0.35);
-      doc.fillColor('#111827').font('Helvetica').fontSize(10).text('This document should be treated as an issued preliminary PDF for portal access and record-keeping. Bircan Migration may later replace or supplement it with an enhanced delegate-grade advice letter after full legal analysis, evidence review and quality control.');
-      doc.moveDown(1.3);
-      doc.fillColor(navy).font('Helvetica-Bold').fontSize(10).text('Kenan Bircan JP');
-      doc.fillColor('#111827').font('Helvetica').fontSize(9).text('Registered Migration Agent | MARN: 1463685');
-      doc.text('Bircan Migration & Education');
+      doc.font('Helvetica').fontSize(10).fillColor('#13213c').text('Yours faithfully,', { width });
+      doc.moveDown(0.45);
+      doc.font('Helvetica-Bold').fontSize(10.5).fillColor(navy).text('Kenan Bircan JP', { width });
+      doc.font('Helvetica').fontSize(9.5).fillColor('#13213c').text('Registered Migration Agent | MARN: 1463685', { width });
+      doc.text('Bircan Migration & Education', { width });
+
+      const range = doc.bufferedPageRange();
+      for (let i = range.start; i < range.start + range.count; i++) {
+        doc.switchToPage(i);
+        doc.font('Helvetica').fontSize(8).fillColor(muted).text(`Bircan Migration preliminary assessment PDF · Page ${i + 1} of ${range.count}`, 54, doc.page.height - 34, { width, align: 'center' });
+      }
       doc.end();
     } catch (err) { reject(err); }
   });
+}
+
+async function saveFastAssessmentPdf(client, assessment, reason = 'fast_preliminary_pdf') {
+  const pdf = await buildFastAssessmentPdfBuffer(assessment);
+  if (!Buffer.isBuffer(pdf) || pdf.length <= 1024) throw new Error('Fast PDF generation failed: empty PDF buffer.');
+  const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}-preliminary.pdf`;
+  const hash = sha256(pdf);
+  const { rows } = await client.query(
+    `UPDATE assessments
+     SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
+         pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
+     WHERE id=$4
+     RETURNING id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan,
+               status, payment_status, pdf_filename, pdf_sha256, pdf_generated_at, created_at, updated_at,
+               true AS has_pdf`,
+    [pdf, filename, hash, assessment.id]
+  );
+  await client.query(
+    `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
+     VALUES ($1,'completed',NULL,now(),now())
+     ON CONFLICT (assessment_id) DO UPDATE SET status='completed', last_error=NULL, updated_at=now()`,
+    [assessment.id]
+  ).catch(() => null);
+  return rows[0] || { ...assessment, status: 'pdf_ready', has_pdf: true, pdf_filename: filename, pdf_sha256: hash, pdf_generated_at: new Date() };
 }
 
 async function generateAssessmentPdfNow(assessmentId, accountEmail = null, options = {}) {
@@ -4574,10 +4619,21 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       await client.query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
       assessment.pdf_bytes = null;
     }
+    // Permanent production fix: paid/released matters must receive a real PDF immediately.
+    // The heavyweight GPT/knowledgebase engine must never be a prerequisite for dashboard PDF access.
+    // This also repairs legacy rows that were marked ready without saved PDF bytes.
+    const fastSaved = await saveFastAssessmentPdf(client, assessment, 'paid_release_open_or_worker');
+    return toPublicAssessment(fastSaved);
+
+    /* Heavy enhanced advice generation is intentionally bypassed for first PDF issuance.
+       It can be reintroduced later as a separate enhancement job that replaces pdf_bytes
+       after the preliminary PDF is already available to the client. */
+
     if (!payloadLooksUsable(assessment.form_payload)) {
-      const msg = 'Assessment payload was limited, so an immediate preliminary PDF will be issued and the detailed advice engine can be run again after the full answers are available.';
-      await client.query(`UPDATE assessments SET generation_error=$1, updated_at=now() WHERE id=$2`, [msg, assessmentId]);
-      assessment.generation_error = msg;
+      const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
+      await client.query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [msg, assessmentId]);
+      await client.query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [msg, assessmentId]);
+      throw new Error(msg);
     }
 
     await client.query(
@@ -4630,13 +4686,9 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
       );
     } catch (err) {
-      // Permanent production fix: GPT / knowledgebase / delegate-engine failure must never
-      // stop a paid released client from receiving a real PDF. Save an immediate preliminary
-      // PDF first, mark pdf_ready, and keep the engine error for later enhancement/retry.
-      console.error('Full advice PDF generation failed; issuing immediate preliminary PDF:', err && err.message ? err.message : err);
-      pdf = await buildImmediateAssessmentPdfBuffer(assessment, err && err.message ? err.message : 'Full advice generation deferred.');
-      await client.query(`UPDATE pdf_jobs SET status='completed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [err.message || String(err), assessmentId]);
-      await client.query(`UPDATE assessments SET generation_error=$1, updated_at=now() WHERE id=$2`, [`Full advice generation deferred: ${err.message || String(err)}`.slice(0, 1000), assessmentId]);
+      await client.query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [err.message, assessmentId]);
+      await client.query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [err.message, assessmentId]);
+      throw err;
     }
 
     const filename = `Bircan-${assessment.visa_type}-${assessment.id}.pdf`;
@@ -4768,36 +4820,64 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
 
 
 app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(async (req, res) => {
+  const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
-  const { rows: visa } = await query(
+  const clientId = req.client.id;
+  const visaRows = (await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
             selected_plan, active_plan,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE COALESCE(status,'submitted') END AS status,
-            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at, release_at,
-            pdf_generated_at, pdf_filename,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready'
+                 WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
+                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
+            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
+            CASE
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN COALESCE(release_at, updated_at, created_at, now())
+              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+            END AS release_at,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
+            CASE WHEN payment_status='paid' THEN true ELSE false END AS release_ready,
+            0::integer AS release_seconds_remaining
      FROM assessments
-     WHERE lower(client_email)=lower($1) OR lower(COALESCE(applicant_email,''))=lower($1)
-     ORDER BY created_at DESC
-     LIMIT 50`, [email]
-  );
-  const { rows: payments } = await query(
-    `SELECT id, service_type, service_ref, client_email, plan, amount_cents, currency, status, stripe_session_id,
-            stripe_payment_intent, paid_at, stripe_created_at, created_at, updated_at
-     FROM payments
      WHERE lower(COALESCE(client_email,''))=lower($1)
-     ORDER BY COALESCE(paid_at, stripe_created_at, created_at) DESC
-     LIMIT 50`, [email]
-  ).catch(() => ({ rows: [] }));
+        OR lower(COALESCE(applicant_email,''))=lower($1)
+        OR client_id=$2
+     ORDER BY COALESCE(created_at, updated_at) DESC
+     LIMIT 20`,
+    [email, clientId]
+  )).rows;
+
+  let citizenshipRows = [];
+  try {
+    citizenshipRows = (await query(
+      `SELECT id, 'citizenship_test' AS service_type, selected_plan, active_plan,
+              exam_allowance, attempts_used,
+              GREATEST(0, COALESCE(exam_allowance,0) - COALESCE(attempts_used,0)) AS attempts_remaining,
+              status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at,
+              now() AS release_at, true AS has_pdf, true AS release_ready, 0::integer AS release_seconds_remaining
+       FROM citizenship_access
+       WHERE lower(COALESCE(client_email,''))=lower($1) OR client_id=$2
+       ORDER BY COALESCE(created_at, updated_at) DESC
+       LIMIT 10`,
+      [email, clientId]
+    )).rows;
+  } catch (_err) { citizenshipRows = []; }
+
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
     fast: true,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || '' },
-    visaAssessments: visa,
+    loadMs: Date.now() - startedAt,
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    visa: visaRows,
+    visaAssessments: visaRows,
+    assessments: visaRows,
+    appeals: [],
     appealsAssessments: [],
-    citizenshipAccess: [],
-    payments
+    citizenship: citizenshipRows,
+    citizenshipAccess: citizenshipRows,
+    payments: [],
+    counts: { visa: visaRows.length, appeals: 0, citizenship: citizenshipRows.length, payments: 0 }
   });
 }));
 
@@ -5219,20 +5299,6 @@ async function sendAssessmentPdf(req, res, rawId) {
       assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
     } catch (err) {
       console.error('Instant visa PDF generation on open failed:', err.message);
-    }
-  }
-  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid') {
-    try {
-      const pdf = await buildImmediateAssessmentPdfBuffer(assessment, 'Self-healed on PDF open because no issued PDF bytes existed.');
-      const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}.pdf`;
-      const hash = sha256(pdf);
-      await query(`UPDATE assessments
-        SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
-            pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
-        WHERE id=$4`, [pdf, filename, hash, assessment.id]);
-      assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
-    } catch (healErr) {
-      console.error('PDF self-healing failed:', healErr && healErr.stack ? healErr.stack : healErr);
     }
   }
   if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
