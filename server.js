@@ -14,7 +14,7 @@ const multer = require('multer');
 const { query, tx } = require('./db');
 const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
-const { buildKnowledgebaseLegalPack, assertKnowledgebasePack } = require('./knowledgebaseLoader');
+const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
 const hardening = require('./backendHardening');
@@ -1366,6 +1366,55 @@ app.get('/api/routes', (_req, res) => {
   const routes = hardening.listExpressRoutes(app);
   res.json({ ok: true, count: routes.length, routes });
 });
+
+
+// ---------- Knowledgebase law-update health dashboard ----------
+app.get('/api/admin/knowledgebase-health', requireAdmin, asyncRoute(async (_req, res) => {
+  const health = await buildKnowledgebaseHealthReport();
+  res.json({ ok: true, health });
+}));
+
+app.get('/api/knowledgebase/health', asyncRoute(async (_req, res) => {
+  // Public-safe summary only. Full file manifest requires admin token.
+  const health = await buildKnowledgebaseHealthReport();
+  res.json({
+    ok: true,
+    generatedAt: health.generatedAt,
+    snapshotId: health.snapshotId,
+    documentsScanned: health.documentsScanned,
+    authorityCounts: health.authorityCounts,
+    missingAuthority: health.missingAuthority,
+    subclassesDetected: health.subclassesDetected,
+    lawUpdateMode: health.lawUpdateMode,
+    sourceHashChangesWillChangeSnapshot: true
+  });
+}));
+
+
+
+app.get('/api/admin/legal-engine-capabilities', requireAdmin, asyncRoute(async (_req, res) => {
+  res.json({
+    ok: true,
+    version: '10.5.0-final-research-grade-migration-intelligence',
+    capabilities: {
+      dynamicKnowledgebaseLawUpdates: true,
+      universalAllSubclassLegalGraph: true,
+      authorityHierarchy: ['ACT','REGULATIONS','INSTRUMENTS','PAMS','OTHER'],
+      schedule1Schedule2Separation: true,
+      primarySecondaryApplicantLogic: true,
+      waiverExemptionLayer: true,
+      evidenceSufficiencyScoring: true,
+      contradictionDetection: true,
+      manualReviewLock: true,
+      historicalLawReplayReadiness: true,
+      delegateBehaviourModelling: true,
+      refusalRiskScreening: true,
+      caseLawSimilarityHooks: true,
+      precedentClusterHints: true,
+      selfLearningEvidenceWeightingAuditHooks: true
+    }
+  });
+}));
 
 // ---------- Unified admin control dashboard API ----------
 // Token source: set ADMIN_TOKEN or ADMIN_PASSWORD in Render. The admin HTML sends it as X-Admin-Token.

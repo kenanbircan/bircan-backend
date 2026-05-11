@@ -157,6 +157,12 @@ function assertKnowledgebaseEnforcedAdviceBundle(adviceBundle) {
   if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
     throw new Error('PDF blocked: legal-version lock and aggregate source hash are missing.');
   }
+  if (!pack.knowledgebaseSnapshot || !pack.knowledgebaseSnapshot.snapshotId) {
+    throw new Error('PDF blocked: dynamic knowledgebase snapshot is missing.');
+  }
+  if (!adviceBundle.universalLegalGraph || adviceBundle.universalLegalGraph.sourceSnapshotId !== pack.knowledgebaseSnapshot.snapshotId) {
+    throw new Error('PDF blocked: universal legal graph is missing or not tied to the current knowledgebase snapshot.');
+  }
   if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
     throw new Error('PDF blocked: evidence sufficiency matrix is missing or incomplete.');
   }
@@ -181,6 +187,8 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
     ['Authority order enforced', Array.isArray(pack.legalAuthorityOrder) ? pack.legalAuthorityOrder.join(' → ') : 'ACT → REGULATIONS → INSTRUMENTS → PAMS'],
     ['Documents scanned', pack.documentCountScanned || sources.length],
     ['Documents loaded', pack.documentCountLoaded || sources.length],
+    ['Knowledgebase snapshot', pack.knowledgebaseSnapshot?.snapshotId ? String(pack.knowledgebaseSnapshot.snapshotId).slice(0, 16) : '—'],
+    ['Knowledgebase files', pack.knowledgebaseSnapshot?.totalFiles || pack.documentCountScanned || sources.length],
     ['Loaded at', pack.loadedAt || '—'],
     ['Law version checked as at', adviceBundle.legalVersionLock?.lawVersionCheckedAt || pack.loadedAt || '—'],
     ['Aggregate source hash', adviceBundle.legalVersionLock?.aggregateSourceHash ? String(adviceBundle.legalVersionLock.aggregateSourceHash).slice(0, 16) : '—'],
@@ -192,6 +200,12 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
       const loaded = Array.isArray(level.loaded) ? level.loaded.length : 0;
       writeBullet(doc, `${level.authority}: ${loaded} source(s) loaded${level.availableInKnowledgebase ? '' : ' (not available in knowledgebase)'}`);
     });
+  }
+  if (adviceBundle.universalLegalGraph) {
+    writeSubheading(doc, 'Universal legal graph applied');
+    writeBullet(doc, `Visa family: ${adviceBundle.universalLegalGraph.family || 'General migration'}`);
+    writeBullet(doc, `Law update mode: ${adviceBundle.universalLegalGraph.lawUpdateMode || 'Dynamic knowledgebase rescan'}`);
+    writeBullet(doc, `One-fails-all-fail considered: ${adviceBundle.universalLegalGraph.oneFailsAllFail ? 'Yes' : 'No/Not indicated'}`);
   }
   writeSubheading(doc, 'Source materials applied in authority order');
   sources.slice(0, 12).forEach((source) => {
@@ -882,6 +896,22 @@ function buildAppealAdvicePdfBuffer(assessment, adviceBundle) {
       doc.end();
     } catch (err) { reject(err); }
   });
+}
+
+function renderStrategicIntelligenceSummary(doc, bundle, ctx) {
+  const layer = bundle && bundle.researchGradeStrategicLayer;
+  if (!layer) return;
+  sectionTitle(doc, 'Strategic risk-screening summary', ctx);
+  const model = layer.refusalProbabilityModel || {};
+  const delegate = layer.delegateBehaviourModel || {};
+  kv(doc, 'INTERNAL RISK BAND', String(model.band || 'Not calculated'), ctx);
+  kv(doc, 'EVIDENCE / REVIEW NOTE', String(model.note || 'Internal risk screening only; not a guarantee of outcome.'), ctx);
+  if (Array.isArray(delegate.likelyDelegateFocus) && delegate.likelyDelegateFocus.length) {
+    para(doc, 'Likely Department focus areas: ' + delegate.likelyDelegateFocus.slice(0, 6).join('; ') + '.', ctx);
+  }
+  if (Array.isArray(model.reasons) && model.reasons.length) {
+    bullets(doc, model.reasons.slice(0, 6), ctx);
+  }
 }
 
 module.exports = { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 };

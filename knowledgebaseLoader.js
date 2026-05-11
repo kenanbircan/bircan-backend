@@ -35,7 +35,11 @@ function extractVisaSubclass(assessment = {}) {
   const text = flattenForSubclass(payloads).join(' ');
   const keyed = text.match(/(?:subclass|visa\s*type|visa\s*subclass|visaType|visaSubclass)[^0-9]{0,24}(\d{3})/i);
   if (keyed) return keyed[1];
-  const standalone = text.match(/\b(101|103|115|116|173|186|187|188|189|190|300|309|407|482|491|494|500|600|820|866)\b/);
+  // Final dynamic-law update mode: after keyed extraction, accept any three-digit subclass
+  // appearing in a visa-context payload. This allows future subclasses to work when new
+  // law/PAM files are added to /knowledgebase without code changes.
+  const visaContext = /visa|subclass|stream|nomination|sponsor|applicant|migration|partner|student|visitor|skilled|employer/i.test(text);
+  const standalone = visaContext ? text.match(/\b(\d{3})\b/) : null;
   return standalone ? standalone[1] : '';
 }
 function extractSelectedStream(assessment = {}) {
@@ -60,6 +64,41 @@ function classifyLegalAuthority(file) {
 const LEGAL_AUTHORITY_ORDER = ['ACT', 'REGULATIONS', 'INSTRUMENTS', 'PAMS', 'OTHER'];
 function authorityRank(authority) { const i = LEGAL_AUTHORITY_ORDER.indexOf(authority); return i === -1 ? 99 : i; }
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
+
+function buildKnowledgebaseSnapshot(files) {
+  // Rescanned on every advice generation. This is the legal version lock for a mutable
+  // /knowledgebase folder: any added, removed, edited or renamed law file changes snapshotId.
+  const entries = files.map(f => {
+    const buf = fs.readFileSync(f.full);
+    return {
+      path: f.rel,
+      authority: classifyLegalAuthority(f),
+      sha256: sha256(buf),
+      modified: f.stat.mtime.toISOString(),
+      bytes: f.stat.size
+    };
+  }).sort((a,b) => String(a.path).localeCompare(String(b.path)));
+  const basis = JSON.stringify(entries.map(e => [e.path, e.authority, e.sha256, e.bytes]));
+  const snapshotId = crypto.createHash('sha256').update(basis).digest('hex');
+  const authorityCounts = entries.reduce((acc,e) => { acc[e.authority] = (acc[e.authority] || 0) + 1; return acc; }, {});
+  return {
+    snapshotId,
+    generatedAt: new Date().toISOString(),
+    root: 'knowledgebase',
+    totalFiles: entries.length,
+    authorityCounts,
+    files: entries
+  };
+}
+
+function pruneExtractionCache(currentFiles) {
+  // Avoid stale memory when files are removed/renamed during future law updates.
+  const livePrefixes = new Set(currentFiles.map(f => `${f.rel}:`));
+  for (const key of CACHE.keys()) {
+    const keep = [...livePrefixes].some(prefix => key.startsWith(prefix));
+    if (!keep) CACHE.delete(key);
+  }
+}
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
@@ -148,6 +187,8 @@ function clip(text, max) {
 async function buildKnowledgebaseLegalPack(assessment = {}) {
   const files = walk(ROOT).filter(f => !/^A$/i.test(f.name));
   if (!files.length) throw new Error('Knowledgebase folder is missing or empty. Refusing to generate advice letter.');
+  pruneExtractionCache(files);
+  const knowledgebaseSnapshot = buildKnowledgebaseSnapshot(files);
 
   // FIRST GATE: identify visa subclass and selected stream before selecting legal sources.
   const subclass = extractVisaSubclass(assessment);
@@ -216,6 +257,8 @@ async function buildKnowledgebaseLegalPack(assessment = {}) {
 
   const manifest = scored.map(f => ({ path: f.rel, authority: f.authority, score: f.score, modified: f.stat.mtime.toISOString(), bytes: f.stat.size }));
   return {
+    knowledgebaseSnapshot,
+    snapshotId: knowledgebaseSnapshot.snapshotId,
     loadedAt: new Date().toISOString(),
     root: 'knowledgebase',
     assessmentKind,
@@ -230,6 +273,62 @@ async function buildKnowledgebaseLegalPack(assessment = {}) {
     manifest,
     hierarchy,
     sources: extracted.sort((a,b) => authorityRank(a.authority) - authorityRank(b.authority)),
+  };
+}
+
+async function buildKnowledgebaseHealthReport() {
+  const files = walk(ROOT).filter(f => !/^A$/i.test(f.name));
+  pruneExtractionCache(files);
+  const snapshot = buildKnowledgebaseSnapshot(files);
+  const subclasses = new Set();
+  const subclassFiles = {};
+  const authorityCounts = { ACT: 0, REGULATIONS: 0, INSTRUMENTS: 0, PAMS: 0, OTHER: 0 };
+  for (const f of files) {
+    const authority = classifyLegalAuthority(f);
+    authorityCounts[authority] = (authorityCounts[authority] || 0) + 1;
+    const combined = `${f.rel} ${f.name}`;
+    const matches = combined.match(/\b\d{3}\b/g) || [];
+    for (const code of matches) {
+      subclasses.add(code);
+      if (!subclassFiles[code]) subclassFiles[code] = [];
+      subclassFiles[code].push({ path: f.rel, authority, modified: f.stat.mtime.toISOString(), bytes: f.stat.size });
+    }
+  }
+  const missingAuthority = LEGAL_AUTHORITY_ORDER.filter(a => a !== 'OTHER' && !authorityCounts[a]);
+  const subclassSummaries = [...subclasses].sort().map(code => {
+    const filesFor = subclassFiles[code] || [];
+    const authorities = [...new Set(filesFor.map(f => f.authority))].sort((a,b)=>authorityRank(a)-authorityRank(b));
+    return {
+      subclass: code,
+      files: filesFor.length,
+      authorities,
+      hasPAMOrSubclassSource: filesFor.some(f => f.authority === 'PAMS' || /subclass/i.test(f.path)),
+      hasInstrument: filesFor.some(f => f.authority === 'INSTRUMENTS')
+    };
+  });
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    root: ROOT,
+    snapshotId: snapshot.snapshotId,
+    documentsScanned: files.length,
+    authorityCounts,
+    missingAuthority,
+    subclassesDetected: subclassSummaries.length,
+    subclassSummaries,
+    sourceHashChangesWillChangeSnapshot: true,
+    lawUpdateMode: 'dynamic-folder-rescan-per-generation',
+    pdfGenerationBlockRules: [
+      'knowledgebase folder missing or empty',
+      'visa subclass cannot be extracted',
+      'Migration Act source missing for migration matters',
+      'Migration Regulations source missing for migration matters',
+      'subclass PAM/legal source missing for migration matters',
+      'legal hierarchy not ordered Act -> Regulations -> Instruments -> PAMs',
+      'knowledgebase snapshot missing or mismatched with legal-version lock',
+      'universal legal graph or internal audit missing'
+    ],
+    snapshot
   };
 }
 
@@ -252,6 +351,9 @@ function assertKnowledgebasePack(pack) {
   if (!pack.hierarchyEnforced || !Array.isArray(pack.legalAuthorityOrder)) {
     throw new Error('Legal authority hierarchy was not enforced. Advice generation blocked.');
   }
+  if (!pack.knowledgebaseSnapshot || !pack.knowledgebaseSnapshot.snapshotId || !Array.isArray(pack.knowledgebaseSnapshot.files)) {
+    throw new Error('Knowledgebase snapshot is missing. Dynamic law-update enforcement blocked advice generation.');
+  }
   const ranks = pack.sources.map(s => authorityRank(s.authority));
   for (let i = 1; i < ranks.length; i++) {
     if (ranks[i] < ranks[i - 1]) throw new Error('Legal sources are not ordered by authority. Advice generation blocked.');
@@ -259,4 +361,4 @@ function assertKnowledgebasePack(pack) {
   return true;
 }
 
-module.exports = { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream, classifyLegalAuthority, LEGAL_AUTHORITY_ORDER };
+module.exports = { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport, extractVisaSubclass, extractSelectedStream, classifyLegalAuthority, LEGAL_AUTHORITY_ORDER };

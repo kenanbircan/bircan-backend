@@ -1,5 +1,6 @@
 'use strict';
 const matrices = require('./advice-matrices.json');
+const coverage = require('./knowledgebase_coverage.json');
 const { evaluateDecisionEngine } = require('./decisionEngines');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream } = require('./knowledgebaseLoader');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-5.5';
@@ -13,7 +14,48 @@ function looksLikeDummy(v){ const s=cleanText(v).toLowerCase(); return !s || /sa
 function flatten(input,prefix='',out={}){ if(!isPlainObject(input)) return out; for(const [k,v] of Object.entries(input)){ const key=prefix?`${prefix}.${k}`:k; if(['password','token','auth','authorization','bm_session'].includes(normKey(k))) continue; if(isPlainObject(v)) flatten(v,key,out); else if(Array.isArray(v)) out[key]=v.map(cleanText).filter(Boolean).join('; '); else if(!looksLikeDummy(v)) out[key]=cleanText(v); } return out; }
 function payloadOf(assessment){ const p=assessment && assessment.form_payload && typeof assessment.form_payload==='object' ? assessment.form_payload : {}; const base=isPlainObject(p.answers)?p.answers:isPlainObject(p.formPayload)?p.formPayload:isPlainObject(p.rawSubmission)?p.rawSubmission:p; return {...flatten(base), ...(isPlainObject(p.flatAnswers)?flatten(p.flatAnswers):{})}; }
 function pick(flat,names,fallback=''){ const wanted=names.map(normKey); for(const [k,v] of Object.entries(flat||{})){ const nk=normKey(k); if(wanted.includes(nk) || wanted.some(w=>nk.includes(w)||w.includes(nk))){ if(!looksLikeDummy(v)) return cleanText(v); }} return fallback; }
-function matrixFor(subclass){ const code=normSubclass(subclass); const m=matrices[code]; if(!m) throw new Error(`Unsupported visa subclass for advice engine: ${code || 'unknown'}. Supported: ${Object.keys(matrices).sort().join(', ')}`); return {subclass:code, ...m}; }
+function supportedSubclassCodes(){ return [...new Set([...Object.keys(matrices || {}), ...Object.keys(coverage || {})])].filter(Boolean).sort(); }
+function familyForSubclass(code){
+  const c=normSubclass(code);
+  if(['186','187','482','494'].includes(c)) return 'EMPLOYER_SPONSORED';
+  if(['189','190','491'].includes(c)) return 'SKILLED';
+  if(['300','309','820'].includes(c)) return 'PARTNER';
+  if(['101','103','115','116','173'].includes(c)) return 'FAMILY';
+  if(['500','407'].includes(c)) return 'STUDENT_TRAINING';
+  if(['600'].includes(c)) return 'VISITOR';
+  if(['866'].includes(c)) return 'PROTECTION';
+  if(['188'].includes(c)) return 'BUSINESS_INNOVATION_INVESTMENT';
+  return 'GENERAL_MIGRATION';
+}
+function ontologyForFamily(family){
+  const base={validity:['Schedule 1 validity: correct form, charge, location, application method and any required prerequisite invitation/nomination/sponsorship'],primary:['Schedule 2 primary criteria applicable to the subclass and stream'],secondary:['Secondary applicant criteria and one-fails-all-fail public interest criteria where relevant'],hard:['Invalid application, mandatory bar, unresolved PIC/SRC issue, false or misleading information, or missing essential prerequisite'],evidence:['identity documents','visa history','current location and status','health evidence','character evidence','documents supporting each claimed criterion']};
+  const map={
+    EMPLOYER_SPONSORED:{primary:['approved sponsor/nomination','genuine position','occupation alignment','skills/work experience','English/age concessions if applicable','salary/market salary where relevant'],evidence:['nomination approval','position description','employment contract','payslips/tax/super','English test or exemption','skills/registration evidence']},
+    SKILLED:{primary:['SkillSelect invitation where required','points test','skills assessment','English','state/territory nomination if applicable','occupation list eligibility'],evidence:['invitation','points breakdown','skills assessment','English test','EOI records','state nomination']},
+    PARTNER:{primary:['sponsor eligibility','genuine and continuing relationship','four relationship aspects','location/time of decision requirements','family violence considerations where relevant'],evidence:['identity','relationship statements','financial/social/household/commitment evidence','sponsor documents','police checks']},
+    FAMILY:{primary:['eligible family relationship','sponsor/proposer requirements','dependency/age/care/parent balance tests where applicable','assurance of support where applicable'],evidence:['birth/marriage/relationship documents','sponsor status','dependency evidence','AoS evidence if required']},
+    STUDENT_TRAINING:{primary:['enrolment/training arrangement','genuine temporary/study/training requirement','financial capacity','English/OSHC where relevant'],evidence:['CoE/training plan','financial evidence','OSHC','English evidence','genuine-stay explanation']},
+    VISITOR:{primary:['genuine visitor requirement','purpose of stay','funds','incentives to return','risk factors'],evidence:['itinerary','funds','employment/family ties','invitation if relevant','travel history']},
+    PROTECTION:{primary:['protection claims','identity/nationality','credibility','exclusion/ineligibility','complementary protection where relevant'],evidence:['identity','country information','claim statement','supporting documents','prior applications/refusals']},
+    BUSINESS_INNOVATION_INVESTMENT:{primary:['nomination','business/investment threshold','points/stream criteria','source of funds','genuine business/investment history'],evidence:['nomination','business records','financial statements','asset/source-of-funds evidence','investment records']}
+  };
+  const extra=map[family]||{};
+  return {...base, ...extra, primary:[...base.primary, ...(extra.primary||[])], evidence:[...base.evidence, ...(extra.evidence||[])]};
+}
+function matrixFor(subclass){
+  const code=normSubclass(subclass);
+  const m=matrices[code];
+  if(m) return {subclass:code, family:familyForSubclass(code), dynamic:false, ...m};
+  const c=coverage && coverage[code];
+  if(c){
+    const family=familyForSubclass(code);
+    const onto=ontologyForFamily(family);
+    return {subclass:code, family, dynamic:true, title:c.title || `Subclass ${code} visa`, source:'knowledgebase_coverage.json + universal migration-law ontology', streams:[], validity:onto.validity, primary:(Array.isArray(c.criteria)?c.criteria.slice(0,18):onto.primary), secondary:onto.secondary, hard:onto.hard, evidence:onto.evidence, coverageLatest:c.latest || '', criteriaCount:c.criteriaCount || (Array.isArray(c.criteria)?c.criteria.length:0)};
+  }
+  const family=familyForSubclass(code);
+  const onto=ontologyForFamily(family);
+  return {subclass:code, family, dynamic:true, title:`Subclass ${code} visa`, source:'dynamic knowledgebase source pack + universal migration-law ontology', streams:[], validity:onto.validity, primary:onto.primary, secondary:onto.secondary, hard:onto.hard, evidence:onto.evidence};
+}
 function negative(v){ const s=cleanText(v).toLowerCase(); return /(no|not|none|absent|missing|refused|rejected|withdrawn|cancelled|expired|invalid|unresolved|unsure|not sure|unknown|failed|bar|condition present|adverse|criminal|overstay|breach)/i.test(s); }
 function positive(v){ const s=cleanText(v).toLowerCase(); return /(yes|approved|valid|current|held|satisfied|met|granted|positive|available|competent|genuine|confirmed)/i.test(s); }
 const aliasBank={invitation:['invitation','skillselect'],nomination:['nomination','state-nomination','sponsor-nomination'],skills:['skills','skills-assessment','qualification','experience'],english:['english','competent-english'],points:['points','passmark'],sponsor:['sponsor','sponsorship','employer'],relationship:['relationship','partner','spouse','defacto','marriage'],funds:['funds','financial','means-of-support'],health:['health','oshc','health-insurance'],character:['character','criminal','security'],integrity:['pic4020','integrity','bogus','false'],section48:['section48','s48'],conditions:['8503','no-further-stay','nfa-condition'],coe:['coe','enrolment','course'],genuine:['genuine','intention','temporary-stay','genuine-student'],protection:['protection','refugee','persecution','harm','claim']};
@@ -28,7 +70,7 @@ function runDeterministicRules(subclass, flat){
   const risk_level=hard_fails.length?'CRITICAL':review_flags.length>=3?'HIGH':review_flags.length?'MEDIUM':'LOW'; const lodgement_position=hard_fails.length?'DO_NOT_LODGE_NOW':review_flags.length?'PROCEED_AFTER_EVIDENCE_REVIEW':'MANUAL_LEGAL_REVIEW_REQUIRED'; return {subclass:m.subclass, risk_level, lodgement_position, deterministic_findings:findings, hard_fails, review_flags};
 }
 function structuredFacts(assessment){ const flat=payloadOf(assessment); const subclass=normSubclass(assessment.visa_type || pick(flat,['visaType','subclass','visaSubclass'])); const m=matrixFor(subclass); return {reference:assessment.id, visa_subclass:subclass, matrix_title:m.title, matrix_source:m.source, client_email:cleanText(assessment.client_email), applicant:{name:cleanText(assessment.applicant_name)||pick(flat,['full-name','fullName','applicantName','name']), email:cleanText(assessment.applicant_email)||pick(flat,['email-address','email','applicantEmail']), citizenship:pick(flat,['country-of-citizenship','citizenship','nationality','passportCountry']), date_of_birth:pick(flat,['date-of-birth','dob','dateOfBirth'])}, matter:{selected_plan:cleanText(assessment.active_plan||assessment.selected_plan), current_location:pick(flat,['current-location','currentLocation','grant-location','location']), current_visa_status:pick(flat,['current-visa-status','currentVisaStatus','qualifying-visa-held']), family_included:pick(flat,['family-included','familyIncluded','secondaryApplicants']), stream:pick(flat,['stream','selected-stream','visa-stream','application-stream'])}, subclass_factors:{occupation:pick(flat,['occupation','nominated-occupation','anzsco','course','business','investment']), nomination:pick(flat,['nomination','state-nomination-held','nomination-current','sponsor-nomination','nomination-status']), invitation:pick(flat,['invitation-held','invitation','skillselect']), sponsor:pick(flat,['sponsor','employer','partner','proposer','sponsorship']), relationship:pick(flat,['relationship','marriage','defacto','spouse','partner-evidence']), skills:pick(flat,['skills','skills-assessment-held','qualification','work-experience','experience']), english:pick(flat,['english','competent-english','english-test-type']), points:pick(flat,['points','points-breakdown','pass-mark-met']), funds:pick(flat,['funds','financial-capacity','means-of-support']), health:pick(flat,['health','health-issues','health-insurance','oshc']), character:pick(flat,['character-security-issues','character','criminal']), integrity:pick(flat,['pic4020-integrity','pic4020','bogus','false']), visa_conditions:pick(flat,['section48-bar','8503','nfa-condition','no-further-stay','current-visa-status'])}, cleaned_answers:Object.fromEntries(Object.entries(flat).slice(0,160))}; }
-function schema(){ return {type:'object',additionalProperties:false,required:['subclass','risk_level','lodgement_position','title','sections','criterion_findings','evidence_required','client_next_steps','quality_flags','disclaimer'],properties:{subclass:{type:'string',enum:Object.keys(matrices)},risk_level:{type:'string',enum:['LOW','MEDIUM','HIGH','CRITICAL']},lodgement_position:{type:'string',enum:['SUITABLE_TO_PROCEED','PROCEED_AFTER_EVIDENCE_REVIEW','DO_NOT_LODGE_NOW','INVALID_OR_NOT_AVAILABLE','MANUAL_LEGAL_REVIEW_REQUIRED']},title:{type:'string'},sections:{type:'array',minItems:7,maxItems:10,items:{type:'object',additionalProperties:false,required:['heading','body'],properties:{heading:{type:'string'},body:{type:'string'}}}},criterion_findings:{type:'array',minItems:6,maxItems:22,items:{type:'object',additionalProperties:false,required:['criterion','finding','legal_consequence','evidence_gap','recommendation'],properties:{criterion:{type:'string'},finding:{type:'string'},legal_consequence:{type:'string'},evidence_gap:{type:'string'},recommendation:{type:'string'}}}},evidence_required:{type:'array',minItems:4,maxItems:30,items:{type:'string'}},client_next_steps:{type:'array',minItems:3,maxItems:15,items:{type:'string'}},quality_flags:{type:'array',maxItems:15,items:{type:'string'}},disclaimer:{type:'string'}}}; }
+function schema(){ return {type:'object',additionalProperties:false,required:['subclass','risk_level','lodgement_position','title','sections','criterion_findings','evidence_required','client_next_steps','quality_flags','disclaimer'],properties:{subclass:{type:'string',enum:supportedSubclassCodes()},risk_level:{type:'string',enum:['LOW','MEDIUM','HIGH','CRITICAL']},lodgement_position:{type:'string',enum:['SUITABLE_TO_PROCEED','PROCEED_AFTER_EVIDENCE_REVIEW','DO_NOT_LODGE_NOW','INVALID_OR_NOT_AVAILABLE','MANUAL_LEGAL_REVIEW_REQUIRED']},title:{type:'string'},sections:{type:'array',minItems:7,maxItems:10,items:{type:'object',additionalProperties:false,required:['heading','body'],properties:{heading:{type:'string'},body:{type:'string'}}}},criterion_findings:{type:'array',minItems:6,maxItems:22,items:{type:'object',additionalProperties:false,required:['criterion','finding','legal_consequence','evidence_gap','recommendation'],properties:{criterion:{type:'string'},finding:{type:'string'},legal_consequence:{type:'string'},evidence_gap:{type:'string'},recommendation:{type:'string'}}}},evidence_required:{type:'array',minItems:4,maxItems:30,items:{type:'string'}},client_next_steps:{type:'array',minItems:3,maxItems:15,items:{type:'string'}},quality_flags:{type:'array',maxItems:15,items:{type:'string'}},disclaimer:{type:'string'}}}; }
 function framework(m){ return [`Subclass matrix: ${m.title}`,`Knowledge source: ${m.source}`,`Streams/pathways: ${(m.streams||[]).join('; ')}`,`Validity/Schedule 1: ${(m.validity||[]).join('; ')}`,`Primary grant criteria: ${(m.primary||[]).join('; ')}`,`Secondary criteria: ${(m.secondary||[]).join('; ') || 'Not applicable'}`,`Hard fail / do not lodge triggers: ${(m.hard||[]).join('; ')}`,`Evidence required: ${(m.evidence||[]).join('; ')}`].join('\n'); }
 
 function clientSafeAdviceText(v){
@@ -148,6 +190,8 @@ function buildLegalVersionLock(legalSourcePack){
     selectedStream: String(legalSourcePack && legalSourcePack.selectedStream || ''),
     authorityOrder: Array.isArray(legalSourcePack && legalSourcePack.legalAuthorityOrder) ? legalSourcePack.legalAuthorityOrder : ['ACT','REGULATIONS','INSTRUMENTS','PAMS','OTHER'],
     sourceCount: sources.length,
+    knowledgebaseSnapshotId: legalSourcePack && legalSourcePack.knowledgebaseSnapshot && legalSourcePack.knowledgebaseSnapshot.snapshotId || legalSourcePack && legalSourcePack.snapshotId || '',
+    knowledgebaseTotalFiles: legalSourcePack && legalSourcePack.knowledgebaseSnapshot && legalSourcePack.knowledgebaseSnapshot.totalFiles || 0,
     aggregateSourceHash: aggregateSourceHash(sources),
     sourceHashes: sources.map(s => ({ authority:s.authority || 'OTHER', path:s.path || '', sha256:s.sha256 || '', modified:s.modified || '' }))
   };
@@ -205,7 +249,7 @@ function buildClientSafetyFilter(advice, contradictionFlags){
   ['prompt','GPT','AI','quality_flags','source hash','internal','known issue'].forEach(term => { if(raw.toLowerCase().includes(term.toLowerCase())) internalOnlySuppressed.push(term); });
   return {clientSafeWarnings, internalOnlySuppressed:[...new Set(internalOnlySuppressed)], enforced:true};
 }
-function buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix}){
+function buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph}){
   return {
     auditGeneratedAt:new Date().toISOString(),
     assessmentReference:facts && facts.reference || null,
@@ -218,6 +262,7 @@ function buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice,lega
     deterministicRisk: rules || {},
     contradictionFlags: contradictionFlags || [],
     evidenceSufficiencyMatrix,
+    universalLegalGraph,
     clientFactsReliedOn: facts ? { applicant:facts.applicant, matter:facts.matter, subclass_factors:facts.subclass_factors } : {},
     internalReviewPosition: (contradictionFlags||[]).some(f=>['CRITICAL','HIGH'].includes(f.severity)) ? 'MANUAL_REVIEW_REQUIRED_BEFORE_RELEASE' : 'SUITABLE_FOR_PRELIMINARY_RELEASE_SUBJECT_TO_RMA_REVIEW'
   };
@@ -227,6 +272,180 @@ function assertFinalProductionControls(bundle){
   if(!bundle.evidenceSufficiencyMatrix || !Array.isArray(bundle.evidenceSufficiencyMatrix.rows) || bundle.evidenceSufficiencyMatrix.rows.length < 6) throw new Error('Final control gate failed: evidence sufficiency matrix missing. PDF generation blocked.');
   if(!bundle.internalLegalAudit || !bundle.internalLegalAudit.auditGeneratedAt) throw new Error('Final control gate failed: internal legal audit missing. PDF generation blocked.');
   if(!bundle.clientSafetyFilter || bundle.clientSafetyFilter.enforced !== true) throw new Error('Final control gate failed: client-safety filter missing. PDF generation blocked.');
+  return true;
+}
+
+
+function buildUniversalLegalGraph({facts,matrix,legalSourcePack,evidenceSufficiencyMatrix,contradictionFlags}){
+  const family = matrix.family || familyForSubclass(facts && facts.visa_subclass);
+  const ontology = ontologyForFamily(family);
+  const subclass = facts && facts.visa_subclass || legalSourcePack && legalSourcePack.subclass || '';
+  const stream = legalSourcePack && legalSourcePack.selectedStream || facts && facts.matter && facts.matter.stream || '';
+  const extractedSources = Array.isArray(legalSourcePack && legalSourcePack.sources) ? legalSourcePack.sources : [];
+  const sourceAuthorities = [...new Set(extractedSources.map(s => s.authority || 'OTHER'))];
+  const hasWaiverSignal = /waiver|exemption|concession|compelling|special circumstance|schedule 3|health waiver|age exemption|english exemption/i.test(JSON.stringify({facts,matrix,stream}));
+  const nodes = [
+    {id:'subclass_stream_gate', type:'GATE', mandatory:true, timing:'pre_analysis', criteria:[`Subclass ${subclass}`, stream || 'stream not identified'], dependsOn:[], effectIfFailed:'Advice/PDF generation blocked until subclass is identified.'},
+    {id:'legal_source_hierarchy', type:'AUTHORITY', mandatory:true, timing:'pre_analysis', criteria:['Migration Act','Migration Regulations','Legislative Instruments','PAMs / policy'], dependsOn:['subclass_stream_gate'], effectIfFailed:'Knowledgebase enforcement blocked.'},
+    {id:'schedule1_validity', type:'VALIDITY', mandatory:true, timing:'time_of_application', criteria:matrix.validity || ontology.validity, dependsOn:['legal_source_hierarchy'], effectIfFailed:'Application may be invalid or incapable of valid lodgement.'},
+    {id:'schedule2_primary', type:'GRANT_PRIMARY', mandatory:true, timing:'time_of_decision', criteria:matrix.primary || ontology.primary, dependsOn:['schedule1_validity'], effectIfFailed:'Primary applicant may not satisfy grant criteria.'},
+    {id:'secondary_applicants', type:'GRANT_SECONDARY', mandatory:false, timing:'time_of_decision', criteria:matrix.secondary || ontology.secondary, dependsOn:['schedule2_primary'], effectIfFailed:'Secondary applicant issue may affect combined application or family member grant.'},
+    {id:'public_interest_src', type:'PIC_SRC', mandatory:true, timing:'time_of_decision', criteria:['health','character','integrity / PIC 4020','special return criteria','one fails all fail where applicable'], dependsOn:['schedule2_primary','secondary_applicants'], effectIfFailed:'Mandatory public-interest issue may prevent grant unless waiver or discretion is available.'},
+    {id:'waiver_exemption_layer', type:'WAIVER_EXEMPTION', mandatory:false, timing:'exception_review', criteria:['age exemptions','English exemptions','health waivers','Schedule 3 waivers','stream concessions','compelling circumstances'], dependsOn:['schedule2_primary','public_interest_src'], activated:!!hasWaiverSignal, effectIfFailed:'If relied on, the exemption/waiver must be legally available and evidenced.'},
+    {id:'evidence_sufficiency', type:'EVIDENCE', mandatory:true, timing:'pre_lodgement_review', criteria:(evidenceSufficiencyMatrix && evidenceSufficiencyMatrix.rows || []).map(r=>r.criterion), dependsOn:['schedule1_validity','schedule2_primary','public_interest_src','waiver_exemption_layer'], effectIfFailed:'Matter should not proceed to lodgement recommendation until evidence gaps are resolved.'},
+    {id:'manual_review_lock', type:'PROFESSIONAL_CONTROL', mandatory:true, timing:'before_client_release', criteria:['high-risk escalation','MARA/RMA review','client-safe wording control','internal audit preserved'], dependsOn:['evidence_sufficiency'], effectIfFailed:'Client PDF should not be released automatically.'},
+    {id:'final_position', type:'CONCLUSION', mandatory:true, timing:'before_client_release', criteria:['risk level','lodgement position','alternative pathway strategy','document review required'], dependsOn:['manual_review_lock'], effectIfFailed:'Final client-facing advice cannot be issued.'}
+  ];
+  const oneFailsAllFail = nodes.some(n => JSON.stringify(n.criteria).toLowerCase().includes('one fails')) || family === 'FAMILY' || family === 'PARTNER';
+  const highRisk = (contradictionFlags||[]).some(f=>['HIGH','CRITICAL'].includes(f.severity)) || (evidenceSufficiencyMatrix && /INSUFFICIENT|WEAK/.test(String(evidenceSufficiencyMatrix.overallGrade||'')));
+  const timingSeparation = nodes.reduce((acc,n)=>{ acc[n.timing] = (acc[n.timing]||0)+1; return acc; },{});
+  const missingAuthority = ['ACT','REGULATIONS','PAMS'].filter(a => !sourceAuthorities.includes(a));
+  return {
+    version:'10.4-final-all-subclass-dynamic-legal-graph',
+    subclass,
+    selectedStream: stream,
+    family,
+    ontology,
+    nodes,
+    edges:nodes.flatMap(n => (n.dependsOn||[]).map(d => ({from:d,to:n.id}))),
+    timingSeparation,
+    authorityCoverage: sourceAuthorities,
+    missingAuthority,
+    oneFailsAllFail,
+    waiverOrExemptionReviewActivated: !!hasWaiverSignal,
+    highRiskManualReviewRequired:!!highRisk,
+    clientReleaseBlockedUntilManualReview: !!highRisk,
+    sourceSnapshotId:legalSourcePack?.knowledgebaseSnapshot?.snapshotId || legalSourcePack?.snapshotId || '',
+    lawUpdateMode:'dynamic-folder-rescan-per-generation'
+  };
+}
+function assertDynamicKnowledgebaseControls(bundle){
+  if(!bundle?.legalSourcePack?.knowledgebaseSnapshot?.snapshotId) throw new Error('Final dynamic gate failed: knowledgebase snapshot missing.');
+  if(!bundle?.universalLegalGraph?.sourceSnapshotId) throw new Error('Final dynamic gate failed: universal legal graph missing source snapshot.');
+  const requiredNodes = ['subclass_stream_gate','legal_source_hierarchy','schedule1_validity','schedule2_primary','public_interest_src','evidence_sufficiency','manual_review_lock','final_position'];
+  const graphNodeIds = new Set((bundle.universalLegalGraph.nodes || []).map(n => n.id));
+  for (const id of requiredNodes) { if (!graphNodeIds.has(id)) throw new Error(`Final dynamic gate failed: universal legal graph missing ${id}.`); }
+  if(bundle.legalVersionLock?.knowledgebaseSnapshotId !== bundle.legalSourcePack.knowledgebaseSnapshot.snapshotId) throw new Error('Final dynamic gate failed: legal-version lock does not match knowledgebase snapshot.');
+  return true;
+}
+
+
+// ---------- Research-grade strategic intelligence layer (10.5) ----------
+// These functions do not replace the legal criteria engine. They add internal strategic
+// intelligence for professional review: historical-law context, delegate focus points,
+// refusal-risk themes, case-law similarity placeholders, and future learning hooks.
+function extractRelevantDatesForTemporalLaw(facts){
+  const flat = facts && facts.cleaned_answers ? facts.cleaned_answers : {};
+  const keys = ['application date','applied date','lodgement date','decision date','refusal date','invitation date','nomination date','visa expiry','last substantive visa'];
+  const dates = [];
+  for(const [k,v] of Object.entries(flat||{})){
+    const key = cleanText(k).toLowerCase();
+    if(keys.some(p => key.includes(p.replace(/\s+/g,'')) || key.includes(p)) || /date|lodg|decision|refusal|invitation|nomination/i.test(k)){
+      const text = cleanText(v);
+      if(text) dates.push({field:k, value:text});
+    }
+  }
+  return dates.slice(0,20);
+}
+function buildHistoricalLawReplaySimulation({facts, legalSourcePack, legalVersionLock}){
+  const relevantDates = extractRelevantDatesForTemporalLaw(facts);
+  const snapshotId = legalSourcePack?.knowledgebaseSnapshot?.snapshotId || legalSourcePack?.snapshotId || '';
+  return {
+    enabled:true,
+    mode:'snapshot-aware-current-folder',
+    limitation:'This backend applies the current knowledgebase snapshot. Historic replay requires archived prior knowledgebase snapshots for each relevant legal date.',
+    currentSnapshotId:snapshotId,
+    lawVersionCheckedAt:legalVersionLock?.lawVersionCheckedAt || '',
+    relevantMatterDates:relevantDates,
+    replayTriggers: relevantDates.filter(d => /refusal|decision|invitation|nomination|application|lodg/i.test(d.field)).map(d => ({dateField:d.field, dateValue:d.value, action:'Compare this date against the archived knowledgebase snapshot if historic-law replay is enabled.'})),
+    professionalUse:'For refusals, cancellations and appeals, compare the law at application/decision/refusal date against the current folder before final advice.'
+  };
+}
+function buildDelegateBehaviourModel({facts, matrix, contradictionFlags, evidenceSufficiencyMatrix, rules}){
+  const family = matrix?.family || familyForSubclass(facts?.visa_subclass);
+  const lowEvidence = (evidenceSufficiencyMatrix?.rows||[]).filter(r => /WEAK|INSUFFICIENT/.test(String(r.grade))).slice(0,10);
+  const concerns = [];
+  if((contradictionFlags||[]).length) concerns.push('Inconsistencies or contradictory answers may attract credibility and clarification concerns.');
+  if(lowEvidence.length) concerns.push('Weak or insufficient evidence may cause the delegate to give limited weight to the claimed facts.');
+  if(rules?.hard_fails?.length) concerns.push('A potentially blocking legal issue may prevent a favourable outcome unless resolved.');
+  const familyFocus = {
+    EMPLOYER_SPONSORED:['genuine position','sponsor/nomination integrity','occupation alignment','salary and employment evidence','work-experience continuity'],
+    SKILLED:['valid invitation/nomination','points claims','skills assessment','English validity','occupation list eligibility'],
+    PARTNER:['genuine and continuing relationship','four aspects of relationship evidence','sponsor eligibility','timeline consistency','family violence/schedule issues if raised'],
+    FAMILY:['eligible family relationship','sponsor/proposer status','dependency/age/care requirements','assurance of support where applicable'],
+    STUDENT_TRAINING:['genuine student/training purpose','financial capacity','course/training evidence','immigration history'],
+    VISITOR:['genuine visitor intention','funds','incentives to return','travel history and compliance'],
+    PROTECTION:['identity and nationality','credibility','country information','exclusion issues','complementary protection'],
+    BUSINESS_INNOVATION_INVESTMENT:['nomination','business/investment thresholds','source of funds','genuine business/investment history']
+  };
+  return {
+    enabled:true,
+    visaFamily:family,
+    likelyDelegateFocus: familyFocus[family] || ['valid application','subclass criteria','PIC/SRC','evidence sufficiency','credibility and consistency'],
+    matterSpecificConcerns: concerns,
+    weakEvidenceCriteria: lowEvidence.map(r => ({criterion:r.criterion, grade:r.grade, requiredAction:r.requiredAction})),
+    recommendedInternalReview: concerns.length || lowEvidence.length ? 'Senior migration-agent review recommended before final client release or lodgement action.' : 'Standard professional review still required before lodgement action.'
+  };
+}
+function buildRefusalProbabilityModel({rules, contradictionFlags, evidenceSufficiencyMatrix, universalLegalGraph}){
+  let score = 20;
+  const reasons=[];
+  const hard = (rules?.hard_fails||[]).length;
+  const reviews = (rules?.review_flags||[]).length;
+  const highContradictions=(contradictionFlags||[]).filter(f=>/HIGH|CRITICAL/.test(f.severity)).length;
+  const avg = evidenceSufficiencyMatrix?.averageScore || 0;
+  if(hard){ score += 35; reasons.push('Potential blocking criterion or hard-fail issue detected.'); }
+  if(reviews>=3){ score += 15; reasons.push('Multiple deterministic review flags detected.'); }
+  if(highContradictions){ score += 20; reasons.push('High-severity contradiction or credibility issue detected.'); }
+  if(avg && avg<40){ score += 25; reasons.push('Overall evidence sufficiency is insufficient.'); }
+  else if(avg && avg<60){ score += 15; reasons.push('Overall evidence sufficiency is weak.'); }
+  if(universalLegalGraph?.missingAuthority?.length){ score += 5; reasons.push('Knowledgebase authority coverage has missing categories requiring review.'); }
+  score=Math.max(0,Math.min(95,score));
+  const band = score>=75?'VERY_HIGH':score>=55?'HIGH':score>=35?'MODERATE':'LOW_TO_MODERATE';
+  return {enabled:true, score, band, reasons, note:'This is an internal risk-screening score, not a prediction or guarantee of Department/Tribunal outcome.'};
+}
+function buildCaseLawSimilarityLayer({facts, matrix, contradictionFlags, evidenceSufficiencyMatrix}){
+  const family = matrix?.family || familyForSubclass(facts?.visa_subclass);
+  const issueTags = new Set([family]);
+  for(const f of (contradictionFlags||[])) issueTags.add(normKey(f.area||f.issue));
+  for(const r of (evidenceSufficiencyMatrix?.rows||[])) if(/WEAK|INSUFFICIENT/.test(String(r.grade))) issueTags.add(normKey(r.criterion).slice(0,40));
+  return {
+    enabled:true,
+    status:'ready-for-case-law-corpus',
+    issueTags:[...issueTags].filter(Boolean),
+    similarDecisionSearchPrompt:'When a tribunal/court/case-law knowledgebase is connected, search for decisions matching these issue tags and compare favourable/unfavourable facts.',
+    currentLimitation:'No external case-law corpus is included in this backend package. This layer prepares the matter tags and audit structure for future case-law ingestion.'
+  };
+}
+function buildPrecedentClusterHints({matrix, contradictionFlags, evidenceSufficiencyMatrix}){
+  const weak = (evidenceSufficiencyMatrix?.rows||[]).filter(r => /WEAK|INSUFFICIENT/.test(String(r.grade))).map(r=>r.criterion);
+  return {
+    enabled:true,
+    clusterFamily:matrix?.family || 'GENERAL_MIGRATION',
+    riskClusters:[
+      ...(weak.length?[{cluster:'weak-evidence',criteria:weak.slice(0,8)}]:[]),
+      ...((contradictionFlags||[]).length?[{cluster:'credibility-or-consistency',items:(contradictionFlags||[]).map(f=>f.area).slice(0,8)}]:[])
+    ],
+    professionalUse:'Use these clusters to compare future matters and standardise evidence requests, refusal-risk reviews and internal quality control.'
+  };
+}
+function buildResearchGradeStrategicLayer({facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph}){
+  const historicalLawReplay = buildHistoricalLawReplaySimulation({facts,legalSourcePack,legalVersionLock});
+  const delegateBehaviourModel = buildDelegateBehaviourModel({facts,matrix,contradictionFlags,evidenceSufficiencyMatrix,rules});
+  const refusalProbabilityModel = buildRefusalProbabilityModel({rules,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph});
+  const caseLawSimilarityLayer = buildCaseLawSimilarityLayer({facts,matrix,contradictionFlags,evidenceSufficiencyMatrix});
+  const precedentClusterHints = buildPrecedentClusterHints({matrix,contradictionFlags,evidenceSufficiencyMatrix});
+  const selfLearningEvidenceWeighting = {
+    enabled:true,
+    mode:'audit-ready',
+    note:'Stores criterion/evidence/risk structures so future outcomes can be used to tune evidence weighting. No autonomous legal learning occurs without professional governance.'
+  };
+  return {version:'10.5-research-grade-strategic-intelligence', historicalLawReplay, delegateBehaviourModel, refusalProbabilityModel, caseLawSimilarityLayer, precedentClusterHints, selfLearningEvidenceWeighting};
+}
+function assertResearchGradeControls(bundle){
+  if(!bundle?.researchGradeStrategicLayer?.refusalProbabilityModel?.band) throw new Error('Research-grade gate failed: refusal probability model missing.');
+  if(!bundle?.researchGradeStrategicLayer?.delegateBehaviourModel?.likelyDelegateFocus?.length) throw new Error('Research-grade gate failed: delegate behaviour model missing.');
+  if(!bundle?.researchGradeStrategicLayer?.historicalLawReplay?.currentSnapshotId) throw new Error('Research-grade gate failed: historical law snapshot reference missing.');
   return true;
 }
 
@@ -253,6 +472,8 @@ async function callOpenAIForAdvice(facts, rules, legalPack){
     'If a required fact is absent, write: cannot be confirmed from the questionnaire.',
     'Every criterion finding must use this reasoning chain: criterion -> relevant facts from questionnaire -> evidence gap -> legal consequence -> recommendation.',
     'Separate validity / time-of-application issues from grant / time-of-decision issues.',
+    'Use the formal legal graph: subclass/stream gate -> legal source hierarchy -> Schedule 1 validity -> Schedule 2 primary criteria -> secondary applicants -> PIC/SRC -> waiver/exemption layer -> evidence sufficiency -> manual review lock -> final position.',
+    'Also identify likely delegate concern areas, refusal-risk themes, and any need for historical-law replay where dates suggest appeal/refusal/cancellation context.',
     'Apply hard-fail triggers firmly. If a hard-fail or bar may apply, state that lodgement should not proceed until resolved.',
     'Do not use placeholders, sample labels, known issue text, AI disclaimers, or broad risk labels without reasons.',
     'Do not dump raw questionnaire answers. Convert them into findings.',
@@ -319,6 +540,8 @@ async function generateMigrationAdvice(assessment){
     hierarchy:legalPack.hierarchy,
     documentCountScanned:legalPack.documentCountScanned,
     documentCountLoaded:legalPack.documentCountLoaded,
+    knowledgebaseSnapshot: legalPack.knowledgebaseSnapshot,
+    snapshotId: legalPack.snapshotId,
     sources:legalPack.sources.map(s=>({authority:s.authority,path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
   };
   if(!legalSourcePack.sources || legalSourcePack.sources.length < 2) throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. Advice generation blocked.');
@@ -327,9 +550,16 @@ async function generateMigrationAdvice(assessment){
   const contradictionFlags = detectContradictions(facts, validatedAdvice, rules);
   const evidenceSufficiencyMatrix = buildEvidenceSufficiencyMatrix(validatedAdvice, matrix);
   const clientSafetyFilter = buildClientSafetyFilter(validatedAdvice, contradictionFlags);
-  const internalLegalAudit = buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice:validatedAdvice,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix});
-  const bundle = {facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,finalProductionControls:true};
+  const universalLegalGraph = buildUniversalLegalGraph({facts,matrix,legalSourcePack,evidenceSufficiencyMatrix,contradictionFlags});
+  const researchGradeStrategicLayer = buildResearchGradeStrategicLayer({facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph});
+  const internalLegalAudit = buildInternalLegalAudit({facts,rules,matrix,legalSourcePack,advice:validatedAdvice,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph});
+  internalLegalAudit.researchGradeStrategicLayer = researchGradeStrategicLayer;
+  internalLegalAudit.universalLegalGraph = universalLegalGraph;
+  internalLegalAudit.knowledgebaseSnapshot = legalSourcePack.knowledgebaseSnapshot;
+  const bundle = {facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
   assertFinalProductionControls(bundle);
+  assertDynamicKnowledgebaseControls(bundle);
+  assertResearchGradeControls(bundle);
   return bundle;
 }
-module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>Object.keys(matrices).sort(),detectContradictions,buildEvidenceSufficiencyMatrix,buildLegalVersionLock,assertFinalProductionControls};
+module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>supportedSubclassCodes(),detectContradictions,buildEvidenceSufficiencyMatrix,buildLegalVersionLock,assertFinalProductionControls,buildUniversalLegalGraph,assertDynamicKnowledgebaseControls,buildResearchGradeStrategicLayer,assertResearchGradeControls,supportedSubclassCodes};
