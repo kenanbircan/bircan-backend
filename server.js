@@ -4565,6 +4565,12 @@ function toPublicAssessment(a) {
 }
 
 async function runOnePdfJob() {
+  await query(
+    `UPDATE pdf_jobs
+     SET status='queued', locked_at=NULL, run_after=now(), updated_at=now()
+     WHERE status='processing' AND locked_at < now() - interval '10 minutes'`
+  ).catch(err => console.error('PDF worker stale-lock reset failed:', err.message));
+
   const job = await tx(async (client) => {
     const { rows } = await client.query(
       `SELECT * FROM pdf_jobs
@@ -4578,21 +4584,35 @@ async function runOnePdfJob() {
     return rows[0];
   });
   if (!job) return false;
+  console.log('PDF worker picked job:', { jobId: job.id, assessmentId: job.assessment_id, attempts: job.attempts });
   try {
     await generateAssessmentPdfNow(job.assessment_id);
+    console.log('PDF worker completed job:', { jobId: job.id, assessmentId: job.assessment_id });
   } catch (err) {
+    const message = err && err.message ? err.message : 'PDF generation failed.';
     const nextAttempts = Number(job.attempts || 0) + 1;
-    const retry = nextAttempts < 3;
+    const retry = nextAttempts < 5;
+    console.error('PDF worker failed job:', { jobId: job.id, assessmentId: job.assessment_id, attempts: nextAttempts, error: message });
     await query(
-      `UPDATE pdf_jobs SET status=$1, last_error=$2, run_after=now() + interval '2 minutes', updated_at=now() WHERE id=$3`,
-      [retry ? 'queued' : 'failed', err.message, job.id]
+      `UPDATE pdf_jobs SET status=$1, last_error=$2, run_after=now() + interval '2 minutes', locked_at=NULL, updated_at=now() WHERE id=$3`,
+      [retry ? 'queued' : 'failed', message, job.id]
     );
   }
   return true;
 }
 
+async function processPendingPdfJobs(limit = 3) {
+  let ran = 0;
+  for (let i = 0; i < limit; i += 1) {
+    const didRun = await runOnePdfJob();
+    if (!didRun) break;
+    ran += 1;
+  }
+  return ran;
+}
+
 app.post('/api/admin/run-pdf-worker-once', asyncRoute(async (_req, res) => {
-  const ran = await runOnePdfJob();
+  const ran = await processPendingPdfJobs(5);
   res.json({ ok: true, ran });
 }));
 
@@ -5068,10 +5088,19 @@ async function sendAssessmentPdf(req, res, rawId) {
   }
   if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid' && isInstantPlan(effectiveVisaPlan)) {
     try {
-      await generateAssessmentPdfNow(assessment.id);
+      console.log('Instant visa PDF requested before ready; generating now:', assessment.id);
+      await generateAssessmentPdfNow(assessment.id, req.client.email);
       assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
     } catch (err) {
-      console.error('Instant visa PDF generation on open failed:', err.message);
+      console.error('Instant visa PDF generation on open failed:', err && err.stack ? err.stack : err);
+      assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
+      await query(
+        `INSERT INTO pdf_jobs (assessment_id, status, run_after, last_error)
+         VALUES ($1,'queued',now(),$2)
+         ON CONFLICT (assessment_id) DO UPDATE
+         SET status='queued', run_after=now(), last_error=$2, updated_at=now()`,
+        [assessment.id, err.message || 'PDF generation failed on open.']
+      ).catch(queueErr => console.error('Could not requeue failed instant PDF:', queueErr.message));
     }
   }
   if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
@@ -5080,7 +5109,8 @@ async function sendAssessmentPdf(req, res, rawId) {
       error: 'PDF not ready. The advice letter has not been issued yet.',
       status: assessment.status,
       paymentStatus: assessment.payment_status,
-      generationError: assessment.generation_error || null
+      generationError: assessment.generation_error || null,
+      queued: assessment.payment_status === 'paid'
     });
   }
   if (assessment.status !== 'pdf_ready') {
@@ -5233,8 +5263,9 @@ function start() {
     console.error('Startup database checks failed:', err && err.stack ? err.stack : err);
   });
 
+  processPendingPdfJobs(3).catch(err => console.error('PDF worker initial run failed:', err && err.stack ? err.stack : err));
   setInterval(() => {
-    runOnePdfJob().catch(err => console.error('PDF worker tick failed:', err && err.stack ? err.stack : err));
+    processPendingPdfJobs(3).catch(err => console.error('PDF worker tick failed:', err && err.stack ? err.stack : err));
   }, PDF_WORKER_INTERVAL_MS);
 }
 
