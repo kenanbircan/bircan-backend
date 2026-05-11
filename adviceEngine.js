@@ -1,7 +1,7 @@
 'use strict';
 const matrices = require('./advice-matrices.json');
 const { evaluateDecisionEngine } = require('./decisionEngines');
-const { buildKnowledgebaseLegalPack, assertKnowledgebasePack } = require('./knowledgebaseLoader');
+const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream } = require('./knowledgebaseLoader');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-5.5';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
@@ -146,6 +146,8 @@ async function callOpenAIForAdvice(facts, rules, legalPack){
     'Assume identity, document authenticity, conflict checks, service agreement status, and Consumer Guide delivery may require separate confirmation unless expressly confirmed in the facts.',
     'Your output must be structured legal reasoning, not generic immigration commentary.',
     'Use only the supplied knowledgebase legal-source pack, subclass matrix, deterministic findings, and cleaned matter facts.',
+    'Apply the legal-source hierarchy in this order: Migration Act first, Migration Regulations second, Legislative Instruments third, PAMs/policy fourth. PAMs cannot override legislation or instruments.',
+    'First identify the visa subclass and selected stream, then apply only the matching legal materials to the client facts.',
     'Treat the knowledgebase extracts as the current legal framework for this backend. Do not rely on general memory where the knowledgebase is silent or inconsistent.',
     'Every material conclusion must be traceable to the supplied knowledgebase, questionnaire facts, and deterministic findings.',
     'Do not invent facts, evidence, dates, employment history, relationship facts, points, nominations, invitations, or legal provisions.',
@@ -176,6 +178,7 @@ MANDATORY LEGAL-REASONING METHOD:
 ${framework(m)}
 
 MANDATORY KNOWLEDGEBASE LEGAL-SOURCE PACK. You must read and apply these sources before drafting. If the sources do not support a conclusion, say the issue requires manual legal review.
+The sources are already ordered by authority. Apply them sequentially: Act -> Regulations -> Instruments -> PAMs. Do not reverse this hierarchy.
 ${JSON.stringify(legalPack,null,2)}
 
 Deterministic decision-engine findings to treat as binding ground truth. Do not contradict or soften these findings:
@@ -192,23 +195,35 @@ ${JSON.stringify(facts,null,2)}`;
   return JSON.parse(out);
 }
 async function generateMigrationAdvice(assessment){
-  const facts=structuredFacts(assessment);
-  const subclass=normSubclass(facts.visa_subclass);
+  // FIRST GATE: extract subclass and stream before any knowledgebase or GPT call.
+  const extractedSubclass = extractVisaSubclass(assessment);
+  if(!extractedSubclass) throw new Error('Visa subclass could not be identified. Knowledgebase-enforced advice generation blocked.');
+  const selectedStream = extractSelectedStream(assessment);
+  const assessmentForAdvice = { ...assessment, visa_type: extractedSubclass, selected_stream: selectedStream || assessment.selected_stream };
+  const facts=structuredFacts(assessmentForAdvice);
+  const subclass=normSubclass(extractedSubclass || facts.visa_subclass);
   const matrix=matrixFor(subclass);
   const rules=runDeterministicRules(subclass, facts.cleaned_answers||{});
-  const legalPack=await buildKnowledgebaseLegalPack(assessment);
+  const legalPack=await buildKnowledgebaseLegalPack(assessmentForAdvice);
   assertKnowledgebasePack(legalPack);
+  if(String(legalPack.subclass) !== String(subclass)) throw new Error('Knowledgebase subclass does not match extracted assessment subclass. Advice generation blocked.');
   const advice=await callOpenAIForAdvice(facts,rules,legalPack);
   const legalSourcePack={
     loadedAt:legalPack.loadedAt,
     root:legalPack.root,
     assessmentKind:legalPack.assessmentKind,
     subclass:legalPack.subclass,
+    selectedStream:legalPack.selectedStream,
+    subclassExtraction:legalPack.subclassExtraction,
+    legalAuthorityOrder:legalPack.legalAuthorityOrder,
+    hierarchyEnforced:legalPack.hierarchyEnforced,
+    hierarchy:legalPack.hierarchy,
     documentCountScanned:legalPack.documentCountScanned,
     documentCountLoaded:legalPack.documentCountLoaded,
-    sources:legalPack.sources.map(s=>({path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
+    sources:legalPack.sources.map(s=>({authority:s.authority,path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
   };
   if(!legalSourcePack.sources || legalSourcePack.sources.length < 2) throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. Advice generation blocked.');
-  return {facts,rules,matrix,legalSourcePack,advice:validateAdvice(advice,subclass,matrix),model:DEFAULT_MODEL,knowledgebaseEnforced:true};
+  const validatedAdvice = validateAdvice(advice,subclass,matrix);
+  return {facts,rules,matrix,legalSourcePack,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true};
 }
 module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>Object.keys(matrices).sort()};

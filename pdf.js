@@ -130,8 +130,25 @@ function assertKnowledgebaseEnforcedAdviceBundle(adviceBundle) {
     throw new Error('PDF blocked: knowledgebase legal-source pack was not supplied to pdf.js.');
   }
   const kind = String(pack.assessmentKind || '').toUpperCase();
-  if (kind === 'MIGRATION' && !sources.some(s => /REGULATIONS/i.test(String(s.path || s.name || '')))) {
+  if (kind === 'MIGRATION' && !pack.subclass) {
+    throw new Error('PDF blocked: visa subclass was not extracted before knowledgebase loading.');
+  }
+  if (kind === 'MIGRATION' && !pack.hierarchyEnforced) {
+    throw new Error('PDF blocked: Act → Regulations → Instruments → PAMs hierarchy was not enforced.');
+  }
+  if (kind === 'MIGRATION' && !sources.some(s => s.authority === 'ACT')) {
+    throw new Error('PDF blocked: Migration Act source missing from knowledgebase legal-source pack.');
+  }
+  if (kind === 'MIGRATION' && !sources.some(s => s.authority === 'REGULATIONS' || /REGULATIONS/i.test(String(s.path || s.name || '')))) {
     throw new Error('PDF blocked: Migration Regulations source missing from knowledgebase legal-source pack.');
+  }
+  if (kind === 'MIGRATION' && !sources.some(s => s.authority === 'PAMS' || /subclass/i.test(String(s.path || s.name || '')))) {
+    throw new Error('PDF blocked: subclass PAM/legal source missing from knowledgebase legal-source pack.');
+  }
+  const order = ['ACT','REGULATIONS','INSTRUMENTS','PAMS','OTHER'];
+  const ranks = sources.map(s => { const i = order.indexOf(String(s.authority || 'OTHER')); return i < 0 ? 99 : i; });
+  for (let i = 1; i < ranks.length; i++) {
+    if (ranks[i] < ranks[i - 1]) throw new Error('PDF blocked: legal sources are not ordered by legal authority.');
   }
   const advice = getAdvice(adviceBundle);
   if (!advice || !Array.isArray(advice.criterion_findings) || advice.criterion_findings.length < 6) {
@@ -147,15 +164,25 @@ function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
   writePara(doc, 'This preliminary assessment has been generated only after the Bircan Migration legal knowledgebase was loaded and supplied to the advice engine. The source pack is recorded for professional review and quality control. Client-facing conclusions remain preliminary until original documents and current law are verified.');
   writeCard(doc, 'Legal-source pack', [
     ['Assessment kind', pack.assessmentKind || 'Migration'],
-    ['Subclass', pack.subclass || '—'],
+    ['Subclass extracted first', pack.subclass || '—'],
+    ['Selected stream', pack.selectedStream || 'To be confirmed'],
+    ['Authority order enforced', Array.isArray(pack.legalAuthorityOrder) ? pack.legalAuthorityOrder.join(' → ') : 'ACT → REGULATIONS → INSTRUMENTS → PAMS'],
     ['Documents scanned', pack.documentCountScanned || sources.length],
     ['Documents loaded', pack.documentCountLoaded || sources.length],
     ['Loaded at', pack.loadedAt || '—']
   ]);
-  writeSubheading(doc, 'Source materials applied');
+  if (Array.isArray(pack.hierarchy)) {
+    writeSubheading(doc, 'Legal authority hierarchy applied');
+    pack.hierarchy.forEach((level) => {
+      const loaded = Array.isArray(level.loaded) ? level.loaded.length : 0;
+      writeBullet(doc, `${level.authority}: ${loaded} source(s) loaded${level.availableInKnowledgebase ? '' : ' (not available in knowledgebase)'}`);
+    });
+  }
+  writeSubheading(doc, 'Source materials applied in authority order');
   sources.slice(0, 12).forEach((source) => {
     const hash = source && source.sha256 ? ` — source hash ${String(source.sha256).slice(0, 12)}` : '';
-    writeBullet(doc, `${safeKnowledgebaseSourceName(source)}${hash}`);
+    const authority = source && source.authority ? `${source.authority}: ` : '';
+    writeBullet(doc, `${authority}${safeKnowledgebaseSourceName(source)}${hash}`);
   });
   if (sources.length > 12) writeBullet(doc, `${sources.length - 12} additional knowledgebase source(s) recorded internally.`);
 }

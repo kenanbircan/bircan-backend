@@ -4240,6 +4240,12 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
         throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
       }
+      if (!adviceBundle.subclassFirstGate || !adviceBundle.legalSourcePack.subclass) {
+        throw new Error('Subclass-first legal gate missing. PDF generation blocked.');
+      }
+      if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) {
+        throw new Error('Legal authority hierarchy was not enforced. PDF generation blocked.');
+      }
 
       const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
       pdf = await buildAssessmentPdfBuffer(
