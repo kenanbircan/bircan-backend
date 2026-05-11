@@ -73,7 +73,6 @@ function checkoutFingerprint({ serviceType, serviceRef, plan, price, email, acce
 }
 
 async function getReusableOpenCheckoutSession(stripeSessionId, expected = {}) {
-  if (String(process.env.FAST_CHECKOUT_REUSE_OPEN_SESSION || 'false').toLowerCase() !== 'true') return null;
   if (!stripe || !stripeSessionId) return null;
   try {
     const session = await stripe.checkout.sessions.retrieve(stripeSessionId);
@@ -106,7 +105,6 @@ const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTE
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
 const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
-const FAST_CHECKOUT_SKIP_PRICE_VERIFY = String(process.env.FAST_CHECKOUT_SKIP_PRICE_VERIFY || 'true').toLowerCase() !== 'false';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -2083,6 +2081,64 @@ app.post('/api/assessment/create-appeals-assessment', appealUploadFields, asyncR
 
 
 
+
+// ---- Fast checkout route: avoids Stripe price retrieve/reuse checks on login handoff ----
+app.post('/api/service/checkout-session-fast', requireAuth, asyncRoute(async (req, res) => {
+  if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
+  let serviceSession;
+  try { serviceSession = await getServiceSessionForCheckout(req); }
+  catch (err) { return res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'Service checkout failed.' }); }
+
+  if (serviceSession.service_type !== 'visa_assessment') {
+    return res.status(409).json({ ok: false, error: 'Fast checkout currently handles visa assessments only. Use the standard checkout route.' });
+  }
+
+  const assessmentId = serviceSession.service_ref || req.body.assessmentId || req.body.assessment_id;
+  const { rows } = await query('SELECT * FROM assessments WHERE id=$1 LIMIT 1', [assessmentId]);
+  const assessment = rows[0];
+  if (!assessment) return res.status(404).json({ ok: false, error: 'Assessment was not found. Submit the visa assessment again before payment.' });
+
+  const assessmentEmail = normaliseEmail(assessment.client_email || assessment.applicant_email || serviceSession.client_email);
+  const clientEmail = normaliseEmail(req.client.email);
+  if (assessmentEmail && assessmentEmail !== clientEmail) {
+    return res.status(409).json({ ok: false, error: `This assessment belongs to ${assessmentEmail}, but you are logged in as ${clientEmail}. Please use the same email address used in the assessment form.` });
+  }
+
+  const checkoutPlan = strictServicePlanFromRequest(req, serviceSession.selected_plan || assessment.active_plan || assessment.selected_plan || 'instant');
+  const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
+  if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
+
+  const stripeSession = await createCheckoutSessionSafely({
+    mode: 'payment',
+    customer_email: req.client.email,
+    client_reference_id: assessment.id,
+    line_items: [{ price, quantity: 1 }],
+    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&assessment_id=${encodeURIComponent(assessment.id)}`,
+    metadata: {
+      service_type: 'visa_assessment',
+      service_session_id: serviceSession.id,
+      service_ref: assessment.id,
+      assessment_id: assessment.id,
+      visa_type: assessment.visa_type,
+      plan: checkoutPlan,
+      client_email: req.client.email
+    }
+  }, 'fast-service-visa-checkout', checkoutFingerprint({ serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan, price, email: req.client.email }));
+
+  await query(
+    `UPDATE assessments
+     SET client_id=$1, client_email=$2, applicant_email=COALESCE(applicant_email,$2),
+         stripe_session_id=$3, status='checkout_created', selected_plan=$4, active_plan=$4,
+         amount_cents=$5, currency=$6, release_at=NULL, updated_at=now()
+     WHERE id=$7`,
+    [req.client.id, req.client.email, stripeSession.id, checkoutPlan, stripeSession.amount_total || null, stripeSession.currency || 'aud', assessment.id]
+  );
+  await query(`UPDATE service_sessions SET client_id=$1, client_email=$2, selected_plan=$3, status='checkout_created', stripe_session_id=$4, updated_at=now() WHERE id=$5`, [req.client.id, req.client.email, checkoutPlan, stripeSession.id, serviceSession.id]);
+  recordPaymentAuditSafe(assessment.id, req.client.email, stripeSession).catch(err => console.warn('Fast checkout payment audit skipped:', err.message));
+  return res.json({ ok: true, fast: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId: assessment.id, plan: checkoutPlan });
+}));
+
 app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   let serviceSession;
@@ -2108,10 +2164,8 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     const checkoutPlan = strictServicePlanFromRequest(req, serviceSession.selected_plan || assessment.active_plan || assessment.selected_plan || 'instant');
     const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
     if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
-    if (!FAST_CHECKOUT_SKIP_PRICE_VERIFY) {
-      try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
-      catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
-    }
+    try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
+    catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
     const reusableVisaCheckout = await getReusableOpenCheckoutSession(assessment.stripe_session_id || serviceSession.stripe_session_id, { serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan });
     if (reusableVisaCheckout) {
       await markServiceSessionCheckoutCreated(serviceSession.id, reusableVisaCheckout.id);
@@ -2143,8 +2197,8 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     );
     await query(`UPDATE service_sessions SET selected_plan=$1, updated_at=now() WHERE id=$2`, [checkoutPlan, serviceSession.id]);
     await markServiceSessionCheckoutCreated(serviceSession.id, stripeSession.id);
-    recordPaymentAuditSafe(assessment.id, req.client.email, stripeSession).catch(err => console.warn('Payment audit deferred:', err.message));
-    return res.json({ ok: true, fastCheckout: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId: assessment.id, plan: checkoutPlan });
+    await recordPaymentAuditSafe(assessment.id, req.client.email, stripeSession);
+    return res.json({ ok: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId: assessment.id, plan: checkoutPlan });
   }
 
   if (serviceSession.service_type === 'appeals_assessment') {
@@ -2155,10 +2209,8 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     const plan = safePlan(serviceSession.selected_plan || assessment.active_plan || assessment.selected_plan || findPlanInObject(req.body) || 'instant');
     const price = resolveAppealPriceId(plan);
     if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for appeals plan ${plan}.` });
-    if (!FAST_CHECKOUT_SKIP_PRICE_VERIFY) {
-      try { await assertStripePriceMatchesPlan({ serviceType: 'appeals_assessment', plan, priceId: price }); }
-      catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
-    }
+    try { await assertStripePriceMatchesPlan({ serviceType: 'appeals_assessment', plan, priceId: price }); }
+    catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
     const reusableAppealCheckout = await getReusableOpenCheckoutSession(assessment.stripe_session_id || serviceSession.stripe_session_id, { serviceType: 'appeals_assessment', serviceRef: assessmentId, plan });
     if (reusableAppealCheckout) {
       await markServiceSessionCheckoutCreated(serviceSession.id, reusableAppealCheckout.id);
@@ -2176,18 +2228,16 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     }, 'service-appeals-checkout', checkoutFingerprint({ serviceType: 'appeals_assessment', serviceRef: assessmentId, plan, price, email: req.client.email }));
     await query(`UPDATE appeals_assessments SET stripe_session_id=$1, status='checkout_created', amount_cents=$2, currency=$3, updated_at=now() WHERE id=$4`, [stripeSession.id, stripeSession.amount_total || appealAmountCents(plan), stripeSession.currency || 'aud', assessmentId]);
     await markServiceSessionCheckoutCreated(serviceSession.id, stripeSession.id);
-    recordAppealPaymentAuditSafe(assessmentId, req.client.email, stripeSession).catch(err => console.warn('Appeal payment audit deferred:', err.message));
-    return res.json({ ok: true, fastCheckout: true, service: 'appeals_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId, plan });
+    await recordAppealPaymentAuditSafe(assessmentId, req.client.email, stripeSession);
+    return res.json({ ok: true, service: 'appeals_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId, plan });
   }
 
   if (serviceSession.service_type === 'citizenship_test') {
     const plan = requestedCitizenshipPlan(req, serviceSession.selected_plan || '20');
     const price = resolveCitizenshipPriceId(plan);
     if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for citizenship plan ${plan}.` });
-    if (!FAST_CHECKOUT_SKIP_PRICE_VERIFY) {
-      try { await assertStripePriceMatchesPlan({ serviceType: 'citizenship_test', plan, priceId: price }); }
-      catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
-    }
+    try { await assertStripePriceMatchesPlan({ serviceType: 'citizenship_test', plan, priceId: price }); }
+    catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
     let accessId = serviceSession.service_ref || null;
     if (accessId) {
       const existingAccess = (await query(`SELECT id, selected_plan, active_plan, payment_status, status FROM citizenship_access WHERE id=$1 LIMIT 1`, [accessId])).rows[0];
@@ -2221,8 +2271,8 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     }, 'service-citizenship-checkout', checkoutFingerprint({ serviceType: 'citizenship_test', serviceRef: accessId, plan, price, email: req.client.email }));
     await query(`UPDATE citizenship_access SET stripe_session_id=$1, amount_cents=$2, currency=$3, raw_payload=$4, updated_at=now() WHERE id=$5`, [stripeSession.id, stripeSession.amount_total || null, stripeSession.currency || 'aud', stripeSession, accessId]);
     await markServiceSessionCheckoutCreated(serviceSession.id, stripeSession.id);
-    recordCitizenshipPaymentAuditSafe(accessId, req.client.email, stripeSession, plan).catch(err => console.warn('Citizenship payment audit deferred:', err.message));
-    return res.json({ ok: true, fastCheckout: true, service: 'citizenship_test', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, accessId, citizenshipAccessId: accessId, plan });
+    await recordCitizenshipPaymentAuditSafe(accessId, req.client.email, stripeSession, plan);
+    return res.json({ ok: true, service: 'citizenship_test', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, accessId, citizenshipAccessId: accessId, plan });
   }
 
   return res.status(400).json({ ok: false, error: `Unsupported service type: ${serviceSession.service_type}` });
