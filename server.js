@@ -1,5 +1,20 @@
 require('dotenv').config();
 
+
+// ---- Render runtime hardening: expose silent startup failures instead of exiting without logs ----
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err && err.stack ? err.stack : err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason && reason.stack ? reason.stack : reason);
+});
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received: shutting down Bircan backend.');
+  process.exit(0);
+});
+
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -87,7 +102,9 @@ let pdfParse = null;
 try { pdfParse = require('pdf-parse'); } catch (_err) { pdfParse = null; }
 const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !== 'false';
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
-const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'true').toLowerCase() !== 'false';
+// Payment finalisation must be fast. By default it only records payment and queues PDF generation.
+// Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
+const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -3070,7 +3087,92 @@ async function recordPaymentAuditSafe(assessmentId, email, session) {
   }
 }
 
+
+async function normalisePaidStripeSessionForAttachment(session) {
+  const md = { ...((session && session.metadata) || {}) };
+  const rawService = normaliseServiceType(md.service_type || '');
+  const ref = String(md.service_ref || md.assessment_id || md.appeal_assessment_id || md.citizenship_access_id || session.client_reference_id || '').trim();
+  const planText = String(md.plan || '').trim().toLowerCase();
+
+  // Strong identifiers always win over stale or wrong metadata.
+  if (md.assessment_id || /^sub_/.test(ref)) {
+    const assessmentId = md.assessment_id || ref;
+    const found = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [assessmentId])).rows[0];
+    if (found) {
+      md.service_type = 'visa_assessment';
+      md.assessment_id = found.id;
+      md.service_ref = found.id;
+      md.visa_type = md.visa_type || found.visa_type || 'visa';
+      md.plan = safePlan(md.plan || found.active_plan || found.selected_plan || 'instant');
+      return { ...session, metadata: md, client_reference_id: found.id };
+    }
+  }
+
+  if (md.appeal_assessment_id || rawService === 'appeals_assessment') {
+    const appealId = md.appeal_assessment_id || md.assessment_id || ref;
+    const found = appealId ? (await query('SELECT id, visa_subclass, selected_plan, active_plan FROM appeals_assessments WHERE id=$1 LIMIT 1', [appealId])).rows[0] : null;
+    if (found) {
+      md.service_type = 'appeals_assessment';
+      md.appeal_assessment_id = found.id;
+      md.assessment_id = found.id;
+      md.service_ref = found.id;
+      md.visa_type = md.visa_type || found.visa_subclass || 'appeals';
+      md.plan = safePlan(md.plan || found.active_plan || found.selected_plan || 'instant');
+      return { ...session, metadata: md, client_reference_id: found.id };
+    }
+  }
+
+  // Guard against the live bug: a visa assessment checkout can arrive with
+  // metadata.service_type='citizenship_test' while plan='instant'. Citizenship
+  // never uses instant/24h/3d plans. If the reference exists as an assessment,
+  // finalise it as a visa assessment instead of throwing a citizenship plan error.
+  if (rawService === 'citizenship_test' && /^(instant|24h|24hr|24hour|24hours|3d|3day|3days)$/i.test(planText || 'instant')) {
+    const candidate = md.assessment_id || md.service_ref || session.client_reference_id || '';
+    if (candidate) {
+      const found = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [candidate])).rows[0];
+      if (found) {
+        md.service_type = 'visa_assessment';
+        md.assessment_id = found.id;
+        md.service_ref = found.id;
+        md.visa_type = md.visa_type || found.visa_type || 'visa';
+        md.plan = safePlan(md.plan || found.active_plan || found.selected_plan || 'instant');
+        return { ...session, metadata: md, client_reference_id: found.id };
+      }
+    }
+  }
+
+  if (md.citizenship_access_id || /^cit_/.test(ref) || rawService === 'citizenship_test') {
+    const accessId = md.citizenship_access_id || ref || session.client_reference_id;
+    const found = accessId ? (await query('SELECT id, selected_plan, active_plan FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0] : null;
+    if (found) {
+      md.service_type = 'citizenship_test';
+      md.citizenship_access_id = found.id;
+      md.service_ref = found.id;
+      md.plan = normaliseCitizenshipPlan(md.plan || found.active_plan || found.selected_plan || '20');
+      return { ...session, metadata: md, client_reference_id: found.id };
+    }
+  }
+
+  if (!rawService) {
+    const candidate = session.client_reference_id || md.service_ref || md.assessment_id;
+    if (candidate) {
+      const foundAssessment = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [candidate])).rows[0];
+      if (foundAssessment) {
+        md.service_type = 'visa_assessment';
+        md.assessment_id = foundAssessment.id;
+        md.service_ref = foundAssessment.id;
+        md.visa_type = md.visa_type || foundAssessment.visa_type || 'visa';
+        md.plan = safePlan(md.plan || foundAssessment.active_plan || foundAssessment.selected_plan || 'instant');
+        return { ...session, metadata: md, client_reference_id: foundAssessment.id };
+      }
+    }
+  }
+
+  return { ...session, metadata: md };
+}
+
 async function attachPaidSession(session, options = {}) {
+  session = await normalisePaidStripeSessionForAttachment(session);
   await markServiceSessionPaidByStripe(session).catch(err => console.warn('Service session paid marker skipped:', err.message));
   const md = session.metadata || {};
   if (md.service_type === 'appeals_assessment') return attachPaidAppealsSession(session);
@@ -3136,14 +3238,15 @@ async function attachPaidSession(session, options = {}) {
       setImmediate(() => generateAssessmentPdfNow(assessmentId).catch(err => console.error('Immediate PDF generation failed:', err.message)));
     }
   }
-  return { attached: true, assessmentId, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
+  return { attached: true, type: 'visa_assessment', assessmentId, plan: paidPlanForGeneration, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
 }
 
 app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   const sessionId = req.body.sessionId || req.body.session_id || req.query.session_id;
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
-  const session = await stripe.checkout.sessions.retrieve(sessionId);
+  let session = await stripe.checkout.sessions.retrieve(sessionId);
+  session = await normalisePaidStripeSessionForAttachment(session);
   const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
@@ -3172,7 +3275,8 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   const sessionId = req.query.session_id || req.query.sessionId;
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
-  const session = await stripe.checkout.sessions.retrieve(sessionId);
+  let session = await stripe.checkout.sessions.retrieve(sessionId);
+  session = await normalisePaidStripeSessionForAttachment(session);
   const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
@@ -3674,7 +3778,8 @@ async function finaliseStripePayment(req, res) {
     return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   }
 
-  const session = await stripe.checkout.sessions.retrieve(sessionId);
+  let session = await stripe.checkout.sessions.retrieve(sessionId);
+  session = await normalisePaidStripeSessionForAttachment(session);
   const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
@@ -5105,14 +5210,32 @@ async function ensureCriticalDashboardColumns() {
   }
 }
 
-async function start() {
+async function runStartupTasks() {
   if (BOOTSTRAP_DB) await ensureSchema();
   await ensureCriticalDashboardColumns();
-  setInterval(() => runOnePdfJob().catch(err => console.error('PDF worker tick failed:', err)), PDF_WORKER_INTERVAL_MS);
-  app.listen(PORT, () => console.log(`Bircan FINAL PostgreSQL server listening on ${PORT}`));
+  console.log('Startup database checks completed.');
 }
 
-start().catch((err) => {
-  console.error('Server failed to start:', err);
-  process.exit(1);
-});
+function start() {
+  const host = '0.0.0.0';
+
+  const server = app.listen(PORT, host, () => {
+    console.log(`Bircan FINAL PostgreSQL server listening on ${host}:${PORT}`);
+  });
+
+  server.on('error', (err) => {
+    console.error('HTTP server failed to listen:', err && err.stack ? err.stack : err);
+  });
+
+  runStartupTasks().catch((err) => {
+    // Do not exit before Render detects the web port. Health/database routes will
+    // expose the failure, and logs will show the exact startup problem.
+    console.error('Startup database checks failed:', err && err.stack ? err.stack : err);
+  });
+
+  setInterval(() => {
+    runOnePdfJob().catch(err => console.error('PDF worker tick failed:', err && err.stack ? err.stack : err));
+  }, PDF_WORKER_INTERVAL_MS);
+}
+
+start();
