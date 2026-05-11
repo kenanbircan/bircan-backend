@@ -118,6 +118,48 @@ function getAdvice(adviceBundle) {
   return adviceBundle && adviceBundle.advice ? adviceBundle.advice : (adviceBundle || {});
 }
 
+function safeKnowledgebaseSourceName(source) {
+  const raw = source && (source.path || source.name || source.file || 'knowledgebase-source');
+  return cleanText(path.basename(String(raw)), 'knowledgebase-source');
+}
+
+function assertKnowledgebaseEnforcedAdviceBundle(adviceBundle) {
+  const pack = adviceBundle && adviceBundle.legalSourcePack;
+  const sources = pack && Array.isArray(pack.sources) ? pack.sources : [];
+  if (sources.length < 2) {
+    throw new Error('PDF blocked: knowledgebase legal-source pack was not supplied to pdf.js.');
+  }
+  const kind = String(pack.assessmentKind || '').toUpperCase();
+  if (kind === 'MIGRATION' && !sources.some(s => /REGULATIONS/i.test(String(s.path || s.name || '')))) {
+    throw new Error('PDF blocked: Migration Regulations source missing from knowledgebase legal-source pack.');
+  }
+  const advice = getAdvice(adviceBundle);
+  if (!advice || !Array.isArray(advice.criterion_findings) || advice.criterion_findings.length < 6) {
+    throw new Error('PDF blocked: adviceBundle does not contain sufficient criterion findings.');
+  }
+  return pack;
+}
+
+function writeKnowledgebaseEnforcementRecord(doc, adviceBundle) {
+  const pack = assertKnowledgebaseEnforcedAdviceBundle(adviceBundle);
+  const sources = Array.isArray(pack.sources) ? pack.sources : [];
+  writeTitle(doc, 'Knowledgebase enforcement record');
+  writePara(doc, 'This preliminary assessment has been generated only after the Bircan Migration legal knowledgebase was loaded and supplied to the advice engine. The source pack is recorded for professional review and quality control. Client-facing conclusions remain preliminary until original documents and current law are verified.');
+  writeCard(doc, 'Legal-source pack', [
+    ['Assessment kind', pack.assessmentKind || 'Migration'],
+    ['Subclass', pack.subclass || '—'],
+    ['Documents scanned', pack.documentCountScanned || sources.length],
+    ['Documents loaded', pack.documentCountLoaded || sources.length],
+    ['Loaded at', pack.loadedAt || '—']
+  ]);
+  writeSubheading(doc, 'Source materials applied');
+  sources.slice(0, 12).forEach((source) => {
+    const hash = source && source.sha256 ? ` — source hash ${String(source.sha256).slice(0, 12)}` : '';
+    writeBullet(doc, `${safeKnowledgebaseSourceName(source)}${hash}`);
+  });
+  if (sources.length > 12) writeBullet(doc, `${sources.length - 12} additional knowledgebase source(s) recorded internally.`);
+}
+
 function getFinalPosition(adviceBundle, advice) {
   return adviceBundle?.finalPosition || adviceBundle?.rawDecision || advice?.finalPosition || {};
 }
@@ -587,6 +629,7 @@ function buildPathwayRows(stream) {
 
 function buildAssessmentPdfBuffer(assessment, adviceBundle) {
   if (!adviceBundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');
+  assertKnowledgebaseEnforcedAdviceBundle(adviceBundle);
 
   return new Promise((resolve, reject) => {
     try {
@@ -714,6 +757,8 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       writePara(doc, `Based on the information presently available, the matter appears capable of progressing to further detailed professional review, subject to verification of supporting documentation, clarification of the identified evidence areas and confirmation of the applicable legislative and policy framework at the relevant time.
 
 At this stage, the pathway should be approached as a preliminary professional assessment only. No final eligibility position should be relied upon until original documentation, sponsorship evidence, legislative requirements and policy considerations have been comprehensively reviewed.`);
+
+      writeKnowledgebaseEnforcementRecord(doc, adviceBundle);
 
       writeTitle(doc, 'Important notice');
       writePara(doc, advice.disclaimer || 'This report is prepared for preliminary migration assessment purposes only. It is based on information presently available at the time of preparation and remains subject to verification of original documents, confirmation of current law and policy, and professional review before any lodgement action. This report does not constitute a guarantee of visa grant outcome.');

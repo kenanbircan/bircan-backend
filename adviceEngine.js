@@ -102,9 +102,7 @@ function validateAdvice(advice, subclass, matrix){
   const banned=['known issue','high risk: adverse factors','sample 1','sample 2','sample 3','as an ai','generic advice','consult a professional'];
   const triggered=banned.filter(b=>joined.includes(b));
   if(triggered.length){
-    advice.quality_flags.push(`Weak/generic GPT wording detected and downgraded for manual review: ${triggered.join(', ')}`);
-    advice.risk_level='HIGH';
-    advice.lodgement_position='MANUAL_LEGAL_REVIEW_REQUIRED';
+    throw new Error(`Weak/generic advice wording detected. Knowledgebase-enforced PDF generation blocked: ${triggered.join(', ')}`);
   }
 
   if(advice.sections.length<7) advice.quality_flags.push('Quality issue: fewer than 7 structured advice sections returned.');
@@ -193,5 +191,24 @@ ${JSON.stringify(facts,null,2)}`;
   if(!out) throw new Error('OpenAI advice generation returned no structured text.');
   return JSON.parse(out);
 }
-async function generateMigrationAdvice(assessment){ const facts=structuredFacts(assessment); const subclass=normSubclass(facts.visa_subclass); const matrix=matrixFor(subclass); const rules=runDeterministicRules(subclass, facts.cleaned_answers||{}); const legalPack=await buildKnowledgebaseLegalPack(assessment); assertKnowledgebasePack(legalPack); const advice=await callOpenAIForAdvice(facts,rules,legalPack); return {facts,rules,matrix,legalSourcePack:{loadedAt:legalPack.loadedAt,root:legalPack.root,assessmentKind:legalPack.assessmentKind,subclass:legalPack.subclass,documentCountScanned:legalPack.documentCountScanned,documentCountLoaded:legalPack.documentCountLoaded,sources:legalPack.sources.map(s=>({path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))},advice:validateAdvice(advice,subclass,matrix),model:DEFAULT_MODEL}; }
+async function generateMigrationAdvice(assessment){
+  const facts=structuredFacts(assessment);
+  const subclass=normSubclass(facts.visa_subclass);
+  const matrix=matrixFor(subclass);
+  const rules=runDeterministicRules(subclass, facts.cleaned_answers||{});
+  const legalPack=await buildKnowledgebaseLegalPack(assessment);
+  assertKnowledgebasePack(legalPack);
+  const advice=await callOpenAIForAdvice(facts,rules,legalPack);
+  const legalSourcePack={
+    loadedAt:legalPack.loadedAt,
+    root:legalPack.root,
+    assessmentKind:legalPack.assessmentKind,
+    subclass:legalPack.subclass,
+    documentCountScanned:legalPack.documentCountScanned,
+    documentCountLoaded:legalPack.documentCountLoaded,
+    sources:legalPack.sources.map(s=>({path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
+  };
+  if(!legalSourcePack.sources || legalSourcePack.sources.length < 2) throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. Advice generation blocked.');
+  return {facts,rules,matrix,legalSourcePack,advice:validateAdvice(advice,subclass,matrix),model:DEFAULT_MODEL,knowledgebaseEnforced:true};
+}
 module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>Object.keys(matrices).sort()};

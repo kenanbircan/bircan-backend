@@ -4228,20 +4228,24 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
 
     let pdf;
     try {
-      const legalSourcePack = await buildKnowledgebaseLegalPack(assessment);
-      assertKnowledgebasePack(legalSourcePack);
-      const legalEngineInputs = buildLegalEnginePdfInputs(assessment);
-      if (legalEngineInputs) {
-        const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(
-          legalEngineInputs.adviceBundle,
-          legalEngineInputs.assessmentForPdf || assessment
-        );
-        pdf = await buildAssessmentPdfBuffer(legalEngineInputs.assessmentForPdf, enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, legalEngineInputs.assessmentForPdf || assessment));
-      } else {
-        const adviceBundle = await generateMigrationAdvice(assessment);
-        const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessment);
-        pdf = await buildAssessmentPdfBuffer(assessment, enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessment));
+      // Knowledgebase enforcement gate:
+      // Every migration advice PDF must be generated from generateMigrationAdvice().
+      // That function loads the local knowledgebase, applies the subclass matrix and
+      // returns an adviceBundle containing legalSourcePack. The older delegate/pdf
+      // shortcut is intentionally not used here because it can produce a polished
+      // narrative PDF without proving that the knowledgebase was applied.
+      const assessmentForAdvice = attachEvidenceValidation(assessment);
+      const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
+
+      if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
+        throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
       }
+
+      const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
+      pdf = await buildAssessmentPdfBuffer(
+        assessmentForAdvice,
+        enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
+      );
     } catch (err) {
       await client.query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [err.message, assessmentId]);
       await client.query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [err.message, assessmentId]);
