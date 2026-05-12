@@ -1927,6 +1927,44 @@ app.post('/api/assessment/submit', requireAuth, asyncRoute(handleAssessmentSubmi
 app.post('/api/assessment/create', requireAuth, asyncRoute(handleAssessmentSubmit));
 app.post('/api/assessments/submit', requireAuth, asyncRoute(handleAssessmentSubmit));
 
+
+function visaStartDuplicateKeyFromPayload(email, visaType, plan, payload) {
+  const flat = payload && payload.flatAnswers && typeof payload.flatAnswers === 'object' ? payload.flatAnswers : {};
+  const applicantName = String((payload && payload.meta && payload.meta.applicantName) || flat.applicantName || flat.fullName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const duties = String(flat['daily duties'] || flat.dailyDuties || flat.duties || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 160);
+  return crypto.createHash('sha256').update(stableJson({ email: normaliseEmail(email), visaType: String(visaType || '').toLowerCase(), plan: safePlan(plan), applicantName, duties, count: payloadAnswerCount(payload) })).digest('hex');
+}
+
+async function findRecentDuplicateVisaHandoff({ email, visaType, plan, payload }) {
+  const wanted = visaStartDuplicateKeyFromPayload(email, visaType, plan, payload);
+  const { rows } = await query(
+    `SELECT a.id, a.client_email, a.applicant_email, a.applicant_name, a.visa_type, a.selected_plan, a.active_plan,
+            a.status, a.payment_status, a.form_payload, a.created_at, a.updated_at,
+            ss.id AS service_session_id
+     FROM assessments a
+     LEFT JOIN LATERAL (
+       SELECT id FROM service_sessions s
+       WHERE s.service_type='visa_assessment' AND s.service_ref=a.id
+       ORDER BY s.created_at DESC
+       LIMIT 1
+     ) ss ON true
+     WHERE lower(a.client_email)=lower($1)
+       AND lower(a.visa_type)=lower($2)
+       AND COALESCE(a.payment_status,'unpaid') <> 'paid'
+       AND a.created_at > now() - interval '20 minutes'
+     ORDER BY a.created_at DESC
+     LIMIT 8`,
+    [normaliseEmail(email), String(visaType || '')]
+  );
+  for (const row of rows) {
+    const rowPlan = row.active_plan || row.selected_plan || 'instant';
+    const rowPayload = row.form_payload || {};
+    const existing = visaStartDuplicateKeyFromPayload(row.client_email || row.applicant_email, row.visa_type, rowPlan, rowPayload);
+    if (existing === wanted) return row;
+  }
+  return null;
+}
+
 async function handlePublicVisaAssessmentStart(req, res) {
   const built = buildAssessmentPayload(req.body, null);
   const email = normaliseEmail(
@@ -1953,6 +1991,46 @@ async function handlePublicVisaAssessmentStart(req, res) {
   const plan = planFromAssessmentBody(req.body, built.meta.selectedPlan);
   const id = makeAssessmentId(visaType);
   const serviceSessionId = makeServiceSessionId('visa_assessment');
+
+  const recentDuplicate = await findRecentDuplicateVisaHandoff({ email, visaType, plan, payload: built }).catch(err => {
+    console.warn('Visa duplicate handoff check skipped:', err.message);
+    return null;
+  });
+  if (recentDuplicate && recentDuplicate.id) {
+    let existingSessionId = recentDuplicate.service_session_id;
+    if (!existingSessionId) {
+      const recreated = await upsertServiceSession({
+        serviceType: 'visa_assessment',
+        serviceRef: recentDuplicate.id,
+        email,
+        plan: recentDuplicate.active_plan || recentDuplicate.selected_plan || plan,
+        metadata: {
+          visa_type: visaType,
+          assessment_id: recentDuplicate.id,
+          require_fresh_login: true,
+          login_required_before_payment: true,
+          handoff_locked: true,
+          deduped_from_public_start: true
+        }
+      });
+      existingSessionId = recreated.id;
+    }
+    const duplicatePlan = recentDuplicate.active_plan || recentDuplicate.selected_plan || plan;
+    return res.json({
+      ok: true,
+      duplicate: true,
+      service: 'visa_assessment',
+      serviceSessionId: existingSessionId,
+      service_session_id: existingSessionId,
+      assessmentId: recentDuplicate.id,
+      assessment_id: recentDuplicate.id,
+      visaType: recentDuplicate.visa_type || visaType,
+      plan: duplicatePlan,
+      payloadSaved: true,
+      answerCount: payloadAnswerCount(built),
+      next: `/login.html?service=visa&next=service-checkout&service_session_id=${encodeURIComponent(existingSessionId)}&assessment_id=${encodeURIComponent(recentDuplicate.id)}&plan=${encodeURIComponent(duplicatePlan)}&email=${encodeURIComponent(email)}`
+    });
+  }
 
   let created;
   try {
@@ -5085,6 +5163,53 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
   return out;
 }
 
+
+// Dashboard duplicate protection for visa matters.
+// The system has two legitimate records for a paid pathway: an assessment row and
+// a service/payment session. Those must never appear as two visa assessment cards.
+// In addition, if a user double-clicks Submit or the browser retries the public
+// assessment-start call, two near-identical assessment rows may be created within
+// seconds. This function keeps the richest/paid row and suppresses near-duplicate
+// unpaid/less-complete rows from dashboard feeds.
+function visaDashboardDuplicateKey(row) {
+  if (!row || typeof row !== 'object') return '';
+  const visa = String(row.visa_type || row.visaType || row.subclass || '').trim().toLowerCase();
+  const email = normaliseEmail(row.applicant_email || row.applicantEmail || row.client_email || row.clientEmail || '');
+  const name = String(row.applicant_name || row.applicantName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const plan = safePlan(row.active_plan || row.activePlan || row.selected_plan || row.selectedPlan || row.plan || 'instant');
+  if (!visa || !email) return '';
+  return `${email}|${visa}|${plan}|${name}`;
+}
+
+function visaDashboardDuplicateScore(row) {
+  if (!row || typeof row !== 'object') return 0;
+  const paid = String(row.payment_status || row.paymentStatus || row.status || '').toLowerCase().includes('paid') ? 1000 : 0;
+  const pdf = row.has_pdf || row.hasPdf || row.pdf_generated_at || row.pdfGeneratedAt || row.pdf_sha256 || row.pdfSha256 ? 500 : 0;
+  const stripe = row.stripe_session_id || row.stripeSessionId ? 150 : 0;
+  const amount = row.amount_cents || row.amountCents ? 50 : 0;
+  const updated = new Date(row.updated_at || row.updatedAt || row.created_at || row.createdAt || 0).getTime() || 0;
+  return paid + pdf + stripe + amount + Math.floor(updated / 1000000000);
+}
+
+function dedupeNearDuplicateVisaDashboardRows(rows) {
+  const input = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const ordered = [...input].sort((a, b) => visaDashboardDuplicateScore(b) - visaDashboardDuplicateScore(a));
+  const kept = [];
+  const duplicateWindowMs = 20 * 60 * 1000;
+  for (const row of ordered) {
+    const key = visaDashboardDuplicateKey(row);
+    const created = new Date(row.created_at || row.createdAt || row.updated_at || row.updatedAt || 0).getTime() || 0;
+    const isDup = key && kept.some(existing => {
+      if (visaDashboardDuplicateKey(existing) !== key) return false;
+      const existingCreated = new Date(existing.created_at || existing.createdAt || existing.updated_at || existing.updatedAt || 0).getTime() || 0;
+      if (!created || !existingCreated) return false;
+      return Math.abs(existingCreated - created) <= duplicateWindowMs;
+    });
+    if (!isDup) kept.push(row);
+  }
+  return kept.sort((a, b) => new Date(b.created_at || b.createdAt || b.updated_at || b.updatedAt || 0) - new Date(a.created_at || a.createdAt || a.updated_at || a.updatedAt || 0));
+}
+
 // ---- Dashboard access hardening: cookie, bearer, signed dashboard token, Stripe-return fallback ----
 const DASHBOARD_ACCESS_PATCH = 'dashboard-cookie-bearer-signed-token-stripe-session-v1';
 const DASHBOARD_TOKEN_TTL_SECONDS = 60 * 60 * 8;
@@ -5286,6 +5411,7 @@ async function handleDashboardFast(req, res) {
   const email = normaliseEmail(req.client.email);
   const clientId = req.client.id;
   const { visaRows, citizenshipRows } = await queryDashboardFastRows(email, clientId);
+  const cleanVisaRows = dedupeNearDuplicateVisaDashboardRows(dedupeDashboardRows(visaRows, ['id']));
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
@@ -5295,15 +5421,15 @@ async function handleDashboardFast(req, res) {
     dashboardAccessToken: req.dashboardAccessToken || signDashboardAccessToken(req.client),
     accessToken: req.dashboardAccessToken || signDashboardAccessToken(req.client),
     accessPatch: DASHBOARD_ACCESS_PATCH,
-    visa: visaRows,
-    visaAssessments: visaRows,
-    assessments: visaRows,
+    visa: cleanVisaRows,
+    visaAssessments: cleanVisaRows,
+    assessments: cleanVisaRows,
     appeals: [],
     appealsAssessments: [],
     citizenship: citizenshipRows,
     citizenshipAccess: citizenshipRows,
     payments: [],
-    counts: { visa: visaRows.length, appeals: 0, citizenship: citizenshipRows.length, payments: 0 }
+    counts: { visa: cleanVisaRows.length, appeals: 0, citizenship: citizenshipRows.length, payments: 0 }
   });
 }
 
@@ -5420,7 +5546,7 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
      ORDER BY created_at DESC`,
     [req.client.email]
   );
-  const assessments = dedupeDashboardRows(assessmentRows, ['id']);
+  const assessments = dedupeNearDuplicateVisaDashboardRows(dedupeDashboardRows(assessmentRows, ['id']));
   const appealAssessments = dedupeDashboardRows(appealAssessmentRows, ['id']);
   const citizenshipAccess = dedupeDashboardRows(citizenshipAccessRows, ['id']);
 
@@ -5445,8 +5571,11 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
     service: p.visa_type ? `Subclass ${p.visa_type} assessment` : (p.service_type || 'Payment'),
     reference: p.service_ref || null
   }));
+  // Do not echo visa assessments again through serviceCards/unifiedCards.
+  // The Visa Assessments section is driven only by assessments/visaAssessments.
+  // Payments/service sessions stay in payments. This prevents one paid visa matter
+  // appearing twice when the frontend merges visa arrays with serviceCards.
   const serviceCards = dedupeDashboardCards([
-    ...assessments.map(buildUnifiedServiceCard),
     ...appealAssessments.map(buildUnifiedServiceCard),
     ...citizenshipAccess.map(buildUnifiedServiceCard)
   ]).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
@@ -5508,7 +5637,8 @@ app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
      ORDER BY COALESCE(created_at, updated_at) DESC`,
     [req.client.email, req.client.id]
   );
-  res.json({ ok: true, visa: rows, visaAssessments: rows, assessments: rows, count: rows.length });
+  const cleanRows = dedupeNearDuplicateVisaDashboardRows(dedupeDashboardRows(rows, ['id']));
+  res.json({ ok: true, visa: cleanRows, visaAssessments: cleanRows, assessments: cleanRows, count: cleanRows.length });
 }));
 
 // Full citizenship access history for the client portal. This is separate from
