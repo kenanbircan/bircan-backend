@@ -398,6 +398,35 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
+
+// ---- TEMPORARY protected browser migration endpoint: Postgres idempotency repair/indexes ----
+// Use once only, then remove this route or rotate MIGRATION_ADMIN_KEY in Render.
+// URL:
+//   https://bircan-migration-backend.onrender.com/api/admin/run-idempotency-migration?key=YOUR_SECRET_KEY
+app.get('/api/admin/run-idempotency-migration', asyncRoute(async (req, res) => {
+  const providedKey = String(req.query.key || req.headers['x-migration-key'] || '').trim();
+  const expectedKey = String(process.env.MIGRATION_ADMIN_KEY || '').trim();
+
+  if (!expectedKey || providedKey !== expectedKey) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Migration key required or incorrect.'
+    });
+  }
+
+  const startedAt = new Date().toISOString();
+  await installPostgresIdempotencyConstraints();
+
+  res.json({
+    ok: true,
+    message: 'Postgres idempotency migration completed.',
+    startedAt,
+    completedAt: new Date().toISOString(),
+    action: 'Now remove this temporary route from server.js or rotate MIGRATION_ADMIN_KEY.'
+  });
+}));
+
+
 function sign(client) {
   return jwt.sign({ sub: client.id, email: client.email }, SESSION_SECRET, { expiresIn: '7d' });
 }
