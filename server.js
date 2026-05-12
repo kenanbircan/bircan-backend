@@ -2710,6 +2710,25 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     } catch (err) {
       return res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'Visa checkout failed.' });
     }
+    // Hard paid-matter guard: if this reused assessment/service session is already paid,
+    // never create another Stripe checkout session for the same recent matter.
+    // This is the missing source of duplicate paid 186/187 cards when a user resubmits
+    // or re-enters checkout after payment.
+    if (assessment.payment_status === 'paid' || serviceSession.payment_status === 'paid') {
+      return res.json({
+        ok: true,
+        alreadyPaid: true,
+        service: 'visa_assessment',
+        assessmentId: assessment.id,
+        assessment_id: assessment.id,
+        serviceSessionId: serviceSession.id,
+        service_session_id: serviceSession.id,
+        plan: assessment.active_plan || assessment.selected_plan || serviceSession.selected_plan || 'instant',
+        redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
+        url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
+      });
+    }
+
     // Production plan-lock fix: use the plan selected at checkout, not a stale
     // assessment/service-session value. This prevents instant visa payments from
     // inheriting a 24-hour release timer.
@@ -3452,12 +3471,51 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
       ok: true,
       alreadyPaid: true,
       assessmentId: assessment.id,
-      plan: assessment.selected_plan,
-      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
+      assessment_id: assessment.id,
+      plan: assessment.active_plan || assessment.selected_plan,
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
+      url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
     });
   }
 
   const checkoutPlan = requestedVisaPlan(req, assessment.active_plan || assessment.selected_plan || 'instant');
+
+  // Same-client/subclass/plan paid-matter guard. If another recent assessment for
+  // this client/email/subclass/plan is already paid, redirect to that paid matter
+  // instead of issuing a fresh Stripe session. This protects the older direct
+  // checkout route as well as the service-session route.
+  const recentPaidRows = await query(
+    `SELECT id, selected_plan, active_plan, stripe_session_id
+     FROM assessments
+     WHERE visa_type=$2
+       AND COALESCE(active_plan, selected_plan, 'instant')=$3
+       AND payment_status='paid'
+       AND created_at > now() - interval '48 hours'
+       AND (client_id=$4 OR lower(client_email)=lower($1) OR lower(applicant_email)=lower($1))
+     ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+     LIMIT 1`,
+    [req.client.email, assessment.visa_type, checkoutPlan, req.client.id]
+  );
+  const recentPaid = recentPaidRows.rows[0];
+  if (recentPaid && recentPaid.id !== assessment.id) {
+    await query(
+      `UPDATE service_sessions
+       SET status='superseded_duplicate_checkout', payment_status='superseded', updated_at=now(),
+           metadata=COALESCE(metadata,'{}'::jsonb) || $1::jsonb
+       WHERE service_type='visa_assessment' AND service_ref=$2`,
+      [JSON.stringify({ superseded_by_assessment_id: recentPaid.id, reason: 'recent paid same client subclass plan' }), assessment.id]
+    ).catch(() => null);
+    return res.json({
+      ok: true,
+      alreadyPaid: true,
+      reusedPaidAssessment: true,
+      assessmentId: recentPaid.id,
+      assessment_id: recentPaid.id,
+      plan: recentPaid.active_plan || recentPaid.selected_plan || checkoutPlan,
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`,
+      url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`
+    });
+  }
   const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
   if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
   try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
