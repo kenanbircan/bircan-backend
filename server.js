@@ -2045,7 +2045,7 @@ async function restoreClientFromStripeSession(req, res, options = {}) {
     token,
     accessToken: token,
     dashboardAccessToken: client ? signDashboardAccessToken(client) : null,
-    redirectUrl: options.redirectUrl || `${APP_BASE_URL}/account-dashboard.html?session_id=${encodeURIComponent(sessionId)}`
+    redirectUrl: paid ? (options.redirectUrl || `${APP_BASE_URL}/account-dashboard.html?session_id=${encodeURIComponent(sessionId)}`) : null
   });
 }
 
