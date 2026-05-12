@@ -1097,6 +1097,216 @@ async function ensurePaymentsIdDefaultSafe() {
   }
 }
 
+
+async function runPostgresIdempotencyRepair() {
+  // PostgreSQL is the source of truth. Before creating hard unique indexes, merge
+  // historical duplicates created by retries/parallel payment returns so the
+  // index build can succeed without manual cleanup.
+  try {
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               first_value(id) OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS keep_id,
+               row_number() OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS rn
+        FROM assessments
+        WHERE submission_fingerprint IS NOT NULL
+          AND COALESCE(client_email, applicant_email, '') <> ''
+          AND visa_type IS NOT NULL
+          AND selected_plan IS NOT NULL
+      )
+      UPDATE assessments keep
+         SET payment_status = CASE WHEN dup.payment_status='paid' THEN 'paid' ELSE keep.payment_status END,
+             status = CASE WHEN dup.payment_status='paid' AND keep.status NOT IN ('pdf_ready','release_scheduled','pdf_queued') THEN COALESCE(dup.status, keep.status) ELSE keep.status END,
+             stripe_session_id = COALESCE(keep.stripe_session_id, dup.stripe_session_id),
+             stripe_payment_intent = COALESCE(keep.stripe_payment_intent, dup.stripe_payment_intent),
+             amount_cents = COALESCE(keep.amount_cents, dup.amount_cents),
+             currency = COALESCE(keep.currency, dup.currency),
+             active_plan = COALESCE(keep.active_plan, dup.active_plan),
+             release_at = COALESCE(keep.release_at, dup.release_at),
+             pdf_bytes = COALESCE(keep.pdf_bytes, dup.pdf_bytes),
+             pdf_mime = COALESCE(keep.pdf_mime, dup.pdf_mime),
+             pdf_filename = COALESCE(keep.pdf_filename, dup.pdf_filename),
+             pdf_sha256 = COALESCE(keep.pdf_sha256, dup.pdf_sha256),
+             pdf_generated_at = COALESCE(keep.pdf_generated_at, dup.pdf_generated_at),
+             generation_error = CASE WHEN keep.pdf_bytes IS NOT NULL OR dup.pdf_bytes IS NOT NULL THEN NULL ELSE COALESCE(keep.generation_error, dup.generation_error) END,
+             updated_at = now()
+      FROM ranked r
+      JOIN assessments dup ON dup.id=r.id
+      WHERE r.rn > 1 AND keep.id=r.keep_id
+    `);
+
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               first_value(id) OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS keep_id,
+               row_number() OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS rn
+        FROM assessments
+        WHERE submission_fingerprint IS NOT NULL
+          AND COALESCE(client_email, applicant_email, '') <> ''
+          AND visa_type IS NOT NULL
+          AND selected_plan IS NOT NULL
+      )
+      UPDATE service_sessions ss SET service_ref=r.keep_id, updated_at=now()
+      FROM ranked r
+      WHERE r.rn > 1 AND ss.service_type='visa_assessment' AND ss.service_ref=r.id
+    `);
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               first_value(id) OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS keep_id,
+               row_number() OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS rn
+        FROM assessments
+        WHERE submission_fingerprint IS NOT NULL
+          AND COALESCE(client_email, applicant_email, '') <> ''
+          AND visa_type IS NOT NULL
+          AND selected_plan IS NOT NULL
+      )
+      UPDATE payments p SET service_ref=r.keep_id, updated_at=now()
+      FROM ranked r
+      WHERE r.rn > 1 AND p.service_type='visa_assessment' AND p.service_ref=r.id
+    `).catch(() => null);
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               first_value(id) OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS keep_id,
+               row_number() OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS rn
+        FROM assessments
+        WHERE submission_fingerprint IS NOT NULL
+          AND COALESCE(client_email, applicant_email, '') <> ''
+          AND visa_type IS NOT NULL
+          AND selected_plan IS NOT NULL
+      )
+      UPDATE pdf_jobs j SET assessment_id=r.keep_id, updated_at=now()
+      FROM ranked r
+      WHERE r.rn > 1 AND j.assessment_id=r.id
+    `).catch(() => null);
+
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               row_number() OVER (
+                 PARTITION BY stripe_session_id
+                 ORDER BY CASE WHEN status='paid' THEN 2 ELSE 1 END DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id::text DESC
+               ) rn
+        FROM payments
+        WHERE stripe_session_id IS NOT NULL AND stripe_session_id <> ''
+      )
+      DELETE FROM payments p USING ranked r WHERE p.id=r.id AND r.rn > 1
+    `).catch(() => null);
+
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               row_number() OVER (
+                 PARTITION BY service_type, service_ref
+                 ORDER BY CASE WHEN payment_status='paid' THEN 3 WHEN stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
+                          updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+               ) rn
+        FROM service_sessions
+        WHERE service_ref IS NOT NULL AND service_ref <> ''
+      )
+      DELETE FROM service_sessions s USING ranked r WHERE s.id=r.id AND r.rn > 1
+    `);
+
+    await query(`
+      WITH ranked AS (
+        SELECT id,
+               row_number() OVER (
+                 PARTITION BY lower(COALESCE(client_email, applicant_email, '')), visa_type, selected_plan, submission_fingerprint
+                 ORDER BY
+                   CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN pdf_bytes IS NOT NULL THEN 2 ELSE 1 END DESC,
+                   updated_at DESC NULLS LAST,
+                   created_at DESC NULLS LAST,
+                   id DESC
+               ) AS rn
+        FROM assessments
+        WHERE submission_fingerprint IS NOT NULL
+          AND COALESCE(client_email, applicant_email, '') <> ''
+          AND visa_type IS NOT NULL
+          AND selected_plan IS NOT NULL
+      )
+      DELETE FROM assessments a USING ranked r WHERE a.id=r.id AND r.rn > 1
+    `);
+  } catch (err) {
+    console.warn('Postgres idempotency repair skipped:', err.message);
+  }
+}
+
+async function installPostgresIdempotencyConstraints() {
+  await runPostgresIdempotencyRepair();
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_idempotency_unique
+    ON assessments (lower(client_email), visa_type, selected_plan, submission_fingerprint)
+    WHERE submission_fingerprint IS NOT NULL AND client_email IS NOT NULL
+  `);
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_unique_service_ref
+    ON service_sessions (service_type, service_ref)
+    WHERE service_ref IS NOT NULL
+  `);
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_session_id_unique
+    ON payments (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL
+  `).catch(err => console.warn('payments stripe_session_id unique index skipped:', err.message));
+}
+
 async function ensureSchema() {
   await query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await query(`
@@ -1439,6 +1649,7 @@ async function ensureSchema() {
   await query(`CREATE INDEX IF NOT EXISTS idx_service_sessions_email_status ON service_sessions (lower(client_email), status, payment_status)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_service_sessions_type_ref ON service_sessions (service_type, service_ref)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_service_sessions_stripe ON service_sessions (stripe_session_id)`);
+  await installPostgresIdempotencyConstraints();
 
   await ensureClientJourneySchema(query);
 
@@ -2009,7 +2220,8 @@ async function handleAssessmentSubmit(req, res) {
       await client.query(
         `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
          VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created',COALESCE($6,'unpaid'),$7,$8::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
+         ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
+         DO UPDATE SET client_id=COALESCE(service_sessions.client_id, EXCLUDED.client_id), client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, payment_status=COALESCE(service_sessions.payment_status, EXCLUDED.payment_status), stripe_session_id=COALESCE(service_sessions.stripe_session_id, EXCLUDED.stripe_session_id), metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()`,
         [makeServiceSessionId('visa_assessment'), existing.id, req.client.id, req.client.email, plan, existing.payment_status || 'unpaid', existing.stripe_session_id || null, JSON.stringify({
           visa_type: visaType,
           assessment_id: existing.id,
@@ -2023,23 +2235,35 @@ async function handleAssessmentSubmit(req, res) {
     }
 
     const id = makeAssessmentId(visaType);
-    await client.query(
+    const insertRows = await client.query(
       `INSERT INTO assessments (id, client_id, client_email, applicant_email, applicant_name, visa_type, selected_plan, active_plan, status, payment_status, form_payload, submission_fingerprint, pdf_bytes, pdf_generated_at, generation_error)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'submitted','unpaid',$8,$9,NULL,NULL,NULL)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'submitted','unpaid',$8,$9,NULL,NULL,NULL)
+       ON CONFLICT (lower(client_email), visa_type, selected_plan, submission_fingerprint)
+       WHERE submission_fingerprint IS NOT NULL AND client_email IS NOT NULL
+       DO UPDATE SET
+         client_id=COALESCE(assessments.client_id, EXCLUDED.client_id),
+         applicant_email=COALESCE(assessments.applicant_email, EXCLUDED.applicant_email),
+         applicant_name=COALESCE(assessments.applicant_name, EXCLUDED.applicant_name),
+         active_plan=COALESCE(assessments.active_plan, EXCLUDED.active_plan),
+         form_payload=CASE WHEN COALESCE(assessments.payment_status,'unpaid')='paid' THEN assessments.form_payload ELSE EXCLUDED.form_payload END,
+         updated_at=now()
+       RETURNING id, status, payment_status`,
       [id, req.client.id, req.client.email, applicantEmail, applicantName || null, visaType, plan, built, submissionFingerprint]
     );
+    const savedAssessmentId = (insertRows.rows[0] && insertRows.rows[0].id) || id;
     await client.query(
       `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, metadata)
        VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created','unpaid',$6::jsonb)
-       ON CONFLICT (id) DO NOTHING`,
-      [makeServiceSessionId('visa_assessment'), id, req.client.id, req.client.email, plan, JSON.stringify({
+       ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
+       DO UPDATE SET client_id=COALESCE(service_sessions.client_id, EXCLUDED.client_id), client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()`,
+      [makeServiceSessionId('visa_assessment'), savedAssessmentId, req.client.id, req.client.email, plan, JSON.stringify({
         visa_type: visaType,
         assessment_id: id,
         submission_fingerprint: submissionFingerprint,
         created_by: 'assessment_submit'
       })]
     );
-    return { assessmentId: id, status: 'submitted', reusedExisting: false };
+    return { assessmentId: savedAssessmentId, status: (insertRows.rows[0] && insertRows.rows[0].status) || 'submitted', reusedExisting: savedAssessmentId !== id };
   });
 
   res.json({ ok: true, assessmentId: result.assessmentId, assessment_id: result.assessmentId, status: result.status, plan, reusedExisting: result.reusedExisting, payloadSaved: true, answerCount: payloadAnswerCount(built) });
@@ -2132,6 +2356,8 @@ async function handlePublicVisaAssessmentStart(req, res) {
           const serviceRows = await client.query(
             `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
              VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created',$6,$7,$8::jsonb)
+             ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
+             DO UPDATE SET client_id=COALESCE(service_sessions.client_id, EXCLUDED.client_id), client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, payment_status=COALESCE(service_sessions.payment_status, EXCLUDED.payment_status), stripe_session_id=COALESCE(service_sessions.stripe_session_id, EXCLUDED.stripe_session_id), metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
              RETURNING *`,
             [newServiceSessionId, existing.id, existing.client_id || null, email, plan, existing.payment_status || 'unpaid', existing.stripe_session_id || null, JSON.stringify({
               visa_type: visaType,
@@ -2153,6 +2379,14 @@ async function handlePublicVisaAssessmentStart(req, res) {
            visa_type, selected_plan, active_plan, status, payment_status,
            form_payload, submission_fingerprint, pdf_bytes, pdf_generated_at, generation_error
          ) VALUES ($1,NULL,$2,$2,$3,$4,$5,$5,'submitted','unpaid',$6,$7,NULL,NULL,NULL)
+         ON CONFLICT (lower(client_email), visa_type, selected_plan, submission_fingerprint)
+         WHERE submission_fingerprint IS NOT NULL AND client_email IS NOT NULL
+         DO UPDATE SET
+           applicant_email=COALESCE(assessments.applicant_email, EXCLUDED.applicant_email),
+           applicant_name=COALESCE(assessments.applicant_name, EXCLUDED.applicant_name),
+           active_plan=COALESCE(assessments.active_plan, EXCLUDED.active_plan),
+           form_payload=CASE WHEN COALESCE(assessments.payment_status,'unpaid')='paid' THEN assessments.form_payload ELSE EXCLUDED.form_payload END,
+           updated_at=now()
          RETURNING id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status, submission_fingerprint`,
         [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, submissionFingerprint]
       );
@@ -2164,6 +2398,8 @@ async function handlePublicVisaAssessmentStart(req, res) {
       const serviceRows = await client.query(
         `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
          VALUES ($1,'visa_assessment',$2,NULL,$3,$4,'draft_created','unpaid',NULL,$5::jsonb)
+         ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
+         DO UPDATE SET client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
          RETURNING *`,
         [newServiceSessionId, assessment.id, email, plan, JSON.stringify({
           visa_type: visaType,
@@ -2404,6 +2640,8 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
     try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
     catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
+    await query('SELECT pg_advisory_lock(hashtext($1))', [`visa-checkout:${assessment.id}`]);
+    try {
     const reusableVisaCheckout = await getReusableOpenCheckoutSession(assessment.stripe_session_id || serviceSession.stripe_session_id, { serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan });
     if (reusableVisaCheckout) {
       await markServiceSessionCheckoutCreated(serviceSession.id, reusableVisaCheckout.id);
@@ -2437,6 +2675,9 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
     await markServiceSessionCheckoutCreated(serviceSession.id, stripeSession.id);
     await recordPaymentAuditSafe(assessment.id, req.client.email, stripeSession);
     return res.json({ ok: true, service: 'visa_assessment', url: stripeSession.url, sessionId: stripeSession.id, serviceSessionId: serviceSession.id, assessmentId: assessment.id, plan: checkoutPlan });
+    } finally {
+      await query('SELECT pg_advisory_unlock(hashtext($1))', [`visa-checkout:${assessment.id}`]).catch(() => null);
+    }
   }
 
   if (serviceSession.service_type === 'appeals_assessment') {
@@ -3144,6 +3385,8 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
   try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
   catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
 
+  await query('SELECT pg_advisory_lock(hashtext($1))', [`visa-checkout:${assessment.id}`]);
+  try {
   const openSessionRows = await query(
     `SELECT stripe_session_id
      FROM service_sessions
@@ -3213,7 +3456,10 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
   });
 
   await recordPaymentAuditSafe(assessment.id, req.client.email, session);
-  res.json({ ok: true, url: session.url, sessionId: session.id, assessmentId: assessment.id, assessment_id: assessment.id, plan: checkoutPlan });
+  return res.json({ ok: true, url: session.url, sessionId: session.id, assessmentId: assessment.id, assessment_id: assessment.id, plan: checkoutPlan });
+  } finally {
+    await query('SELECT pg_advisory_unlock(hashtext($1))', [`visa-checkout:${assessment.id}`]).catch(() => null);
+  }
 }));
 
 
