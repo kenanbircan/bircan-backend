@@ -1946,19 +1946,103 @@ async function handleAssessmentSubmit(req, res) {
   const plan = planFromAssessmentBody(req.body, built.meta.selectedPlan);
   const applicantEmail = built.meta.applicantEmail || normaliseEmail(req.client.email);
   const applicantName = built.meta.applicantName;
-  if (applicantEmail !== normaliseEmail(req.client.email)) {
+  const accountEmail = normaliseEmail(req.client.email);
+  if (applicantEmail !== accountEmail) {
     return res.status(409).json({ ok: false, error: `This assessment email is ${applicantEmail}, but you are logged in as ${req.client.email}. Please use the same email address.` });
   }
   if (!payloadLooksUsable(built)) {
     return res.status(400).json({ ok: false, code: 'ASSESSMENT_PAYLOAD_MISSING', error: 'Assessment answers were not received by the server. Please submit the assessment form again before checkout.', receivedKeys: Object.keys(req.body || {}) });
   }
-  const id = makeAssessmentId(visaType);
-  await query(
-    `INSERT INTO assessments (id, client_id, client_email, applicant_email, applicant_name, visa_type, selected_plan, active_plan, status, payment_status, form_payload, pdf_bytes, pdf_generated_at, generation_error)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'submitted','unpaid',$8,NULL,NULL,NULL)`,
-    [id, req.client.id, req.client.email, applicantEmail, applicantName || null, visaType, plan, built]
-  );
-  res.json({ ok: true, assessmentId: id, status: 'submitted', plan, payloadSaved: true, answerCount: payloadAnswerCount(built) });
+
+  const submissionFingerprint = visaSubmissionFingerprint({ email: accountEmail, visaType, plan, payload: built });
+
+  const result = await tx(async (client) => {
+    // Server-side idempotency for authenticated assessment submits.
+    // Do NOT create a second assessment when the same account resubmits the same
+    // subclass/plan/answers because of double-clicks, browser retries, checkout-start
+    // reloads or payment-return retries.
+    const existingRows = await client.query(
+      `SELECT *
+       FROM assessments
+       WHERE visa_type=$2
+         AND COALESCE(active_plan, selected_plan, 'instant')=$3
+         AND (
+           lower(client_email)=lower($1)
+           OR lower(applicant_email)=lower($1)
+           OR client_id=$6
+         )
+         AND (
+           submission_fingerprint=$4
+           OR (
+             COALESCE(payment_status,'unpaid') <> 'paid'
+             AND lower(COALESCE(applicant_name,''))=lower(COALESCE($5,''))
+             AND created_at > now() - interval '6 hours'
+           )
+           OR (
+             COALESCE(payment_status,'')='paid'
+             AND stripe_session_id IS NOT NULL
+             AND lower(COALESCE(applicant_name,''))=lower(COALESCE($5,''))
+             AND created_at > now() - interval '24 hours'
+           )
+         )
+         AND created_at > now() - interval '48 hours'
+       ORDER BY CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN status='checkout_created' THEN 2 ELSE 1 END DESC,
+                updated_at DESC NULLS LAST,
+                created_at DESC NULLS LAST
+       LIMIT 1
+       FOR UPDATE`,
+      [accountEmail, visaType, plan, submissionFingerprint, applicantName || null, req.client.id]
+    );
+    const existing = existingRows.rows[0];
+    if (existing) {
+      await client.query(
+        `UPDATE assessments
+         SET client_id=$1,
+             client_email=$2,
+             applicant_email=COALESCE(applicant_email,$2),
+             submission_fingerprint=COALESCE(submission_fingerprint,$3),
+             form_payload=CASE WHEN COALESCE(payment_status,'unpaid')='paid' THEN form_payload ELSE $4 END,
+             updated_at=now()
+         WHERE id=$5`,
+        [req.client.id, req.client.email, submissionFingerprint, built, existing.id]
+      );
+      await client.query(
+        `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
+         VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created',COALESCE($6,'unpaid'),$7,$8::jsonb)
+         ON CONFLICT (id) DO NOTHING`,
+        [makeServiceSessionId('visa_assessment'), existing.id, req.client.id, req.client.email, plan, existing.payment_status || 'unpaid', existing.stripe_session_id || null, JSON.stringify({
+          visa_type: visaType,
+          assessment_id: existing.id,
+          submission_fingerprint: submissionFingerprint,
+          reused_existing_assessment: true,
+          duplicate_prevention: 'authenticated_submit_idempotency',
+          created_by: 'assessment_submit'
+        })]
+      );
+      return { assessmentId: existing.id, status: existing.status || 'submitted', reusedExisting: true };
+    }
+
+    const id = makeAssessmentId(visaType);
+    await client.query(
+      `INSERT INTO assessments (id, client_id, client_email, applicant_email, applicant_name, visa_type, selected_plan, active_plan, status, payment_status, form_payload, submission_fingerprint, pdf_bytes, pdf_generated_at, generation_error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'submitted','unpaid',$8,$9,NULL,NULL,NULL)`,
+      [id, req.client.id, req.client.email, applicantEmail, applicantName || null, visaType, plan, built, submissionFingerprint]
+    );
+    await client.query(
+      `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, metadata)
+       VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created','unpaid',$6::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+      [makeServiceSessionId('visa_assessment'), id, req.client.id, req.client.email, plan, JSON.stringify({
+        visa_type: visaType,
+        assessment_id: id,
+        submission_fingerprint: submissionFingerprint,
+        created_by: 'assessment_submit'
+      })]
+    );
+    return { assessmentId: id, status: 'submitted', reusedExisting: false };
+  });
+
+  res.json({ ok: true, assessmentId: result.assessmentId, assessment_id: result.assessmentId, status: result.status, plan, reusedExisting: result.reusedExisting, payloadSaved: true, answerCount: payloadAnswerCount(built) });
 }
 
 app.post('/api/assessment/submit', requireAuth, asyncRoute(handleAssessmentSubmit));
@@ -2009,7 +2093,12 @@ async function handlePublicVisaAssessmentStart(req, res) {
            ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST
            LIMIT 1
          ) ss ON true
-         WHERE lower(a.client_email)=lower($1)
+         WHERE (
+             lower(a.client_email)=lower($1)
+             OR lower(a.applicant_email)=lower($1)
+             OR lower(COALESCE(a.form_payload->'meta'->>'applicantEmail',''))=lower($1)
+             OR lower(COALESCE(a.form_payload->'meta'->>'clientEmail',''))=lower($1)
+           )
            AND a.visa_type=$2
            AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
            AND (
@@ -2017,16 +2106,16 @@ async function handlePublicVisaAssessmentStart(req, res) {
              OR (
                COALESCE(a.payment_status,'unpaid') <> 'paid'
                AND lower(COALESCE(a.applicant_name,''))=lower(COALESCE($5,''))
-               AND a.created_at > now() - interval '2 hours'
+               AND a.created_at > now() - interval '6 hours'
              )
              OR (
                COALESCE(a.payment_status,'')='paid'
                AND a.stripe_session_id IS NOT NULL
                AND lower(COALESCE(a.applicant_name,''))=lower(COALESCE($5,''))
-               AND a.created_at > now() - interval '30 minutes'
+               AND a.created_at > now() - interval '24 hours'
              )
            )
-           AND a.created_at > now() - interval '24 hours'
+           AND a.created_at > now() - interval '48 hours'
          ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
                   a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
          LIMIT 1`,
@@ -3055,9 +3144,24 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
   try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
   catch (err) { return res.status(err.statusCode || 500).json({ ok: false, code: 'STRIPE_PRICE_MISMATCH_BLOCKED', error: err.message }); }
 
-  const reusableVisaCheckout = await getReusableOpenCheckoutSession(assessment.stripe_session_id, { serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan });
-  if (reusableVisaCheckout) {
-    return res.json({ ok: true, reused: true, url: reusableVisaCheckout.url, sessionId: reusableVisaCheckout.id, assessmentId: assessment.id, assessment_id: assessment.id, plan: checkoutPlan });
+  const openSessionRows = await query(
+    `SELECT stripe_session_id
+     FROM service_sessions
+     WHERE service_type='visa_assessment'
+       AND service_ref=$1
+       AND lower(client_email)=lower($2)
+       AND stripe_session_id IS NOT NULL
+       AND payment_status <> 'paid'
+     ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+     LIMIT 3`,
+    [assessment.id, req.client.email]
+  );
+  const reusableCandidateIds = [assessment.stripe_session_id, ...openSessionRows.rows.map(r => r.stripe_session_id)].filter(Boolean);
+  for (const candidateId of reusableCandidateIds) {
+    const reusableVisaCheckout = await getReusableOpenCheckoutSession(candidateId, { serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan });
+    if (reusableVisaCheckout) {
+      return res.json({ ok: true, reused: true, url: reusableVisaCheckout.url, sessionId: reusableVisaCheckout.id, assessmentId: assessment.id, assessment_id: assessment.id, plan: checkoutPlan });
+    }
   }
 
   const session = await createCheckoutSessionSafely({
@@ -3076,18 +3180,37 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
     }
   }, 'visa-checkout', checkoutFingerprint({ serviceType: 'visa_assessment', serviceRef: assessment.id, plan: checkoutPlan, price, email: req.client.email }));
 
-  await query(
-    `UPDATE assessments
-     SET stripe_session_id=$1,
-         status='checkout_created',
-         selected_plan=$5,
-         active_plan=$5,
-         amount_cents=$2,
-         currency=$3,
-         updated_at=now()
-     WHERE id=$4`,
-    [session.id, session.amount_total || null, session.currency || 'aud', assessment.id, checkoutPlan]
-  );
+  await tx(async (client) => {
+    await client.query(
+      `UPDATE assessments
+       SET stripe_session_id=$1,
+           status='checkout_created',
+           selected_plan=$5,
+           active_plan=$5,
+           amount_cents=$2,
+           currency=$3,
+           updated_at=now()
+       WHERE id=$4`,
+      [session.id, session.amount_total || null, session.currency || 'aud', assessment.id, checkoutPlan]
+    );
+    await client.query(
+      `UPDATE service_sessions
+       SET client_id=$1,
+           client_email=$2,
+           selected_plan=$3,
+           status='checkout_created',
+           payment_status='unpaid',
+           stripe_session_id=$4,
+           metadata=COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+           updated_at=now()
+       WHERE service_type='visa_assessment' AND service_ref=$6`,
+      [req.client.id, req.client.email, checkoutPlan, session.id, JSON.stringify({
+        stripe_session_id: session.id,
+        checkout_created_at: new Date().toISOString(),
+        idempotent_checkout: true
+      }), assessment.id]
+    );
+  });
 
   await recordPaymentAuditSafe(assessment.id, req.client.email, session);
   res.json({ ok: true, url: session.url, sessionId: session.id, assessmentId: assessment.id, assessment_id: assessment.id, plan: checkoutPlan });
