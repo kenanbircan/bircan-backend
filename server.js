@@ -6389,6 +6389,11 @@ app.get('/api/appeals/:id/final-pdf', requireAuth, asyncRoute(async (req, res) =
   await sendAppealAssessmentPdf(req, res, req.params.id);
 }));
 
+
+app.get('/api/appeal-assessments/:id/final-pdf', requireAuth, asyncRoute(async (req, res) => {
+  await sendAppealAssessmentPdf(req, res, req.params.id);
+}));
+
 app.get('/api/assessment/:id/payload-status', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, visa_type, status, payment_status, form_payload, pdf_generated_at, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
@@ -6628,6 +6633,129 @@ app.post('/api/assessment/:id/email-pdf', requireAuth, asyncRoute(async (req, re
     attachments: [{ filename: assessment.pdf_filename || `${assessment.id}.pdf`, content: assessment.pdf_bytes, contentType: 'application/pdf' }]
   });
   res.json({ ok: true, emailedTo: assessment.client_email });
+}));
+
+
+// ---- Dashboard document-action compatibility routes ----
+// These routes match the current account-dashboard.html buttons. They deliberately
+// reuse the existing account/PDF access checks instead of creating a second PDF path.
+async function resolveDashboardDocumentRecord(type, id, email) {
+  const cleanType = normaliseServiceType(type);
+  const cleanId = String(id || '').trim();
+  const cleanEmail = normaliseEmail(email);
+  if (!cleanId) throw Object.assign(new Error('Document reference is missing.'), { statusCode: 400 });
+
+  if (cleanType === 'visa_assessment') {
+    const assessment = await resolveAssessmentForAccount(cleanId, cleanEmail);
+    if (!assessment) throw Object.assign(new Error('Assessment was not found for this account.'), { statusCode: 404 });
+    return { type: 'visa_assessment', table: 'assessments', id: assessment.id, record: assessment };
+  }
+
+  if (cleanType === 'appeals_assessment') {
+    const { rows } = await query(`SELECT * FROM appeals_assessments WHERE id=$1 AND lower(client_email)=lower($2) LIMIT 1`, [cleanId, cleanEmail]);
+    const assessment = rows[0];
+    if (!assessment) throw Object.assign(new Error('Appeals assessment was not found for this account.'), { statusCode: 404 });
+    return { type: 'appeals_assessment', table: 'appeals_assessments', id: assessment.id, record: assessment };
+  }
+
+  throw Object.assign(new Error('Unsupported document type.'), { statusCode: 400 });
+}
+
+function makeMailer() {
+  if (!process.env.SMTP_HOST) return null;
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined
+  });
+}
+
+function documentEmailSubject(doc) {
+  if (doc.type === 'appeals_assessment') return 'Your appeals assessment advice letter is ready';
+  const subclass = doc.record && (doc.record.visa_type || doc.record.visa_subclass || doc.record.subclass);
+  return `Your ${subclass ? `Subclass ${subclass} ` : ''}advice letter is ready`;
+}
+
+app.post('/api/documents/email-pdf', requireAuth, asyncRoute(async (req, res) => {
+  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type);
+  const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
+
+  // Reuse the same release-lock and account checks as Open PDF.
+  const checked = await assertDocumentCanBeOpenedByEmail(requestedType, requestedId, req.client.email);
+  const doc = await resolveDashboardDocumentRecord(checked.type, checked.id, req.client.email);
+  const record = doc.record || {};
+
+  if (!hasIssuedPdfBytes(record.pdf_bytes)) {
+    return res.status(409).json({
+      ok: false,
+      error: doc.type === 'appeals_assessment' ? 'Appeals PDF not ready. The assessment has not been issued yet.' : 'PDF not ready. The advice letter has not been issued yet.',
+      status: record.status || null,
+      generationError: record.generation_error || null
+    });
+  }
+
+  const transporter = makeMailer();
+  if (!transporter) return res.status(500).json({ ok: false, error: 'SMTP is not configured.' });
+
+  const to = normaliseEmail(record.client_email || req.client.email);
+  const filename = record.pdf_filename || `${record.id || doc.id}.pdf`;
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to,
+    subject: documentEmailSubject(doc),
+    text: `Your Bircan Migration advice letter for reference ${record.id || doc.id} is attached.`,
+    attachments: [{ filename, content: record.pdf_bytes, contentType: record.pdf_mime || 'application/pdf' }]
+  });
+
+  res.json({ ok: true, emailedTo: to, message: `PDF emailed to ${to}.` });
+}));
+
+app.post('/api/documents/request-review', requireAuth, asyncRoute(async (req, res) => {
+  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type);
+  const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
+  const doc = await resolveDashboardDocumentRecord(requestedType, requestedId, req.client.email);
+  const now = new Date().toISOString();
+  const note = `Manual document review requested from client dashboard at ${now}.`;
+
+  if (doc.type === 'visa_assessment') {
+    await query(
+      `UPDATE assessments
+       SET status = CASE WHEN status IN ('pdf_ready','advice_ready') THEN status ELSE 'manual_review_requested' END,
+           generation_error = CASE WHEN generation_error IS NULL OR generation_error='' THEN $1 ELSE generation_error || E'\n' || $1 END,
+           updated_at = now()
+       WHERE id=$2 AND lower(client_email)=lower($3)`,
+      [note, doc.id, req.client.email]
+    );
+  } else if (doc.type === 'appeals_assessment') {
+    await query(
+      `UPDATE appeals_assessments
+       SET status = CASE WHEN status IN ('pdf_ready','advice_ready') THEN status ELSE 'manual_review_requested' END,
+           generation_error = CASE WHEN generation_error IS NULL OR generation_error='' THEN $1 ELSE generation_error || E'\n' || $1 END,
+           updated_at = now()
+       WHERE id=$2 AND lower(client_email)=lower($3)`,
+      [note, doc.id, req.client.email]
+    );
+  }
+
+  const transporter = makeMailer();
+  const reviewTo = process.env.REVIEW_EMAIL || process.env.ADMIN_EMAIL || process.env.SMTP_FROM || process.env.SMTP_USER;
+  if (transporter && reviewTo) {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: reviewTo,
+      subject: `Manual document review requested: ${doc.type} ${doc.id}`,
+      text: [
+        'A client requested manual document review from the dashboard.',
+        `Client email: ${req.client.email}`,
+        `Service type: ${doc.type}`,
+        `Reference: ${doc.id}`,
+        `Requested at: ${now}`
+      ].join('\n')
+    });
+  }
+
+  res.json({ ok: true, reviewRequested: true, id: doc.id, type: doc.type, message: 'Document review request submitted.' });
 }));
 
 
