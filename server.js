@@ -106,6 +106,7 @@ const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !=
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
+const PAYMENT_COMPLETE_ONLY_FLOW_PATCH = 'payment-complete-finalises-dashboard-readonly-v1';
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
 const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
@@ -2643,7 +2644,7 @@ async function handleCitizenshipCheckoutSession(req, res) {
   );
 
   const successUrl = process.env.CITIZENSHIP_SUCCESS_URL
-    || `${APP_BASE_URL}/account-dashboard.html?paid=1&service=citizenship&session_id={CHECKOUT_SESSION_ID}`;
+    || `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}&service=citizenship`;
   const cancelUrl = process.env.CITIZENSHIP_CANCEL_URL
     || `${APP_BASE_URL}/citizenship-test-stripe-wired.html?cancelled=1&plan=${encodeURIComponent(plan)}`;
 
@@ -2820,8 +2821,9 @@ async function finaliseCitizenshipPayment(req, res) {
     client = clientRows.rows[0] || null;
     if (client) setSessionCookie(res, sign(client));
   }
+  const token = client ? sign(client) : null;
 
-  const redirectUrl = `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || '')}&session_id=${encodeURIComponent(sessionId)}`;
+  const redirectUrl = `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || '')}&refresh=${Date.now()}`;
   res.json({
     ok: true,
     status: 'paid',
@@ -2832,6 +2834,7 @@ async function finaliseCitizenshipPayment(req, res) {
     citizenshipAccessId: result.accessId,
     plan: result.plan,
     client,
+    token,
     redirectUrl
   });
 }
@@ -3298,6 +3301,7 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
     client = clientRows.rows[0] || null;
     if (client) setSessionCookie(res, sign(client));
   }
+  const token = client ? sign(client) : null;
 
   res.json({
     ok: true,
@@ -3309,7 +3313,8 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
     citizenshipAccessId: result.accessId || null,
     plan: result.plan || null,
     pdfReady: result.pdfReady,
-    client
+    client,
+    token
   });
 }));
 
@@ -3328,8 +3333,9 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
     client = clientRows.rows[0] || null;
     if (client) setSessionCookie(res, sign(client));
   }
+  const token = client ? sign(client) : null;
 
-  res.json({ ok: true, status: 'paid', sessionId, service: result.type || (session.metadata || {}).service_type || 'visa_assessment', assessmentId: result.assessmentId, accessId: result.accessId || null, citizenshipAccessId: result.accessId || null, plan: result.plan || null, pdfReady: result.pdfReady, client });
+  res.json({ ok: true, status: 'paid', sessionId, service: result.type || (session.metadata || {}).service_type || 'visa_assessment', assessmentId: result.assessmentId, accessId: result.accessId || null, citizenshipAccessId: result.accessId || null, plan: result.plan || null, pdfReady: result.pdfReady, client, token });
 }));
 
 
@@ -3833,12 +3839,13 @@ async function finaliseStripePayment(req, res) {
     client = clientRows.rows[0] || null;
     if (client) setSessionCookie(res, sign(client));
   }
+  const token = client ? sign(client) : null;
 
   const serviceType = result.type || (session.metadata || {}).service_type || 'visa_assessment';
   const isCitizenship = serviceType === 'citizenship_test' || serviceType === 'citizenship';
   const redirectUrl = isCitizenship
-    ? `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || result.assessmentId || '')}&session_id=${encodeURIComponent(sessionId)}`
-    : `${APP_BASE_URL}/account-dashboard.html?payment=verified&assessment_id=${encodeURIComponent(result.assessmentId || '')}&session_id=${encodeURIComponent(sessionId)}`;
+    ? `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || result.assessmentId || '')}&refresh=${Date.now()}`
+    : `${APP_BASE_URL}/account-dashboard.html?payment=verified&assessment_id=${encodeURIComponent(result.assessmentId || '')}&refresh=${Date.now()}`;
   res.json({
     ok: true,
     status: 'paid',
@@ -3851,6 +3858,7 @@ async function finaliseStripePayment(req, res) {
     plan: result.plan || null,
     pdfReady: result.pdfReady,
     client,
+    token,
     redirectUrl
   });
 }
