@@ -5107,6 +5107,27 @@ async function handleDashboardFast(req, res) {
 app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(handleDashboardFast));
 app.get('/api/account/dashboard-lite', requireAuth, asyncRoute(handleDashboardFast));
 
+// Permanent non-blocking dashboard bootstrap route.
+// This route never fails just because auth/cookies are missing. It lets the frontend open instantly
+// and hydrate records only when a valid cookie/bearer token is available.
+app.get('/api/account/dashboard-open', optionalAuth, asyncRoute(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (!req.client) {
+    return res.json({
+      ok: true,
+      open: true,
+      unauthenticated: true,
+      client: null,
+      visa: [], visaAssessments: [], assessments: [],
+      appeals: [], appealsAssessments: [],
+      citizenship: [], citizenshipAccess: [],
+      payments: [],
+      counts: { visa: 0, appeals: 0, citizenship: 0, payments: 0 }
+    });
+  }
+  return handleDashboardFast(req, res);
+}));
+
 app.get('/api/account/dashboard', requireAuth, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
