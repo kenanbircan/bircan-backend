@@ -956,7 +956,7 @@ function serviceTitle(serviceType, row) {
 
 function buildUnifiedServiceCard(row) {
   const serviceType = row.service_type;
-  const paid = row.payment_status === 'paid' || (serviceType === 'citizenship_test' && row.status === 'active');
+  const paid = row.payment_status === 'paid' || row.status === 'active' || row.status === 'pdf_ready' || row.status === 'advice_ready' || row.status === 'release_scheduled';
   const rawPlan = row.selected_plan || row.active_plan || row.plan || (serviceType === 'citizenship_test' ? '20' : 'instant');
   const plan = serviceType === 'citizenship_test' ? normaliseCitizenshipPlan(rawPlan) : safePlan(rawPlan);
   const secondsRemaining = Math.max(0, Number(row.release_seconds_remaining || 0));
@@ -3487,7 +3487,9 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
     citizenshipAccessId: result.accessId || null,
     plan: result.plan || null,
     pdfReady: result.pdfReady,
-    client
+    client,
+    dashboardAccessToken: client ? signDashboardAccessToken(client) : null,
+    accessToken: client ? signDashboardAccessToken(client) : null
   });
 }));
 
@@ -3507,7 +3509,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
     if (client) setSessionCookie(res, sign(client));
   }
 
-  res.json({ ok: true, status: 'paid', sessionId, service: result.type || (session.metadata || {}).service_type || 'visa_assessment', assessmentId: result.assessmentId, accessId: result.accessId || null, citizenshipAccessId: result.accessId || null, plan: result.plan || null, pdfReady: result.pdfReady, client });
+  res.json({ ok: true, status: 'paid', sessionId, service: result.type || (session.metadata || {}).service_type || 'visa_assessment', assessmentId: result.assessmentId, accessId: result.accessId || null, citizenshipAccessId: result.accessId || null, plan: result.plan || null, pdfReady: result.pdfReady, client, dashboardAccessToken: client ? signDashboardAccessToken(client) : null, accessToken: client ? signDashboardAccessToken(client) : null });
 }));
 
 
@@ -4029,6 +4031,8 @@ async function finaliseStripePayment(req, res) {
     plan: result.plan || null,
     pdfReady: result.pdfReady,
     client,
+    dashboardAccessToken: client ? signDashboardAccessToken(client) : null,
+    accessToken: client ? signDashboardAccessToken(client) : null,
     redirectUrl
   });
 }
@@ -5154,7 +5158,7 @@ function dashboardRecordScore(row) {
   if (!row || typeof row !== 'object') return 0;
   return Object.keys(row).length
     + (row.has_pdf ? 50 : 0)
-    + (String(row.payment_status || row.paymentStatus || '').toLowerCase()==='paid' ? 25 : 0)
+    + (String(row.payment_status || row.paymentStatus || row.status || '').toLowerCase().includes('paid') ? 25 : 0)
     + ((row.stripe_session_id || row.stripeSessionId) ? 10 : 0)
     + ((row.amount_cents || row.amountCents) ? 8 : 0);
 }
@@ -5318,17 +5322,17 @@ app.post('/api/account/dashboard-access-token', resolveDashboardAccess, asyncRou
 async function queryDashboardFastRows(email, clientId) {
   const visaSql = `
     WITH matches AS (
-      SELECT id, submission_fingerprint, form_payload, client_email, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+      SELECT id, submission_fingerprint, form_payload, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
              status, payment_status, amount_cents, currency, stripe_session_id,
              created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
       FROM assessments WHERE lower(client_email)=lower($1)
       UNION ALL
-      SELECT id, submission_fingerprint, form_payload, client_email, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+      SELECT id, submission_fingerprint, form_payload, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
              status, payment_status, amount_cents, currency, stripe_session_id,
              created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
       FROM assessments WHERE lower(applicant_email)=lower($1)
       UNION ALL
-      SELECT id, submission_fingerprint, form_payload, client_email, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+      SELECT id, submission_fingerprint, form_payload, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
              status, payment_status, amount_cents, currency, stripe_session_id,
              created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
       FROM assessments WHERE client_id=$2
@@ -5337,9 +5341,9 @@ async function queryDashboardFastRows(email, clientId) {
       FROM matches
       ORDER BY id, COALESCE(updated_at, created_at) DESC NULLS LAST
     )
-    SELECT id, client_email, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+    SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
            selected_plan, active_plan,
-           CASE WHEN payment_status='paid' AND (pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL) THEN 'pdf_ready'
+           CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN 'pdf_ready'
                 WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
@@ -5419,8 +5423,8 @@ app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handle
 
 app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
-    `SELECT id, client_email, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
-            CASE WHEN payment_status='paid' AND pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
+    `SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
             CASE
               WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
@@ -5440,9 +5444,9 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
               ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
             END) - now())))::integer AS release_seconds_remaining
      FROM assessments
-     WHERE lower(client_email)=lower($1) OR lower(COALESCE(applicant_email,''))=lower($1) OR client_id=$2
+     WHERE lower(client_email)=lower($1)
      ORDER BY created_at DESC`,
-    [req.client.email, req.client.id]
+    [req.client.email]
   );
   const { rows: appealAssessmentRows } = await query(
     `WITH linked_appeals AS (
@@ -5588,9 +5592,9 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
 // the newest assessment card.
 app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
-    `SELECT id, client_email, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+    `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
             selected_plan, active_plan,
-            CASE WHEN payment_status='paid' AND pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, stripe_payment_intent,
             created_at, updated_at,
             CASE
