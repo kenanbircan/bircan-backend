@@ -1770,6 +1770,41 @@ async function ensureSchema() {
 }
 
 
+
+// ---- TEMPORARY DATABASE CLEANUP ROUTE: hard-stop duplicate paid visa matters ----
+// Remove this route after it returns ok:true, or rotate/delete MIGRATION_ADMIN_KEY in Render.
+app.get('/api/admin/run-hard-stop-paid-visa-cleanup', asyncRoute(async (req, res) => {
+  const providedKey = String(req.query.key || '');
+  const expectedKey = String(process.env.MIGRATION_ADMIN_KEY || '');
+
+  if (!expectedKey || providedKey !== expectedKey) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Migration key required.'
+    });
+  }
+
+  const migrationPath = path.join(__dirname, 'migrations', 'hard-stop-one-active-paid-visa-per-account.sql');
+
+  if (!fs.existsSync(migrationPath)) {
+    return res.status(404).json({
+      ok: false,
+      error: 'SQL file not found.',
+      path: migrationPath
+    });
+  }
+
+  const sql = fs.readFileSync(migrationPath, 'utf8');
+  await query(sql);
+
+  res.json({
+    ok: true,
+    message: 'Hard-stop paid visa duplicate cleanup completed.',
+    action: 'Now remove this temporary route from server.js or rotate MIGRATION_ADMIN_KEY.'
+  });
+}));
+
+
 app.get('/api/health', asyncRoute(async (_req, res) => {
   await query('SELECT 1');
   res.json({
