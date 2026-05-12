@@ -956,7 +956,7 @@ function serviceTitle(serviceType, row) {
 
 function buildUnifiedServiceCard(row) {
   const serviceType = row.service_type;
-  const paid = row.payment_status === 'paid' || row.status === 'active' || row.status === 'pdf_ready' || row.status === 'advice_ready' || row.status === 'release_scheduled';
+  const paid = row.payment_status === 'paid' || (serviceType === 'citizenship_test' && row.status === 'active');
   const rawPlan = row.selected_plan || row.active_plan || row.plan || (serviceType === 'citizenship_test' ? '20' : 'instant');
   const plan = serviceType === 'citizenship_test' ? normaliseCitizenshipPlan(rawPlan) : safePlan(rawPlan);
   const secondsRemaining = Math.max(0, Number(row.release_seconds_remaining || 0));
@@ -5154,7 +5154,7 @@ function dashboardRecordScore(row) {
   if (!row || typeof row !== 'object') return 0;
   return Object.keys(row).length
     + (row.has_pdf ? 50 : 0)
-    + (String(row.payment_status || row.paymentStatus || row.status || '').toLowerCase().includes('paid') ? 25 : 0)
+    + (String(row.payment_status || row.paymentStatus || '').toLowerCase()==='paid' ? 25 : 0)
     + ((row.stripe_session_id || row.stripeSessionId) ? 10 : 0)
     + ((row.amount_cents || row.amountCents) ? 8 : 0);
 }
@@ -5339,7 +5339,7 @@ async function queryDashboardFastRows(email, clientId) {
     )
     SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
            selected_plan, active_plan,
-           CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN 'pdf_ready'
+           CASE WHEN payment_status='paid' AND (pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL) THEN 'pdf_ready'
                 WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
@@ -5420,7 +5420,7 @@ app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handle
 app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
     `SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
+            CASE WHEN payment_status='paid' AND pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
             CASE
               WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
@@ -5588,9 +5588,9 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
 // the newest assessment card.
 app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
-    `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+    `SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
             selected_plan, active_plan,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
+            CASE WHEN payment_status='paid' AND pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, stripe_payment_intent,
             created_at, updated_at,
             CASE
