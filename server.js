@@ -109,6 +109,12 @@ const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !=
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
+
+// ---- Payment checkout reuse hardening ----
+// v2026-05-13: Public assessment start must never reuse a paid assessment for a new checkout.
+// A paid record is a completed matter. New payment attempts must receive a fresh unpaid assessment/service session.
+const BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH = 'public-start-never-reuse-paid-assessment-v1';
+
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
 const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
@@ -2671,6 +2677,8 @@ async function handleAssessmentSubmit(req, res) {
        WHERE visa_type=$2
          AND COALESCE(active_plan, selected_plan, 'instant')=$3
          AND (
+         COALESCE(payment_status,'unpaid') <> 'paid'
+         AND 
            lower(client_email)=lower($1)
            OR lower(applicant_email)=lower($1)
            OR client_id=$6
@@ -2789,8 +2797,9 @@ async function handlePublicVisaAssessmentStart(req, res) {
   try {
     created = await tx(async (client) => {
       // Permanent duplicate prevention:
-      // Re-clicks, browser retries, and Stripe-return loops must reuse the same recent
-      // saved assessment when the client email, subclass, plan and answer fingerprint match.
+      // Re-clicks, browser retries, and Stripe-return loops may reuse only an unpaid/in-progress
+      // assessment. A paid assessment is a completed matter and must never be reused for a new
+      // checkout attempt, otherwise checkout returns alreadyPaid and sends the client to dashboard.
       // This prevents two paid Subclass 186 cards for one assessment journey.
       const existingRows = await client.query(
         `SELECT a.*, ss.id AS service_session_id
@@ -2820,7 +2829,10 @@ async function handlePublicVisaAssessmentStart(req, res) {
          LIMIT 1`,
         [email, visaType, plan]
       );
-      const existing = existingRows.rows[0];
+      let existing = existingRows.rows[0];
+      if (existing && String(existing.payment_status || '').toLowerCase() === 'paid') {
+        existing = null;
+      }
       if (existing) {
         let serviceSession = null;
         if (existing.service_session_id) {
@@ -3122,7 +3134,7 @@ app.post('/api/service/checkout-session', requireCheckoutAuth, asyncRoute(async 
         service_session_id: serviceSession.id,
         plan: assessment.active_plan || assessment.selected_plan || serviceSession.selected_plan || 'instant',
         redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
-        url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
+        dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
       });
     }
 
@@ -3871,7 +3883,7 @@ app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRo
       assessment_id: assessment.id,
       plan: assessment.active_plan || assessment.selected_plan,
       redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
-      url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
+      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
     });
   }
 
@@ -3910,7 +3922,7 @@ app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRo
       assessment_id: recentPaid.id,
       plan: recentPaid.active_plan || recentPaid.selected_plan || checkoutPlan,
       redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`,
-      url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`
+      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`
     });
   }
   const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
