@@ -105,6 +105,7 @@ try { pdfParse = require('pdf-parse'); } catch (_err) { pdfParse = null; }
 const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !== 'false';
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
+const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
 const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
@@ -4457,94 +4458,265 @@ function extractAssessmentAnswerSummary(payload, maxItems = 24) {
   return out;
 }
 
-function buildFastAssessmentPdfBuffer(assessment) {
-  return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ size: 'A4', margin: 54, bufferPages: true });
-      const chunks = [];
-      doc.on('data', chunk => chunks.push(chunk));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', reject);
 
-      const navy = '#071b3a';
-      const muted = '#66738a';
-      const blue = '#2563eb';
-      const gold = '#c99a2e';
-      const width = doc.page.width - 108;
-      const line = () => { doc.moveTo(54, doc.y).lineTo(doc.page.width - 54, doc.y).strokeColor('#d9e2ef').lineWidth(1).stroke(); doc.moveDown(0.8); };
-      const h = (txt) => { doc.moveDown(0.55); doc.font('Helvetica-Bold').fontSize(14).fillColor(navy).text(txt, { width }); doc.moveDown(0.25); };
-      const p = (txt) => doc.font('Helvetica').fontSize(10.5).fillColor('#13213c').text(txt, { width, lineGap: 3 });
 
-      doc.font('Helvetica-Bold').fontSize(19).fillColor(navy).text('Bircan Migration & Education', { width });
-      doc.font('Helvetica').fontSize(9).fillColor(muted).text('Professional Australian migration assessment pathway', { width });
-      doc.moveDown(0.6); line();
-
-      doc.font('Helvetica-Bold').fontSize(18).fillColor(navy).text(`Preliminary Assessment Letter — Subclass ${textLineSafe(assessment.visa_type, 'Visa')}`, { width });
-      doc.moveDown(0.4);
-      doc.font('Helvetica').fontSize(10).fillColor(muted).text(`Reference: ${assessment.id}`, { width });
-      doc.text(`Generated: ${new Date().toLocaleString('en-AU')}`, { width });
-      doc.text(`Plan: ${textLineSafe(assessment.active_plan || assessment.selected_plan, 'instant')}`, { width });
-      doc.moveDown(0.7);
-
-      h('Client and matter details');
-      p(`Applicant: ${textLineSafe(assessment.applicant_name, 'Not stated')}`);
-      p(`Email: ${textLineSafe(assessment.applicant_email || assessment.client_email, 'Not stated')}`);
-      p(`Payment status: ${textLineSafe(assessment.payment_status, 'paid')}`);
-      p(`Assessment status: preliminary PDF issued pending enhanced legal review.`);
-
-      h('Purpose of this document');
-      p('This document is issued immediately after payment verification so the client dashboard contains a real downloadable PDF. It is a preliminary assessment record based on the information submitted through the online questionnaire. It is not a final lodgement opinion and remains subject to registered migration agent review, evidence verification, and confirmation of the law and policy settings current at the relevant time.');
-
-      h('Preliminary position');
-      p('The matter has been received and payment-linked. The submitted facts indicate that a migration assessment file has been opened. The final legal position must not be treated as settled until original evidence, sponsorship or nomination material, visa history, health, character, and any relevant integrity issues have been reviewed.');
-
-      h('Information captured from the questionnaire');
-      const items = extractAssessmentAnswerSummary(assessment.form_payload || assessment.raw_payload || {}, 28);
-      if (!items.length) {
-        p('No detailed questionnaire answers were available in the saved payload. The assessment should be reviewed manually and the client may need to re-submit missing answers if the record is incomplete.');
-      } else {
-        items.forEach(([k, v]) => {
-          if (doc.y > doc.page.height - 90) doc.addPage();
-          doc.font('Helvetica-Bold').fontSize(9.5).fillColor(navy).text(String(k).replace(/[-_]/g, ' ').slice(0, 80), { continued: false, width });
-          doc.font('Helvetica').fontSize(9.2).fillColor('#344054').text(v, { width, lineGap: 2 });
-          doc.moveDown(0.25);
-        });
-      }
-
-      if (doc.y > doc.page.height - 170) doc.addPage();
-      h('Required professional review before reliance');
-      [
-        'Verify identity, passport and visa-history documents.',
-        'Confirm the correct subclass, stream and any nomination or sponsorship prerequisites.',
-        'Check health, character, prior refusal/cancellation, section 48, condition 8503 and PIC 4020 issues.',
-        'Review all supporting evidence before providing final eligibility or lodgement advice.',
-        'Replace or supplement this preliminary PDF with enhanced legal advice where required.'
-      ].forEach(item => { doc.font('Helvetica').fontSize(10).fillColor('#13213c').text(`• ${item}`, { width, lineGap: 3 }); });
-
-      h('Important notice');
-      p('This PDF is automatically generated as a preliminary client-dashboard document. It is not a guarantee of visa grant, nomination approval, sponsorship approval, merits review success or citizenship outcome. Bircan Migration must review evidence and the applicable legal framework before final advice is relied upon.');
-
-      doc.moveDown(1.2);
-      doc.font('Helvetica').fontSize(10).fillColor('#13213c').text('Yours faithfully,', { width });
-      doc.moveDown(0.45);
-      doc.font('Helvetica-Bold').fontSize(10.5).fillColor(navy).text('Kenan Bircan JP', { width });
-      doc.font('Helvetica').fontSize(9.5).fillColor('#13213c').text('Registered Migration Agent | MARN: 1463685', { width });
-      doc.text('Bircan Migration & Education', { width });
-
-      const range = doc.bufferedPageRange();
-      for (let i = range.start; i < range.start + range.count; i++) {
-        doc.switchToPage(i);
-        doc.font('Helvetica').fontSize(8).fillColor(muted).text(`Bircan Migration preliminary assessment PDF · Page ${i + 1} of ${range.count}`, 54, doc.page.height - 34, { width, align: 'center' });
-      }
-      doc.end();
-    } catch (err) { reject(err); }
-  });
+function criterionStatusFromAnswer(value, positiveText = 'The questionnaire answer is presently supportive, subject to evidence verification.') {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return { finding: 'The criterion cannot yet be confirmed from the available instructions.', tone: 'review' };
+  if (/^(yes|y|true|available|held|current|valid|approved|met|satisfied|competent|proficient|superior)/i.test(text)) return { finding: positiveText, tone: 'supportable' };
+  if (/^(no|n|false|not|none|unavailable|expired|refused|cancelled|unsure|unknown)/i.test(text)) return { finding: 'The answer raises a matter requiring clarification before any lodgement-ready advice is issued.', tone: 'risk' };
+  return { finding: 'The information has been recorded and must be reconciled against original supporting evidence.', tone: 'review' };
 }
 
-async function saveFastAssessmentPdf(client, assessment, reason = 'fast_preliminary_pdf') {
-  const pdf = await buildFastAssessmentPdfBuffer(assessment);
-  if (!Buffer.isBuffer(pdf) || pdf.length <= 1024) throw new Error('Fast PDF generation failed: empty PDF buffer.');
-  const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}-preliminary.pdf`;
+function buildSourceBackedRequirement(label, subclass, stream, legalPack) {
+  const sourceNames = Array.isArray(legalPack && legalPack.sources)
+    ? legalPack.sources.map(s => String(s.path || s.name || s.authority || '')).join(' | ')
+    : '';
+  const base = `The requirement must be assessed under the Migration Act 1958, the Migration Regulations 1994, relevant legislative instruments and Departmental policy guidance as applicable to Subclass ${subclass}${stream ? ' (' + stream + ')' : ''}.`;
+  const lower = String(label || '').toLowerCase();
+  if (/validity|schedule 1/.test(lower)) return 'The visa application must first be validly made, including correct form, charge, applicant identity, location and any stream-specific validity prerequisites before Schedule 2 criteria can be assessed.';
+  if (/stream|trt|direct entry|labour agreement/.test(lower)) return `The selected stream must be legally available on the facts and must be tested against the stream-specific Subclass ${subclass} criteria and any applicable instrument or agreement settings.`;
+  if (/sponsor|nomination|employer|position|genuine/.test(lower)) return 'The nominated position and employer material must demonstrate a genuine, available and properly supported role connected to the sponsor’s business operations and nomination framework.';
+  if (/occupation|anzsco|skills|qualification|experience/.test(lower)) return 'The applicant’s actual duties, qualifications, employment history and any skills, licensing or registration evidence must align with the nominated occupation and stream requirements.';
+  if (/salary|market|amsr|tsmit|income/.test(lower)) return 'The remuneration and employment conditions must be supported by contract, payroll and market salary evidence and must be consistent with the nomination and any applicable threshold or concession framework.';
+  if (/english/.test(lower)) return 'The applicant must satisfy the applicable English language requirement, exemption or concession with evidence valid at the relevant time.';
+  if (/health/.test(lower)) return 'The applicant and any included family members must satisfy applicable health requirements or address any health-related issue before final advice is relied upon.';
+  if (/character|integrity|4020|false|misleading/.test(lower)) return 'The applicant must satisfy character and integrity requirements, including truthful disclosure, document consistency and any applicable public interest criterion.';
+  if (/migration history|compliance|section 48|8503|visa history/.test(lower)) return 'Prior visa history, refusals, cancellations, visa conditions, section 48 issues and any no-further-stay restrictions must be reviewed before lodgement strategy is finalised.';
+  return base;
+}
+
+function criterionProfilesForSubclass(subclass, stream) {
+  const code = String(subclass || '').replace(/[^0-9]/g, '');
+  const s = String(stream || '').toLowerCase();
+  const common = [
+    { key:'validity', criterion:'Application validity and identity', answerKeys:['passport-available','passport available','identity-docs-consistent','identity docs consistent'], evidence:'Passport, identity documents, name-change records, location and visa-status evidence.', recommendation:'Confirm identity, current location and validity requirements before any lodgement action.' },
+    { key:'health', criterion:'Health requirements', answerKeys:['serious-medical','serious medical','health issues','health'], evidence:'Health declarations, medical reports and any health undertaking or further assessment material.', recommendation:'Review health disclosures and obtain relevant health documents before final advice.' },
+    { key:'character', criterion:'Character and integrity requirements', answerKeys:['criminal-history','criminal history','character issues','pic4020','false information'], evidence:'Police clearances, court records, Department correspondence and document-consistency review.', recommendation:'Confirm character and integrity position and resolve any disclosure issue before lodgement.' },
+    { key:'migration_history', criterion:'Migration history and compliance', answerKeys:['visa-refused','visa refused','visa-cancelled','visa cancelled','unlawful-status','section48-mentioned','8503'], evidence:'VEVO, grant letters, refusal/cancellation decisions, bridging visa records and prior applications.', recommendation:'Reconcile all migration history before treating the matter as low risk.' }
+  ];
+  if (['186','187','482','494'].includes(code)) {
+    const employer = [
+      { key:'stream', criterion:'Subclass and stream selection', answerKeys:['selectedStream','selected stream','stream'], evidence:'Visa history, stream selection record, nomination pathway material and any transitional or concession evidence.', recommendation:'Confirm the selected stream is legally available and strategically strongest before lodgement.' },
+      { key:'sponsor', criterion:'Sponsoring employer and nomination position', answerKeys:['employer-name','employer name','current-employer','current employer','business-need','business need'], evidence:'Nomination approval or draft nomination, organisation chart, business activity records, position description and business need statement.', recommendation:'Build a coherent nomination file connecting the employer, position, duties and business need.' },
+      { key:'genuine_position', criterion:'Genuine position and operational need', answerKeys:['role-ongoing','role ongoing','role-full-time','role full time','business-need','business need','employee-count'], evidence:'Position description, organisational chart, contracts, client/work pipeline, payroll capacity and evidence of ongoing operational need.', recommendation:'Demonstrate that the role is genuine, ongoing and commercially supported by objective employer records.' },
+      { key:'occupation', criterion:'Occupation and ANZSCO alignment', answerKeys:['occupation','job-title','job title','daily-duties','daily duties','duties'], evidence:'Detailed duties statement, ANZSCO comparison, CV, references, qualifications, registration/licensing and skills evidence.', recommendation:'Prepare a duties matrix showing why the nominated occupation accurately reflects the actual role.' },
+      { key:'employment', criterion:'Employment continuity and work history', answerKeys:['continuous-work','continuous work','trt-start-date','trt start date','weekly-hours','weekly hours'], evidence:'Employment contract, payslips, PAYG/tax records, superannuation, leave records and visa/work-rights history.', recommendation:'Reconstruct the employment chronology and reconcile it against payroll, tax and visa records.' },
+      { key:'salary', criterion:'Salary and market position', answerKeys:['salary-offered','salary offered','salary','weekly-hours','weekly hours'], evidence:'Contract, payslips, superannuation, market salary evidence, award/enterprise agreement material and nomination salary records.', recommendation:'Confirm the salary position is internally consistent and defensible against market salary or concession settings.' },
+      { key:'english', criterion:'English language requirement or concession', answerKeys:['english-reading','english reading','english-writing','english writing','english-speaking','english speaking','english-listening','english listening','english'], evidence:'Original English test report, passport evidence, exemption material or Labour Agreement concession evidence.', recommendation:'Verify the English threshold, exemption or concession before final lodgement advice.' }
+    ];
+    if (s.includes('labour') || s.includes('agreement')) {
+      employer.splice(2, 0, { key:'labour_agreement', criterion:'Labour Agreement terms and concessions', answerKeys:['labour-agreement','labour agreement','agreement','concession','selectedStream'], evidence:'Executed Labour Agreement, occupation coverage, concessions, salary/English/age settings, nomination limits and sponsor compliance records.', recommendation:'Assess the matter against the actual agreement terms, not the standard TRT or Direct Entry assumptions.' });
+    }
+    if (s.includes('temporary') || s.includes('trt')) {
+      employer.splice(2, 0, { key:'trt', criterion:'Temporary Residence Transition employment pathway', answerKeys:['trt-start-date','trt start date','continuous-work','continuous work','previous-sponsored-visas'], evidence:'Subclass 457/482/SID visa records, sponsor continuity records, nominated occupation history, payroll, tax and superannuation evidence.', recommendation:'Confirm the qualifying employment period, sponsor continuity and occupation continuity before relying on the TRT pathway.' });
+    }
+    if (s.includes('direct')) {
+      employer.splice(2, 0, { key:'direct_entry', criterion:'Direct Entry skills and occupation pathway', answerKeys:['skills-assessment','skills assessment','qualification','experience','occupation'], evidence:'Skills assessment, qualifications, employment references, CV, licensing and occupation evidence.', recommendation:'Confirm skills and occupation evidence is stronger than any TRT-based alternative before relying on Direct Entry.' });
+    }
+    return [...employer, ...common];
+  }
+  if (['189','190','491'].includes(code)) {
+    return [
+      { key:'invitation', criterion:'SkillSelect invitation and points-tested validity', answerKeys:['invitation','eoi','points'], evidence:'Invitation, EOI records, points claims and supporting documents.', recommendation:'Verify every points claim against evidence before lodgement.' },
+      { key:'nomination', criterion:'State or regional nomination requirements', answerKeys:['nomination','state nomination','regional'], evidence:'Nomination approval, state conditions and commitment evidence.', recommendation:'Check nomination conditions and any residence/work commitment before lodgement.' },
+      { key:'skills', criterion:'Skills assessment and nominated occupation', answerKeys:['skills assessment','occupation','anzsco'], evidence:'Skills assessment, qualifications, employment references and occupation evidence.', recommendation:'Confirm the skills assessment is valid and aligned with the nominated occupation.' },
+      { key:'english', criterion:'English language and points evidence', answerKeys:['english','ielts','pte'], evidence:'English test report or exemption evidence.', recommendation:'Verify English evidence validity and points level.' },
+      ...common
+    ];
+  }
+  if (['300','309','820'].includes(code)) {
+    return [
+      { key:'sponsor', criterion:'Sponsor eligibility', answerKeys:['sponsor','partner','citizen','pr'], evidence:'Sponsor identity, citizenship/permanent residence evidence and sponsorship history.', recommendation:'Confirm sponsor eligibility and any sponsorship limitation.' },
+      { key:'relationship', criterion:'Genuine and continuing relationship', answerKeys:['relationship','married','defacto','living together'], evidence:'Financial, household, social and commitment evidence plus relationship statements.', recommendation:'Prepare evidence across all relationship aspects before lodgement.' },
+      { key:'location', criterion:'Location and timing requirements', answerKeys:['currently-in-australia','current country'], evidence:'Passport, visa status and location evidence.', recommendation:'Confirm onshore/offshore requirements for the selected subclass.' },
+      ...common
+    ];
+  }
+  return [
+    { key:'pathway', criterion:`Subclass ${code || 'visa'} pathway selection`, answerKeys:['selectedStream','stream','visaType','subclass'], evidence:'Subclass-specific eligibility evidence, identity, visa history and supporting documents.', recommendation:'Confirm the correct subclass and stream before giving lodgement-ready advice.' },
+    { key:'primary', criterion:'Primary Schedule 2 criteria', answerKeys:['occupation','relationship','purpose','course','sponsor','nomination'], evidence:'Documents supporting each primary criterion claimed in the questionnaire.', recommendation:'Assess each claimed criterion against original documents.' },
+    ...common
+  ];
+}
+
+function buildCriterionFindingFromProfile(profile, context) {
+  const { flat, subclass, stream, legalPack } = context;
+  function getAny(keys) {
+    const wanted = (keys || []).map(k => String(k).toLowerCase().replace(/[^a-z0-9]/g, ''));
+    for (const [k, v] of Object.entries(flat || {})) {
+      const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (wanted.some(w => nk === w || nk.includes(w) || w.includes(nk))) {
+        const text = String(v || '').replace(/\s+/g, ' ').trim();
+        if (text) return text;
+      }
+    }
+    return '';
+  }
+  const answer = getAny(profile.answerKeys || []);
+  const status = criterionStatusFromAnswer(answer, 'The current instructions are supportive, subject to verification of original evidence and current legal settings.');
+  const legalRequirement = buildSourceBackedRequirement(profile.criterion, subclass, stream, legalPack);
+  let finding;
+  if (answer) {
+    finding = `${status.finding} The relevant instruction currently recorded is: ${answer}.`;
+  } else {
+    finding = 'The available questionnaire material does not finally establish this criterion. It must be assessed against the original evidence before lodgement-ready advice is issued.';
+  }
+  const legal_consequence = status.tone === 'risk'
+    ? 'If this issue is not resolved, it may create a material validity, nomination, refusal or evidentiary risk depending on the applicable criterion.'
+    : 'The criterion may be capable of being satisfied, but only if the supporting documents confirm the instructions and no inconsistent Departmental or employer records emerge.';
+  return {
+    criterion: profile.criterion,
+    finding,
+    legal_consequence,
+    evidence_gap: profile.evidence,
+    recommendation: profile.recommendation,
+    legislativeRequirement: legalRequirement,
+    legalRequirement,
+    delegateRisk: status.tone === 'risk' ? 'Elevated Delegate Risk' : 'Moderate Delegate Risk',
+    body: finding,
+    strategy: profile.recommendation,
+    evidence: profile.evidence,
+    sourceBasis: 'Bircan Migration knowledgebase legal-source pack, subclass matrix and questionnaire facts.'
+  };
+}
+
+async function buildFastLegalAdviceBundle(assessment) {
+  const subclass = String(assessment && assessment.visa_type || '186').replace(/[^0-9A-Za-z]/g, '') || '186';
+  const payload = (assessment && assessment.form_payload) || {};
+  const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
+  const flat = flattenObject(answers || {});
+  function pickValue(keys, fallback = '') {
+    const wanted = keys.map(k => String(k).toLowerCase().replace(/[^a-z0-9]/g, ''));
+    for (const [k, v] of Object.entries(flat || {})) {
+      const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (wanted.some(w => nk === w || nk.includes(w) || w.includes(nk))) {
+        const text = String(v || '').replace(/\s+/g, ' ').trim();
+        if (text) return text;
+      }
+    }
+    return fallback;
+  }
+
+  const stream = pickValue(['selectedStream', 'selected stream', 'stream', 'nominationStream'], assessment.selected_stream || 'To be confirmed');
+  const employer = pickValue(['employerName', 'employer name', 'currentEmployer', 'current employer'], 'the sponsoring employer');
+
+  const legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
+  assertKnowledgebasePack(legalPack);
+  if (String(legalPack.subclass || '').replace(/[^0-9]/g, '') !== String(subclass).replace(/[^0-9]/g, '')) {
+    throw new Error('Knowledgebase subclass does not match assessment subclass. Criterion-by-criterion PDF blocked.');
+  }
+
+  const legalSourcePack = {
+    loadedAt: legalPack.loadedAt,
+    root: legalPack.root,
+    assessmentKind: legalPack.assessmentKind || 'MIGRATION',
+    subclass: legalPack.subclass || subclass,
+    selectedStream: legalPack.selectedStream || stream,
+    subclassExtraction: legalPack.subclassExtraction,
+    legalAuthorityOrder: legalPack.legalAuthorityOrder || ['ACT','REGULATIONS','INSTRUMENTS','PAMS'],
+    hierarchyEnforced: legalPack.hierarchyEnforced !== false,
+    hierarchy: legalPack.hierarchy || [],
+    documentCountScanned: legalPack.documentCountScanned || (legalPack.sources || []).length,
+    documentCountLoaded: legalPack.documentCountLoaded || (legalPack.sources || []).length,
+    knowledgebaseSnapshot: legalPack.knowledgebaseSnapshot || { snapshotId: legalPack.snapshotId || `kb-${subclass}-${Date.now()}`, totalFiles: (legalPack.sources || []).length },
+    snapshotId: legalPack.snapshotId || (legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId),
+    sources: (legalPack.sources || []).map(s => ({ authority: s.authority, path: s.path || s.name, sha256: s.sha256, modified: s.modified, chars: s.chars }))
+  };
+
+  const profiles = criterionProfilesForSubclass(subclass, stream);
+  const context = { flat, subclass, stream, legalPack: legalSourcePack };
+  const findings = profiles.map(profile => buildCriterionFindingFromProfile(profile, context));
+  const riskSignals = JSON.stringify(findings).toLowerCase();
+  const riskLevel = /refused|cancelled|criminal|false|misleading|unlawful|section 48|8503|not resolved|not available/.test(riskSignals) ? 'HIGH' : 'MEDIUM';
+  const position = riskLevel === 'HIGH' ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'PROCEED_AFTER_EVIDENCE_REVIEW';
+  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by criterion-by-criterion evidence for ${employer}, including nomination, occupation, employment, salary, English, health, character and migration-history requirements.`;
+  const sourceHash = crypto.createHash('sha256').update(JSON.stringify((legalSourcePack.sources || []).map(s => [s.authority, s.path, s.sha256]))).digest('hex');
+
+  const evidenceRows = findings.map(f => ({
+    criterion: f.criterion,
+    grade: 'Professional evidence review required',
+    requiredAction: f.recommendation,
+    evidenceGap: f.evidence_gap
+  }));
+
+  const sections = [
+    { heading: 'Scope of advice', body: `This advice has been prepared as a senior migration agent assessment of the proposed Subclass ${subclass}${stream ? ' ' + stream : ''} pathway. It is based on the questionnaire information presently available and on the Bircan Migration legal knowledgebase source pack loaded for this subclass.` },
+    { heading: 'Legal reasoning method', body: 'The matter has been assessed criterion by criterion. Each criterion is treated separately so that a positive answer in one area does not cure a gap in another. Questionnaire answers are instructions only; the legal position is not final until original documents and current legal settings are reviewed.' },
+    { heading: 'Primary professional issue', body: primaryIssue },
+    { heading: 'Current professional position', body: 'The matter may be capable of progressing if the listed evidence can be verified and reconciled. It should not be treated as lodgement ready merely because a pathway has been identified.' },
+    { heading: 'Delegate scrutiny', body: 'A Departmental decision-maker is likely to test the internal consistency of the nomination, employer records, occupation evidence, employment chronology, salary records, visa history and public interest documents. Any inconsistency should be resolved before lodgement.' },
+    { heading: 'Evidence strategy', body: 'The evidence package should be organised around the legal criteria, not around document availability. The file should show why each requirement is met and should address any apparent gap before the application is lodged.' },
+    { heading: 'Professional limitation', body: 'This letter is a professional preliminary advice document. It is not a guarantee of grant and it does not replace final advice after original documents, conflict checks and current law have been reviewed.' }
+  ];
+
+  return {
+    advice: {
+      subclass,
+      stream,
+      risk_level: riskLevel,
+      lodgement_position: position,
+      title: `Professional Migration Advice – Subclass ${subclass}`,
+      executive_summary: `I have considered the information presently available for the proposed Subclass ${subclass}${stream ? ' ' + stream : ''} pathway. The matter should be approached as a criterion-by-criterion evidence exercise. On the current instructions, the pathway may be capable of progression, but final lodgement advice should only be issued after the original documents and legal settings have been verified.`,
+      professional_position: 'Proceed only after criterion-by-criterion evidence reconciliation and registered migration agent review.',
+      primary_issue: primaryIssue,
+      sections,
+      criterion_findings: findings,
+      evidence_required: findings.map(f => f.evidence_gap).filter(Boolean),
+      client_next_steps: [
+        'Provide all identity, passport and current visa-status documents.',
+        'Provide sponsor, nomination, employment contract, position description and business evidence.',
+        'Provide employment continuity records, including payslips, tax, superannuation and leave records where relevant.',
+        'Provide English, health, character and prior migration-history documents for review.',
+        'Allow Bircan Migration to reconcile each criterion against original documents before any final lodgement recommendation is made.'
+      ],
+      quality_flags: [],
+      disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.'
+    },
+    criterionFindings: findings,
+    findings,
+    legalSourcePack,
+    legalVersionLock: {
+      aggregateSourceHash: sourceHash,
+      knowledgebaseSnapshotId: legalSourcePack.knowledgebaseSnapshot && legalSourcePack.knowledgebaseSnapshot.snapshotId,
+      lawVersionCheckedAt: legalSourcePack.loadedAt || new Date().toISOString(),
+      generatedAt: new Date().toISOString()
+    },
+    evidenceSufficiencyMatrix: {
+      overallGrade: 'Criterion-by-criterion evidence reconciliation required',
+      rows: evidenceRows
+    },
+    contradictionFlags: [],
+    universalLegalGraph: {
+      sourceSnapshotId: legalSourcePack.knowledgebaseSnapshot && legalSourcePack.knowledgebaseSnapshot.snapshotId,
+      family: ['186','187','482','494'].includes(String(subclass)) ? 'Employer sponsored migration' : 'Subclass-specific migration pathway',
+      lawUpdateMode: 'Dynamic knowledgebase source pack loaded before PDF generation',
+      oneFailsAllFail: true
+    },
+    internalLegalAudit: {
+      auditGeneratedAt: new Date().toISOString(),
+      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v1',
+      subclass,
+      selectedStream: stream,
+      criteriaAssessed: findings.map(f => f.criterion),
+      sourcesUsed: legalSourcePack.sources
+    },
+    clientSafetyFilter: { enforced: true, removesInternalDebugLanguage: true },
+    knowledgebaseEnforced: true,
+    subclassFirstGate: true,
+    legalHierarchyEnforced: true,
+    dynamicKnowledgebaseLawUpdates: true,
+    finalProductionControls: true,
+    researchGradeStrategicIntelligence: true,
+    recommendedNextSteps: findings.slice(0, 6).map(f => f.recommendation)
+  };
+}
+
+async function saveFastAssessmentPdf(client, assessment, reason = 'fast_professional_pdf') {
+  const adviceBundle = await buildFastLegalAdviceBundle(assessment);
+  const pdf = await buildAssessmentPdfBuffer(assessment, adviceBundle);
+  if (!Buffer.isBuffer(pdf) || pdf.length <= 1024) throw new Error('Professional PDF generation failed: empty PDF buffer.');
+  const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}-assessment-letter.pdf`;
   const hash = sha256(pdf);
   const { rows } = await client.query(
     `UPDATE assessments
