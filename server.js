@@ -400,31 +400,6 @@ app.use(cookieParser());
 
 
 // ---- TEMPORARY protected browser migration endpoint: Postgres idempotency repair/indexes ----
-// Use once only, then remove this route or rotate MIGRATION_ADMIN_KEY in Render.
-// URL:
-//   https://bircan-migration-backend.onrender.com/api/admin/run-idempotency-migration?key=YOUR_SECRET_KEY
-app.get('/api/admin/run-idempotency-migration', asyncRoute(async (req, res) => {
-  const providedKey = String(req.query.key || req.headers['x-migration-key'] || '').trim();
-  const expectedKey = String(process.env.MIGRATION_ADMIN_KEY || '').trim();
-
-  if (!expectedKey || providedKey !== expectedKey) {
-    return res.status(403).json({
-      ok: false,
-      error: 'Migration key required or incorrect.'
-    });
-  }
-
-  const startedAt = new Date().toISOString();
-  await installPostgresIdempotencyConstraints();
-
-  res.json({
-    ok: true,
-    message: 'Postgres idempotency migration completed.',
-    startedAt,
-    completedAt: new Date().toISOString(),
-    action: 'Now remove this temporary route from server.js or rotate MIGRATION_ADMIN_KEY.'
-  });
-}));
 
 
 function sign(client) {
@@ -1132,6 +1107,98 @@ async function runPostgresIdempotencyRepair() {
   // historical duplicates created by retries/parallel payment returns so the
   // index build can succeed without manual cleanup.
   try {
+    // If an old generic visa shell and a real subclass assessment share the same
+    // Stripe Checkout session, the real subclass assessment is the matter of record.
+    // Move linked service/payment/pdf references to the real subclass row, merge any
+    // useful payment/PDF fields, then remove the generic shell so the dashboard cannot
+    // show it as a second Visa Assessment card.
+    await query(`
+      WITH pairs AS (
+        SELECT generic.id AS dup_id, real.id AS keep_id
+        FROM assessments generic
+        JOIN assessments real
+          ON real.stripe_session_id IS NOT NULL
+         AND generic.stripe_session_id = real.stripe_session_id
+         AND real.id <> generic.id
+        WHERE lower(COALESCE(generic.visa_type,'')) IN ('visa','unknown','')
+          AND real.visa_type ~ '^[0-9]{3}$'
+      ), ranked AS (
+        SELECT dup_id, keep_id, row_number() OVER (PARTITION BY dup_id ORDER BY keep_id DESC) AS rn
+        FROM pairs
+      )
+      UPDATE service_sessions ss
+         SET service_ref = r.keep_id, updated_at = now()
+      FROM ranked r
+      WHERE r.rn=1 AND ss.service_type='visa_assessment' AND ss.service_ref = r.dup_id
+    `).catch(err => console.warn('Generic visa service-session cleanup skipped:', err.message));
+
+    await query(`
+      WITH pairs AS (
+        SELECT generic.id AS dup_id, real.id AS keep_id
+        FROM assessments generic
+        JOIN assessments real
+          ON real.stripe_session_id IS NOT NULL
+         AND generic.stripe_session_id = real.stripe_session_id
+         AND real.id <> generic.id
+        WHERE lower(COALESCE(generic.visa_type,'')) IN ('visa','unknown','')
+          AND real.visa_type ~ '^[0-9]{3}$'
+      ), ranked AS (
+        SELECT dup_id, keep_id, row_number() OVER (PARTITION BY dup_id ORDER BY keep_id DESC) AS rn
+        FROM pairs
+      )
+      UPDATE payments p
+         SET service_ref = r.keep_id, updated_at = now()
+      FROM ranked r
+      WHERE r.rn=1 AND p.service_type='visa_assessment' AND p.service_ref = r.dup_id
+    `).catch(err => console.warn('Generic visa payment cleanup skipped:', err.message));
+
+    await query(`
+      WITH pairs AS (
+        SELECT generic.id AS dup_id, real.id AS keep_id
+        FROM assessments generic
+        JOIN assessments real
+          ON real.stripe_session_id IS NOT NULL
+         AND generic.stripe_session_id = real.stripe_session_id
+         AND real.id <> generic.id
+        WHERE lower(COALESCE(generic.visa_type,'')) IN ('visa','unknown','')
+          AND real.visa_type ~ '^[0-9]{3}$'
+      ), ranked AS (
+        SELECT dup_id, keep_id, row_number() OVER (PARTITION BY dup_id ORDER BY keep_id DESC) AS rn
+        FROM pairs
+      )
+      UPDATE assessments keep
+         SET payment_status = CASE WHEN dup.payment_status='paid' THEN 'paid' ELSE keep.payment_status END,
+             status = CASE WHEN dup.payment_status='paid' AND keep.status NOT IN ('pdf_ready','release_scheduled','pdf_queued') THEN COALESCE(dup.status, keep.status) ELSE keep.status END,
+             amount_cents = COALESCE(keep.amount_cents, dup.amount_cents),
+             currency = COALESCE(keep.currency, dup.currency),
+             release_at = COALESCE(keep.release_at, dup.release_at),
+             pdf_bytes = COALESCE(keep.pdf_bytes, dup.pdf_bytes),
+             pdf_mime = COALESCE(keep.pdf_mime, dup.pdf_mime),
+             pdf_filename = COALESCE(keep.pdf_filename, dup.pdf_filename),
+             pdf_sha256 = COALESCE(keep.pdf_sha256, dup.pdf_sha256),
+             pdf_generated_at = COALESCE(keep.pdf_generated_at, dup.pdf_generated_at),
+             updated_at = now()
+      FROM ranked r
+      JOIN assessments dup ON dup.id=r.dup_id
+      WHERE r.rn=1 AND keep.id=r.keep_id
+    `).catch(err => console.warn('Generic visa assessment merge skipped:', err.message));
+
+    await query(`
+      WITH pairs AS (
+        SELECT generic.id AS dup_id, real.id AS keep_id
+        FROM assessments generic
+        JOIN assessments real
+          ON real.stripe_session_id IS NOT NULL
+         AND generic.stripe_session_id = real.stripe_session_id
+         AND real.id <> generic.id
+        WHERE lower(COALESCE(generic.visa_type,'')) IN ('visa','unknown','')
+          AND real.visa_type ~ '^[0-9]{3}$'
+      ), ranked AS (
+        SELECT dup_id, keep_id, row_number() OVER (PARTITION BY dup_id ORDER BY keep_id DESC) AS rn
+        FROM pairs
+      )
+      DELETE FROM assessments a USING ranked r WHERE r.rn=1 AND a.id=r.dup_id
+    `).catch(err => console.warn('Generic visa shell delete skipped:', err.message));
     await query(`
       WITH ranked AS (
         SELECT id,
@@ -5602,7 +5669,15 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
     const direct = dashboardDuplicate || idFields.map(f => row && row[f]).find(Boolean);
     const stripe = row && (row.stripe_session_id || row.stripeSessionId || row.session_id || row.sessionId);
     const intent = row && (row.stripe_payment_intent || row.stripePaymentIntent || row.payment_intent || row.paymentIntent);
-    const key = String(direct ? `${serviceType}:id:${direct}` : stripe ? `${serviceType}:stripe:${stripe}` : intent ? `${serviceType}:intent:${intent}` : `${serviceType}:fallback:${JSON.stringify(row || {})}`).toLowerCase();
+    // Payment-return consolidation: one Stripe Checkout session can only represent one
+    // paid service card. Prefer the real subclass row (186/187/etc.) over any old
+    // generic `visa` shell that was linked to the same session.
+    const key = String(serviceType === 'visa_assessment' && stripe
+      ? `${serviceType}:stripe:${stripe}`
+      : direct ? `${serviceType}:id:${direct}`
+      : stripe ? `${serviceType}:stripe:${stripe}`
+      : intent ? `${serviceType}:intent:${intent}`
+      : `${serviceType}:fallback:${JSON.stringify(row || {})}`).toLowerCase();
     if (!key) continue;
     if (!seen.has(key)) { seen.set(key, out.length); out.push(row); continue; }
     const index = seen.get(key);
