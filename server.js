@@ -449,6 +449,86 @@ async function optionalAuth(req, _res, next) {
 }
 
 
+// ---- Checkout auth bridge: fixes cross-site cookie / missing bearer token at checkout-start ----
+// checkout-start.html is a handoff page. It may arrive after login with a saved
+// service_session_id/assessment_id/email but without the browser sending the
+// cookie or bearer token. For checkout creation only, recover the client from
+// the login-confirmed service session, while still enforcing same-email ownership.
+async function requireCheckoutAuth(req, res, next) {
+  try {
+    const token = (req.cookies && req.cookies.bm_session) || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    if (token) {
+      const decoded = jwt.verify(token, SESSION_SECRET);
+      const { rows } = await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [decoded.sub]);
+      if (rows[0]) {
+        req.client = rows[0];
+        return next();
+      }
+    }
+  } catch (_err) {
+    // Fall through to service-session recovery below.
+  }
+
+  try {
+    const b = req.body || {};
+    const q = req.query || {};
+    const serviceSessionId = String(b.serviceSessionId || b.service_session_id || q.serviceSessionId || q.service_session_id || '').trim();
+    const assessmentId = String(b.assessmentId || b.assessment_id || b.submissionRef || b.submission_ref || q.assessmentId || q.assessment_id || q.submissionRef || q.submission_ref || '').trim();
+    const email = normaliseEmail(b.email || b.clientEmail || b.assessmentEmail || q.email || q.clientEmail || q.assessmentEmail || '');
+
+    let session = null;
+    if (serviceSessionId) {
+      session = (await query(`SELECT * FROM service_sessions WHERE id=$1 LIMIT 1`, [serviceSessionId])).rows[0] || null;
+    }
+    if (!session && assessmentId) {
+      session = (await query(
+        `SELECT * FROM service_sessions
+         WHERE service_type='visa_assessment' AND service_ref=$1
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+         LIMIT 1`,
+        [assessmentId]
+      )).rows[0] || null;
+    }
+
+    if (!session) {
+      return res.status(401).json({ ok: false, error: 'Login required.', code: 'CHECKOUT_SESSION_NOT_FOUND' });
+    }
+
+    const md = session.metadata || {};
+    const sessionEmail = normaliseEmail(session.client_email || md.portal_login_email || md.original_started_email || md.applicant_email);
+    const confirmed = Boolean(md.portal_login_confirmed_at || md.fresh_login_confirmed || session.client_id);
+    if (!confirmed) {
+      return res.status(401).json({ ok: false, error: 'Login required.', code: 'CHECKOUT_LOGIN_NOT_CONFIRMED' });
+    }
+    if (email && sessionEmail && email !== sessionEmail) {
+      return res.status(403).json({
+        ok: false,
+        error: 'This checkout belongs to a different email address. Please log in with the same email used in the assessment form.',
+        code: 'CHECKOUT_EMAIL_MISMATCH',
+        requiredEmail: sessionEmail,
+        loggedInEmail: email
+      });
+    }
+
+    let client = null;
+    if (session.client_id) {
+      client = (await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [session.client_id])).rows[0] || null;
+    }
+    if (!client && sessionEmail) {
+      client = (await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [sessionEmail])).rows[0] || null;
+    }
+    if (!client) {
+      return res.status(401).json({ ok: false, error: 'Login required.', code: 'CHECKOUT_CLIENT_NOT_FOUND' });
+    }
+
+    req.client = client;
+    return next();
+  } catch (err) {
+    return res.status(401).json({ ok: false, error: 'Login required.', code: 'CHECKOUT_AUTH_BRIDGE_FAILED', detail: err.message });
+  }
+}
+
+
 // Automated client journey system: assessment -> payment -> documents -> review -> lodgement readiness.
 installClientJourneyRoutes(app, {
   query,
@@ -1421,16 +1501,6 @@ async function runPostgresIdempotencyRepair() {
 
 async function installPostgresIdempotencyConstraints() {
   await runPostgresIdempotencyRepair();
-
-  // Payment finalisation schema repair, May 2026:
-  // The old active-paid uniqueness rule blocked legitimate repeat purchases for
-  // the same client/subclass/plan and caused paid Stripe returns to fail with:
-  // duplicate key value violates unique constraint
-  // "idx_one_active_paid_visa_per_account_subclass_plan".
-  // Correct idempotency is enforced by Stripe session/payment identifiers, not by
-  // preventing a client from buying the same subclass/plan again.
-  await query(`DROP INDEX IF EXISTS idx_one_active_paid_visa_per_account_subclass_plan`);
-
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_idempotency_unique
     ON assessments (lower(client_email), visa_type, selected_plan, submission_fingerprint)
@@ -1441,16 +1511,6 @@ async function installPostgresIdempotencyConstraints() {
     ON service_sessions (service_type, service_ref)
     WHERE service_ref IS NOT NULL
   `);
-  await query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_stripe_session_id_unique
-    ON assessments (stripe_session_id)
-    WHERE stripe_session_id IS NOT NULL
-  `).catch(err => console.warn('assessments stripe_session_id unique index skipped:', err.message));
-  await query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_stripe_session_id_unique
-    ON service_sessions (stripe_session_id)
-    WHERE stripe_session_id IS NOT NULL
-  `).catch(err => console.warn('service_sessions stripe_session_id unique index skipped:', err.message));
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_session_id_unique
     ON payments (stripe_session_id)
@@ -1836,7 +1896,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.4-payment-finalisation-index-repair-browser-route',
+    version: '12.2.3-production-email-lock-admin-route-removed',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -1869,63 +1929,6 @@ app.get('/api/routes', (_req, res) => {
   const routes = hardening.listExpressRoutes(app);
   res.json({ ok: true, count: routes.length, routes });
 });
-
-// Browser-triggered one-off payment index repair.
-// Protected by MIGRATION_ADMIN_KEY. Remove or rotate the key after use.
-app.get('/api/admin/repair-payment-indexes', asyncRoute(async (req, res) => {
-  const configuredKey = String(process.env.MIGRATION_ADMIN_KEY || '').trim();
-  const suppliedKey = String(req.query.key || req.headers['x-admin-key'] || req.headers['x-migration-admin-key'] || '').trim();
-  if (!configuredKey) {
-    return res.status(500).json({ ok: false, code: 'MIGRATION_ADMIN_KEY_MISSING', error: 'MIGRATION_ADMIN_KEY is not configured on the backend.' });
-  }
-  if (!suppliedKey || suppliedKey !== configuredKey) {
-    return res.status(403).json({ ok: false, code: 'ADMIN_KEY_REQUIRED', error: 'Valid MIGRATION_ADMIN_KEY is required.' });
-  }
-
-  const steps = [];
-  async function runStep(name, sql) {
-    await query(sql);
-    steps.push(name);
-  }
-
-  await runStep('drop_bad_active_paid_index', `DROP INDEX IF EXISTS idx_one_active_paid_visa_per_account_subclass_plan`);
-  await runStep('unique_assessment_stripe_session', `
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_stripe_session_id_unique
-    ON assessments (stripe_session_id)
-    WHERE stripe_session_id IS NOT NULL
-  `);
-  await runStep('unique_service_session_stripe_session', `
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_stripe_session_id_unique
-    ON service_sessions (stripe_session_id)
-    WHERE stripe_session_id IS NOT NULL
-  `);
-  await runStep('unique_payment_stripe_session', `
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_session_id_unique
-    ON payments (stripe_session_id)
-    WHERE stripe_session_id IS NOT NULL
-  `);
-
-  const check = await query(`
-    SELECT indexname, indexdef
-    FROM pg_indexes
-    WHERE schemaname = current_schema()
-      AND indexname IN (
-        'idx_one_active_paid_visa_per_account_subclass_plan',
-        'idx_assessments_stripe_session_id_unique',
-        'idx_service_sessions_stripe_session_id_unique',
-        'idx_payments_stripe_session_id_unique'
-      )
-    ORDER BY indexname
-  `);
-
-  res.json({
-    ok: true,
-    version: '12.2.4-payment-finalisation-index-repair-browser-route',
-    message: 'Payment finalisation index repair completed.',
-    steps,
-    remainingIndexes: check.rows
-  });
-}));
 
 
 // ---------- Knowledgebase law-update health dashboard ----------
@@ -3085,7 +3088,7 @@ app.post('/api/assessment/create-appeals-assessment', appealUploadFields, asyncR
 
 
 
-app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, res) => {
+app.post('/api/service/checkout-session', requireCheckoutAuth, asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   let serviceSession;
   try {
@@ -3842,7 +3845,7 @@ app.get('/api/citizenship/finalise', asyncRoute(finaliseCitizenshipPayment));
 app.post('/api/citizenship/finalize', asyncRoute(finaliseCitizenshipPayment));
 app.get('/api/citizenship/finalize', asyncRoute(finaliseCitizenshipPayment));
 
-app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(async (req, res) => {
+app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
 
   const assessmentId = getRequestedAssessmentId(req);
