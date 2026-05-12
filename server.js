@@ -1836,7 +1836,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.4-payment-finalisation-index-repair',
+    version: '12.2.4-payment-finalisation-index-repair-browser-route',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -1869,6 +1869,63 @@ app.get('/api/routes', (_req, res) => {
   const routes = hardening.listExpressRoutes(app);
   res.json({ ok: true, count: routes.length, routes });
 });
+
+// Browser-triggered one-off payment index repair.
+// Protected by MIGRATION_ADMIN_KEY. Remove or rotate the key after use.
+app.get('/api/admin/repair-payment-indexes', asyncRoute(async (req, res) => {
+  const configuredKey = String(process.env.MIGRATION_ADMIN_KEY || '').trim();
+  const suppliedKey = String(req.query.key || req.headers['x-admin-key'] || req.headers['x-migration-admin-key'] || '').trim();
+  if (!configuredKey) {
+    return res.status(500).json({ ok: false, code: 'MIGRATION_ADMIN_KEY_MISSING', error: 'MIGRATION_ADMIN_KEY is not configured on the backend.' });
+  }
+  if (!suppliedKey || suppliedKey !== configuredKey) {
+    return res.status(403).json({ ok: false, code: 'ADMIN_KEY_REQUIRED', error: 'Valid MIGRATION_ADMIN_KEY is required.' });
+  }
+
+  const steps = [];
+  async function runStep(name, sql) {
+    await query(sql);
+    steps.push(name);
+  }
+
+  await runStep('drop_bad_active_paid_index', `DROP INDEX IF EXISTS idx_one_active_paid_visa_per_account_subclass_plan`);
+  await runStep('unique_assessment_stripe_session', `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_stripe_session_id_unique
+    ON assessments (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL
+  `);
+  await runStep('unique_service_session_stripe_session', `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_stripe_session_id_unique
+    ON service_sessions (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL
+  `);
+  await runStep('unique_payment_stripe_session', `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_session_id_unique
+    ON payments (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL
+  `);
+
+  const check = await query(`
+    SELECT indexname, indexdef
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname IN (
+        'idx_one_active_paid_visa_per_account_subclass_plan',
+        'idx_assessments_stripe_session_id_unique',
+        'idx_service_sessions_stripe_session_id_unique',
+        'idx_payments_stripe_session_id_unique'
+      )
+    ORDER BY indexname
+  `);
+
+  res.json({
+    ok: true,
+    version: '12.2.4-payment-finalisation-index-repair-browser-route',
+    message: 'Payment finalisation index repair completed.',
+    steps,
+    remainingIndexes: check.rows
+  });
+}));
 
 
 // ---------- Knowledgebase law-update health dashboard ----------
