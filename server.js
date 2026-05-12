@@ -3064,7 +3064,7 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
       customer_email: req.client.email,
       client_reference_id: assessment.id,
       line_items: [{ price, quantity: 1 }],
-      success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${APP_BASE_URL}/payment-complete.html?service=visa_assessment&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&assessment_id=${encodeURIComponent(assessment.id)}`,
       metadata: {
         service_type: 'visa_assessment',
@@ -3113,7 +3113,7 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
       customer_email: req.client.email,
       client_reference_id: assessmentId,
       line_items: [{ price, quantity: 1 }],
-      success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${APP_BASE_URL}/payment-complete.html?service=appeals_assessment&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_BASE_URL}/appeals-assessment.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&appeal_assessment_id=${encodeURIComponent(assessmentId)}`,
       metadata: { service_type: 'appeals_assessment', service_session_id: serviceSession.id, service_ref: assessmentId, assessment_id: assessmentId, appeal_assessment_id: assessmentId, visa_type: assessment.visa_subclass || 'appeals', plan, client_email: req.client.email }
     }, 'service-appeals-checkout', checkoutFingerprint({ serviceType: 'appeals_assessment', serviceRef: assessmentId, plan, price, email: req.client.email }));
@@ -3156,7 +3156,7 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
       customer_email: req.client.email,
       client_reference_id: accessId,
       line_items: [{ price, quantity: 1 }],
-      success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${APP_BASE_URL}/payment-complete.html?service=citizenship_test&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_BASE_URL}/citizenship.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&plan=${encodeURIComponent(plan)}`,
       metadata: { service_type: 'citizenship_test', service_session_id: serviceSession.id, service_ref: accessId, citizenship_access_id: accessId, plan, client_email: req.client.email }
     }, 'service-citizenship-checkout', checkoutFingerprint({ serviceType: 'citizenship_test', serviceRef: accessId, plan, price, email: req.client.email }));
@@ -3237,7 +3237,7 @@ app.post('/api/appeals/create-checkout-session', requireAuth, asyncRoute(async (
     customer_email: req.client.email,
     client_reference_id: assessmentId,
     line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
+    success_url: `${APP_BASE_URL}/payment-complete.html?service=appeals_assessment&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${APP_BASE_URL}/appeals-assessment.html?cancelled=1&appeal_assessment_id=${encodeURIComponent(assessmentId)}`,
     metadata: {
       service_type: 'appeals_assessment',
@@ -3831,7 +3831,7 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
     customer_email: req.client.email,
     client_reference_id: assessment.id,
     line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
+    success_url: `${APP_BASE_URL}/payment-complete.html?service=visa_assessment&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&assessment_id=${encodeURIComponent(assessment.id)}`,
     metadata: {
       service_type: 'visa_assessment',
