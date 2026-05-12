@@ -458,32 +458,74 @@ async function markServiceSessionLoginConfirmed(req, client) {
   if (!session) return null;
 
   const startedEmail = normaliseEmail(session.client_email);
-  const loggedInEmail = normaliseEmail(client.email);
+  const loggedInEmail = normaliseEmail(client && client.email);
+
+  // Permanent handoff protection:
+  // The service session belongs to the email captured on the assessment form.
+  // A stale browser token, stale localStorage handoff, or a different test login must never
+  // overwrite service_sessions.client_email. If the email does not match, stop here and
+  // instruct the frontend to clear the wrong session and login with the assessment email.
+  if (startedEmail && loggedInEmail && startedEmail !== loggedInEmail) {
+    const err = new Error(`This saved assessment was submitted using ${startedEmail}. You are currently logged in as ${loggedInEmail}. Please log out and sign in with ${startedEmail} to continue to payment.`);
+    err.statusCode = 409;
+    err.code = 'CHECKOUT_EMAIL_MISMATCH';
+    err.requiredEmail = startedEmail;
+    err.loggedInEmail = loggedInEmail;
+    err.serviceSessionId = session.id;
+    err.serviceRef = session.service_ref || null;
+    throw err;
+  }
+
+  if (session.service_type === 'visa_assessment' && session.service_ref) {
+    const assessmentRows = (await query(
+      `SELECT id, client_email, applicant_email FROM assessments WHERE id=$1 LIMIT 1`,
+      [session.service_ref]
+    )).rows;
+    const assessment = assessmentRows[0];
+    const assessmentEmail = normaliseEmail(assessment && (assessment.client_email || assessment.applicant_email));
+    if (assessmentEmail && loggedInEmail && assessmentEmail !== loggedInEmail) {
+      const err = new Error(`This assessment belongs to ${assessmentEmail}, but you are logged in as ${loggedInEmail}. Please use the same email address used in the assessment form.`);
+      err.statusCode = 409;
+      err.code = 'ASSESSMENT_EMAIL_MISMATCH';
+      err.requiredEmail = assessmentEmail;
+      err.loggedInEmail = loggedInEmail;
+      err.serviceSessionId = session.id;
+      err.assessmentId = session.service_ref;
+      throw err;
+    }
+  }
+
   const metadata = {
     ...(session.metadata || {}),
     original_started_email: (session.metadata && session.metadata.original_started_email) || startedEmail || null,
     portal_login_email: loggedInEmail || null,
     portal_login_confirmed_at: new Date().toISOString(),
-    fresh_login_confirmed: true
+    fresh_login_confirmed: true,
+    email_match_enforced: true
   };
 
   await query(
     `UPDATE service_sessions
-     SET client_id=$1, client_email=$2, metadata=COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at=now()
+     SET client_id=$1,
+         client_email=COALESCE(NULLIF(client_email,''), $2),
+         metadata=COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+         updated_at=now()
      WHERE id=$4`,
-    [client.id, client.email, JSON.stringify(metadata), session.id]
+    [client.id, loggedInEmail, JSON.stringify(metadata), session.id]
   );
 
   if (session.service_type === 'appeals_assessment' && session.service_ref) {
     await query(
       `UPDATE appeals_assessments
-       SET client_id=$1, client_email=$2, updated_at=now()
+       SET client_id=$1,
+           client_email=COALESCE(NULLIF(client_email,''), $2),
+           updated_at=now()
        WHERE id=$3`,
-      [client.id, client.email, session.service_ref]
+      [client.id, loggedInEmail, session.service_ref]
     );
   }
 
-  return { ...session, client_id: client.id, client_email: client.email, metadata };
+  return { ...session, client_id: client.id, client_email: startedEmail || loggedInEmail, metadata };
 }
 
 async function attachVisaAssessmentToClientById(assessmentId, client) {
@@ -501,6 +543,10 @@ async function attachVisaAssessmentToClientById(assessmentId, client) {
   if (!assessmentEmail || assessmentEmail !== clientEmail) {
     const err = new Error(`This assessment belongs to ${assessmentEmail || 'another email address'}, but you are logged in as ${clientEmail}. Please use the same email address used in the assessment form.`);
     err.statusCode = 409;
+    err.code = 'ASSESSMENT_EMAIL_MISMATCH';
+    err.requiredEmail = assessmentEmail || null;
+    err.loggedInEmail = clientEmail || null;
+    err.assessmentId = assessment.id;
     throw err;
   }
 
@@ -1779,9 +1825,23 @@ app.post('/api/auth/register', asyncRoute(async (req, res) => {
   setSessionCookie(res, token);
 
   let pendingVisaAssessment = null;
-  const assessmentId = getRequestedAssessmentId(req);
-  if (assessmentId) pendingVisaAssessment = await attachVisaAssessmentToClientById(assessmentId, client);
-  const pendingServiceSession = await markServiceSessionLoginConfirmed(req, client);
+  let pendingServiceSession = null;
+  try {
+    const assessmentId = getRequestedAssessmentId(req);
+    if (assessmentId) pendingVisaAssessment = await attachVisaAssessmentToClientById(assessmentId, client);
+    pendingServiceSession = await markServiceSessionLoginConfirmed(req, client);
+  } catch (err) {
+    res.clearCookie('bm_session', { httpOnly: true, secure: true, sameSite: 'none', path: '/' });
+    return res.status(err.statusCode || 500).json({
+      ok: false,
+      code: err.code || 'LOGIN_HANDOFF_FAILED',
+      error: err.message || 'Login handoff failed.',
+      requiredEmail: err.requiredEmail || null,
+      loggedInEmail: err.loggedInEmail || email || null,
+      serviceSessionId: err.serviceSessionId || null,
+      assessmentId: err.assessmentId || null
+    });
+  }
 
   res.json({
     ok: true,
@@ -1805,9 +1865,23 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   setSessionCookie(res, token);
 
   let pendingVisaAssessment = null;
-  const assessmentId = getRequestedAssessmentId(req);
-  if (assessmentId) pendingVisaAssessment = await attachVisaAssessmentToClientById(assessmentId, client);
-  const pendingServiceSession = await markServiceSessionLoginConfirmed(req, client);
+  let pendingServiceSession = null;
+  try {
+    const assessmentId = getRequestedAssessmentId(req);
+    if (assessmentId) pendingVisaAssessment = await attachVisaAssessmentToClientById(assessmentId, client);
+    pendingServiceSession = await markServiceSessionLoginConfirmed(req, client);
+  } catch (err) {
+    res.clearCookie('bm_session', { httpOnly: true, secure: true, sameSite: 'none', path: '/' });
+    return res.status(err.statusCode || 500).json({
+      ok: false,
+      code: err.code || 'LOGIN_HANDOFF_FAILED',
+      error: err.message || 'Login handoff failed.',
+      requiredEmail: err.requiredEmail || null,
+      loggedInEmail: err.loggedInEmail || email || null,
+      serviceSessionId: err.serviceSessionId || null,
+      assessmentId: err.assessmentId || null
+    });
+  }
 
   res.json({
     ok: true,
