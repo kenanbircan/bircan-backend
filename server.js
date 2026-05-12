@@ -3407,7 +3407,26 @@ async function attachPaidSession(session, options = {}) {
     const assessmentRes = await client.query('SELECT * FROM assessments WHERE id=$1 FOR UPDATE', [assessmentId]);
     const assessment = assessmentRes.rows[0];
     if (!assessment) throw new Error(`Assessment not found for Stripe session ${session.id}`);
-    if (normaliseEmail(assessment.client_email) !== email) throw new Error('Stripe email does not match assessment account email.');
+    // Stripe-paid recovery rule:
+    // Checkout is created only after the portal account has paid. If an older/public
+    // assessment still carries the form/applicant email, do not lose the paid matter
+    // from the dashboard. Preserve applicant_email, but attach the account owner from
+    // the paid Stripe session/customer email to client_email.
+    if (normaliseEmail(assessment.client_email) !== email) {
+      const accountRows = await client.query('SELECT id, email FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
+      const account = accountRows.rows[0] || null;
+      await client.query(
+        `UPDATE assessments
+         SET client_id=COALESCE($1, client_id),
+             client_email=$2,
+             applicant_email=COALESCE(applicant_email, client_email, $2),
+             updated_at=now()
+         WHERE id=$3`,
+        [account && account.id ? account.id : null, email, assessmentId]
+      );
+      assessment.client_email = email;
+      if (account && account.id) assessment.client_id = account.id;
+    }
 
     const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
     if (!paid) throw new Error(`Stripe session is not paid yet. Current status: ${session.payment_status || session.status || 'unknown'}`);
@@ -5319,43 +5338,81 @@ app.post('/api/account/dashboard-access-token', resolveDashboardAccess, asyncRou
 // This route deliberately avoids reading pdf_bytes, avoids OR predicates, and avoids
 // expensive payment joins. It returns lightweight metadata only so the dashboard can
 // render quickly; PDF bytes are generated/opened only on explicit PDF click.
-async function queryDashboardFastRows(email, clientId) {
+async function queryDashboardFastRows(email, clientId, sessionId = '') {
   const visaSql = `
-    WITH matches AS (
-      SELECT id, submission_fingerprint, form_payload, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
-             status, payment_status, amount_cents, currency, stripe_session_id,
-             created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
-      FROM assessments WHERE lower(client_email)=lower($1)
+    WITH paid_refs AS (
+      SELECT DISTINCT service_ref AS id
+      FROM payments
+      WHERE service_type='visa_assessment'
+        AND (
+          lower(COALESCE(client_email,''))=lower($1)
+          OR stripe_session_id=$3
+        )
+        AND COALESCE(status,'')='paid'
+        AND service_ref IS NOT NULL
+      UNION
+      SELECT DISTINCT service_ref AS id
+      FROM service_sessions
+      WHERE service_type='visa_assessment'
+        AND (
+          lower(COALESCE(client_email,''))=lower($1)
+          OR stripe_session_id=$3
+          OR metadata->>'assessment_id' IS NOT NULL AND metadata->>'assessment_id'=$3
+        )
+        AND (COALESCE(payment_status,'')='paid' OR stripe_session_id=$3)
+        AND service_ref IS NOT NULL
+    ), matches AS (
+      SELECT a.* FROM assessments a WHERE lower(COALESCE(a.client_email,''))=lower($1)
       UNION ALL
-      SELECT id, submission_fingerprint, form_payload, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
-             status, payment_status, amount_cents, currency, stripe_session_id,
-             created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
-      FROM assessments WHERE lower(applicant_email)=lower($1)
+      SELECT a.* FROM assessments a WHERE lower(COALESCE(a.applicant_email,''))=lower($1) AND COALESCE(a.payment_status,'')='paid'
       UNION ALL
-      SELECT id, submission_fingerprint, form_payload, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
-             status, payment_status, amount_cents, currency, stripe_session_id,
-             created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
-      FROM assessments WHERE client_id=$2
-    ), ranked AS (
-      SELECT DISTINCT ON (id) *
-      FROM matches
-      ORDER BY id, COALESCE(updated_at, created_at) DESC NULLS LAST
+      SELECT a.* FROM assessments a WHERE a.client_id=$2
+      UNION ALL
+      SELECT a.* FROM assessments a WHERE $3 <> '' AND a.stripe_session_id=$3
+      UNION ALL
+      SELECT a.* FROM assessments a JOIN paid_refs pr ON pr.id=a.id
+    ), enriched AS (
+      SELECT DISTINCT ON (a.id)
+             a.id, a.submission_fingerprint, a.form_payload, a.visa_type, a.client_email, a.applicant_email, a.applicant_name,
+             a.selected_plan, a.active_plan,
+             CASE WHEN COALESCE(a.payment_status,'')='paid' OR p.status='paid' OR ss.payment_status='paid' THEN 'paid' ELSE COALESCE(a.payment_status,'unpaid') END AS effective_payment_status,
+             COALESCE(a.amount_cents, p.amount_cents) AS effective_amount_cents,
+             COALESCE(a.currency, p.currency, 'aud') AS effective_currency,
+             COALESCE(a.stripe_session_id, p.stripe_session_id, ss.stripe_session_id) AS effective_stripe_session_id,
+             a.status, a.created_at, a.updated_at, a.release_at, a.pdf_generated_at, a.pdf_filename, a.pdf_sha256,
+             COALESCE(p.plan, ss.selected_plan, a.active_plan, a.selected_plan, 'instant') AS effective_plan
+      FROM matches a
+      LEFT JOIN payments p ON p.service_type='visa_assessment' AND (p.service_ref=a.id OR p.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND p.stripe_session_id=$3))
+      LEFT JOIN service_sessions ss ON ss.service_type='visa_assessment' AND (ss.service_ref=a.id OR ss.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND ss.stripe_session_id=$3))
+      WHERE COALESCE(a.payment_status,'')='paid' OR p.status='paid' OR ss.payment_status='paid' OR $3 <> '' AND COALESCE(a.stripe_session_id,'')=$3
+      ORDER BY a.id,
+               CASE WHEN COALESCE(a.payment_status,'')='paid' THEN 4 WHEN p.status='paid' THEN 3 WHEN ss.payment_status='paid' THEN 2 ELSE 1 END DESC,
+               COALESCE(a.updated_at, a.created_at) DESC NULLS LAST
     )
-    SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
-           selected_plan, active_plan,
+    SELECT id,
+           COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(effective_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key,
+           md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(effective_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key,
+           'visa_assessment' AS service_type,
+           visa_type, applicant_email, applicant_name,
+           effective_plan AS selected_plan,
+           effective_plan AS active_plan,
            CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN 'pdf_ready'
-                WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
+                WHEN effective_payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
-           payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
+           effective_payment_status AS payment_status,
+           effective_amount_cents AS amount_cents,
+           effective_currency AS currency,
+           effective_stripe_session_id AS stripe_session_id,
+           created_at, updated_at,
            CASE
-             WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('instant','fastest') THEN COALESCE(release_at, updated_at, created_at, now())
-             WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+             WHEN lower(regexp_replace(COALESCE(effective_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('instant','fastest') THEN COALESCE(release_at, updated_at, created_at, now())
+             WHEN lower(regexp_replace(COALESCE(effective_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
            END AS release_at,
            CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN true ELSE false END AS has_pdf,
-           CASE WHEN payment_status='paid' THEN true ELSE false END AS release_ready,
+           CASE WHEN effective_payment_status='paid' THEN true ELSE false END AS release_ready,
            0::integer AS release_seconds_remaining
-    FROM ranked
+    FROM enriched
     ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
     LIMIT 20`;
 
@@ -5368,6 +5425,10 @@ async function queryDashboardFastRows(email, clientId) {
       SELECT id, selected_plan, active_plan, exam_allowance, attempts_used,
              status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at
       FROM citizenship_access WHERE client_id=$2
+      UNION ALL
+      SELECT id, selected_plan, active_plan, exam_allowance, attempts_used,
+             status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at
+      FROM citizenship_access WHERE $3 <> '' AND stripe_session_id=$3
     ), ranked AS (
       SELECT DISTINCT ON (id) * FROM matches ORDER BY id, COALESCE(updated_at, created_at) DESC NULLS LAST
     )
@@ -5377,13 +5438,16 @@ async function queryDashboardFastRows(email, clientId) {
            status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at,
            now() AS release_at, true AS has_pdf, true AS release_ready, 0::integer AS release_seconds_remaining
     FROM ranked
+    WHERE COALESCE(payment_status,'')='paid' OR COALESCE(status,'')='active' OR $3 <> '' AND COALESCE(stripe_session_id,'')=$3
     ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
     LIMIT 10`;
 
   const [visaResult, citizenshipResult] = await Promise.allSettled([
-    query(visaSql, [email, clientId]),
-    query(citizenshipSql, [email, clientId])
+    query(visaSql, [email, clientId, sessionId || '']),
+    query(citizenshipSql, [email, clientId, sessionId || ''])
   ]);
+  if (visaResult.status === 'rejected') console.warn('Dashboard fast visa query failed:', visaResult.reason && visaResult.reason.message);
+  if (citizenshipResult.status === 'rejected') console.warn('Dashboard fast citizenship query failed:', citizenshipResult.reason && citizenshipResult.reason.message);
   return {
     visaRows: visaResult.status === 'fulfilled' ? visaResult.value.rows : [],
     citizenshipRows: citizenshipResult.status === 'fulfilled' ? citizenshipResult.value.rows : []
@@ -5394,7 +5458,8 @@ async function handleDashboardFast(req, res) {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
   const clientId = req.client.id;
-  const rawFast = await queryDashboardFastRows(email, clientId);
+  const sessionId = dashboardSessionId(req);
+  const rawFast = await queryDashboardFastRows(email, clientId, sessionId);
   const visaRows = dedupeDashboardRows(rawFast.visaRows, ['duplicate_key', 'id']);
   const citizenshipRows = rawFast.citizenshipRows;
   res.setHeader('Cache-Control', 'no-store');
@@ -5418,6 +5483,7 @@ async function handleDashboardFast(req, res) {
   });
 }
 
+app.get('/api/account/dashboard-open', resolveDashboardAccess, asyncRoute(handleDashboardFast));
 app.get('/api/account/dashboard-fast', resolveDashboardAccess, asyncRoute(handleDashboardFast));
 app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handleDashboardFast));
 
@@ -5615,7 +5681,7 @@ app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
               ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
             END) - now())))::integer AS release_seconds_remaining
      FROM assessments
-     WHERE lower(client_email)=lower($1) OR lower(COALESCE(applicant_email,''))=lower($1) OR client_id=$2
+     WHERE lower(client_email)=lower($1) OR (lower(COALESCE(applicant_email,''))=lower($1) AND COALESCE(payment_status,'')='paid') OR client_id=$2
      ORDER BY COALESCE(created_at, updated_at) DESC`,
     [req.client.email, req.client.id]
   );
