@@ -1360,7 +1360,21 @@ async function ensureSchema() {
 
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_session_id_unique ON payments (stripe_session_id)`);
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pdf_jobs_assessment_id_unique ON pdf_jobs (assessment_id)`);
+
+  // Dashboard performance indexes. These prevent expensive scans when
+  // account-dashboard.html loads records by logged-in email/client id.
   await query(`CREATE INDEX IF NOT EXISTS idx_assessments_client_email ON assessments (lower(client_email))`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_applicant_email_lower ON assessments (lower(applicant_email))`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_client_id ON assessments (client_id)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_created_at_desc ON assessments (created_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_updated_at_desc ON assessments (updated_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_client_email_created_desc ON assessments (lower(client_email), created_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_applicant_email_created_desc ON assessments (lower(applicant_email), created_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_payments_client_email_created_desc ON payments (lower(client_email), created_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_payments_client_id_created_desc ON payments (client_id, created_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_citizenship_access_client_created_desc ON citizenship_access (lower(client_email), created_at DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_appeals_assessments_client_created_desc ON appeals_assessments (lower(client_email), created_at DESC)`);
+
   await query(`CREATE INDEX IF NOT EXISTS idx_pdf_jobs_status_run_after ON pdf_jobs (status, run_after)`);
 }
 
@@ -1372,7 +1386,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.0-appeals-pdf-advice-after-stripe',
+    version: '12.2.1-dashboard-index-performance-patch',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -4991,50 +5005,87 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
 }
 
 
-app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(async (req, res) => {
+
+// ---- Ultra-fast account dashboard endpoint ----
+// This route deliberately avoids reading pdf_bytes, avoids OR predicates, and avoids
+// expensive payment joins. It returns lightweight metadata only so the dashboard can
+// render quickly; PDF bytes are generated/opened only on explicit PDF click.
+async function queryDashboardFastRows(email, clientId) {
+  const visaSql = `
+    WITH matches AS (
+      SELECT id, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+             status, payment_status, amount_cents, currency, stripe_session_id,
+             created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
+      FROM assessments WHERE lower(client_email)=lower($1)
+      UNION ALL
+      SELECT id, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+             status, payment_status, amount_cents, currency, stripe_session_id,
+             created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
+      FROM assessments WHERE lower(applicant_email)=lower($1)
+      UNION ALL
+      SELECT id, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+             status, payment_status, amount_cents, currency, stripe_session_id,
+             created_at, updated_at, release_at, pdf_generated_at, pdf_filename, pdf_sha256
+      FROM assessments WHERE client_id=$2
+    ), ranked AS (
+      SELECT DISTINCT ON (id) *
+      FROM matches
+      ORDER BY id, COALESCE(updated_at, created_at) DESC NULLS LAST
+    )
+    SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+           selected_plan, active_plan,
+           CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN 'pdf_ready'
+                WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
+                ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
+           payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
+           CASE
+             WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('instant','fastest') THEN COALESCE(release_at, updated_at, created_at, now())
+             WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
+             ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
+           END AS release_at,
+           CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN true ELSE false END AS has_pdf,
+           CASE WHEN payment_status='paid' THEN true ELSE false END AS release_ready,
+           0::integer AS release_seconds_remaining
+    FROM ranked
+    ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
+    LIMIT 20`;
+
+  const citizenshipSql = `
+    WITH matches AS (
+      SELECT id, selected_plan, active_plan, exam_allowance, attempts_used,
+             status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at
+      FROM citizenship_access WHERE lower(client_email)=lower($1)
+      UNION ALL
+      SELECT id, selected_plan, active_plan, exam_allowance, attempts_used,
+             status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at
+      FROM citizenship_access WHERE client_id=$2
+    ), ranked AS (
+      SELECT DISTINCT ON (id) * FROM matches ORDER BY id, COALESCE(updated_at, created_at) DESC NULLS LAST
+    )
+    SELECT id, 'citizenship_test' AS service_type, selected_plan, active_plan,
+           exam_allowance, attempts_used,
+           GREATEST(0, COALESCE(exam_allowance,0) - COALESCE(attempts_used,0)) AS attempts_remaining,
+           status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at,
+           now() AS release_at, true AS has_pdf, true AS release_ready, 0::integer AS release_seconds_remaining
+    FROM ranked
+    ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
+    LIMIT 10`;
+
+  const [visaResult, citizenshipResult] = await Promise.allSettled([
+    query(visaSql, [email, clientId]),
+    query(citizenshipSql, [email, clientId])
+  ]);
+  return {
+    visaRows: visaResult.status === 'fulfilled' ? visaResult.value.rows : [],
+    citizenshipRows: citizenshipResult.status === 'fulfilled' ? citizenshipResult.value.rows : []
+  };
+}
+
+async function handleDashboardFast(req, res) {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
   const clientId = req.client.id;
-  const visaRows = (await query(
-    `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
-            selected_plan, active_plan,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready'
-                 WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
-                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
-            payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
-            CASE
-              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN COALESCE(release_at, updated_at, created_at, now())
-              WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
-              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
-            END AS release_at,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
-            CASE WHEN payment_status='paid' THEN true ELSE false END AS release_ready,
-            0::integer AS release_seconds_remaining
-     FROM assessments
-     WHERE lower(COALESCE(client_email,''))=lower($1)
-        OR lower(COALESCE(applicant_email,''))=lower($1)
-        OR client_id=$2
-     ORDER BY COALESCE(created_at, updated_at) DESC
-     LIMIT 20`,
-    [email, clientId]
-  )).rows;
-
-  let citizenshipRows = [];
-  try {
-    citizenshipRows = (await query(
-      `SELECT id, 'citizenship_test' AS service_type, selected_plan, active_plan,
-              exam_allowance, attempts_used,
-              GREATEST(0, COALESCE(exam_allowance,0) - COALESCE(attempts_used,0)) AS attempts_remaining,
-              status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at,
-              now() AS release_at, true AS has_pdf, true AS release_ready, 0::integer AS release_seconds_remaining
-       FROM citizenship_access
-       WHERE lower(COALESCE(client_email,''))=lower($1) OR client_id=$2
-       ORDER BY COALESCE(created_at, updated_at) DESC
-       LIMIT 10`,
-      [email, clientId]
-    )).rows;
-  } catch (_err) { citizenshipRows = []; }
-
+  const { visaRows, citizenshipRows } = await queryDashboardFastRows(email, clientId);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
@@ -5051,7 +5102,10 @@ app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(async (req, res) 
     payments: [],
     counts: { visa: visaRows.length, appeals: 0, citizenship: citizenshipRows.length, payments: 0 }
   });
-}));
+}
+
+app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(handleDashboardFast));
+app.get('/api/account/dashboard-lite', requireAuth, asyncRoute(handleDashboardFast));
 
 app.get('/api/account/dashboard', requireAuth, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
