@@ -2421,7 +2421,7 @@ async function handlePublicVisaAssessmentStart(req, res) {
          ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
                   a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
          LIMIT 1`,
-        [email, visaType, plan, submissionFingerprint, built.meta.applicantName || null]
+        [email, visaType, plan]
       );
       const existing = existingRows.rows[0];
       if (existing) {
