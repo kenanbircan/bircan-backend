@@ -990,4 +990,400 @@ function renderStrategicIntelligenceSummary(doc, bundle, ctx) {
   }
 }
 
-module.exports = { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 };
+
+
+// -----------------------------------------------------------------------------
+// 10/10 senior migration agent advice-letter renderer
+// Client-facing, subclass-specific, criterion-by-criterion structure.
+// This intentionally removes internal engine/knowledgebase language from the PDF
+// while still using the knowledgebase-backed adviceBundle supplied by server.js.
+// -----------------------------------------------------------------------------
+function v10StatusFromText(value) {
+  const raw = String(value || '').toLowerCase();
+  if (/critical|bar|not recommended|not lodge|refus|cancel|8503|s48|4020|invalid|cannot/i.test(raw)) return 'Material issue — do not lodge until resolved';
+  if (/elevated|threshold|must|english|health|character|agreement|concession|clarification/i.test(raw)) return 'Elevated issue requiring verification';
+  if (/moderate|review|required|gap|reconcile|not ready|insufficient/i.test(raw)) return 'Managed risk — evidence reconciliation required';
+  if (/satisfied|capable|supportable|low|ready/i.test(raw)) return 'Potentially supportable, subject to original evidence';
+  return 'Requires professional evidence review';
+}
+
+function v10RiskLevel(criterion, item) {
+  const c = String(criterion || '').toLowerCase();
+  const combined = `${criterion || ''} ${item && (item.risk || item.risk_level || item.delegateRisk || item.position || item.finding || item.recommendation || '')}`.toLowerCase();
+  if (/4020|character|false|misrep|cancel|refus|bar|8503|section 48|health waiver|critical/.test(combined)) return 'Critical / threshold risk';
+  if (/english|concession|labour agreement|agreement terms|health|character|integrity|salary|market|elevated/.test(c + ' ' + combined)) return 'Elevated delegate risk';
+  if (/nomination|genuine|occupation|anzsco|employment|work history|sponsor|business|stream|moderate/.test(c + ' ' + combined)) return 'Moderate delegate risk';
+  return 'Managed delegate risk';
+}
+
+function v10DefaultCriteria(subclass, stream) {
+  const s = String(subclass || '').trim();
+  const st = String(stream || '').toLowerCase();
+  const base = [];
+  if (['186','187','482','494'].includes(s)) {
+    base.push(
+      { criterion: 'Subclass and stream selection', finding: 'The selected employer-sponsored pathway appears capable of assessment, subject to confirmation that the selected stream is legally available and strategically appropriate.' },
+      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must establish a genuine position, business need and capacity to employ the applicant in the nominated role.' },
+      { criterion: st.includes('labour') ? 'Labour Agreement terms and concessions' : 'Nomination criteria and stream requirements', finding: 'The stream-specific requirements must be verified against the executed agreement, nomination settings, instruments and policy expectations before lodgement.' },
+      { criterion: 'Genuine position and operational need', finding: 'The role should be supported by objective business records rather than general statements from the employer.' },
+      { criterion: 'Occupation and ANZSCO alignment', finding: 'The nominated occupation should be supported by duties, qualifications, references and role evidence.' },
+      { criterion: 'Employment continuity and work history', finding: 'Employment history should be reconciled against visa history, payroll, tax and superannuation records.' },
+      { criterion: 'Salary and market position', finding: 'Salary and employment terms should be internally consistent and defensible under the relevant nomination or agreement settings.' },
+      { criterion: 'English language requirement or concession', finding: 'The English requirement, exemption or concession should be verified from original evidence before final advice.' },
+      { criterion: 'Health, character and migration history', finding: 'Public interest and integrity requirements must be checked before any lodgement recommendation is made.' }
+    );
+  } else {
+    base.push(
+      { criterion: 'Correct visa pathway', finding: 'The selected visa pathway must be confirmed against the applicant’s objective circumstances and current legal settings.' },
+      { criterion: 'Core eligibility criteria', finding: 'Each primary criterion must be tested against original evidence before lodgement strategy is finalised.' },
+      { criterion: 'Evidence sufficiency', finding: 'The evidence package must be complete, current and internally consistent.' },
+      { criterion: 'Health, character and integrity', finding: 'Public interest and integrity criteria must be checked before final advice.' },
+      { criterion: 'Migration history and compliance', finding: 'Prior visas, refusals, cancellations and conditions should be reviewed.' },
+      { criterion: 'Lodgement strategy', finding: 'The pathway should only proceed once risk areas are addressed and evidence is verified.' }
+    );
+  }
+  return base;
+}
+
+function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
+  const raw = ensureArray(advice.criterion_findings || adviceBundle.criterionFindings || adviceBundle.findings || []);
+  const items = (raw.length ? raw : v10DefaultCriteria(subclass, stream)).map(normaliseCriterionFinding);
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const built = buildMatterFinding(item);
+    const name = niceCriterionName(built.criterion || item.criterion || item.heading || 'Criterion');
+    const key = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const risk = v10RiskLevel(name, item);
+    const finding = v10ProfessionalFinding(name, item, built);
+    out.push({
+      criterion: name,
+      risk,
+      currentPosition: v10StatusFromText(item.position || item.outcome || item.finding || built.position),
+      legalRequirement: built.legislativeRequirement,
+      professionalFinding: finding,
+      delegateIssue: v10DelegateIssue(name, item, built),
+      actionRequired: v10ActionRequired(name, item, built),
+      evidence: built.evidence
+    });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+function v10ProfessionalFinding(criterion, item, built) {
+  const c = String(criterion || '').toLowerCase();
+  if (/labour agreement|agreement terms|concession/.test(c)) {
+    return 'This pathway should remain the primary strategy only if the executed Labour Agreement confirms occupation coverage, any concession relied upon, salary settings, English or age settings, nomination limits and the employer’s compliance position.';
+  }
+  if (/sponsor|nomination|employer/.test(c)) {
+    return 'The nomination position is potentially supportable only if the employer records show a genuine, available and ongoing role that is commercially connected to the business operations and supported by objective records.';
+  }
+  if (/genuine position|operational/.test(c)) {
+    return 'The file should demonstrate why the role is genuinely required, how it fits within the employer’s structure and why the business records support the position beyond the applicant’s personal circumstances.';
+  }
+  if (/occupation|anzsco|duties/.test(c)) {
+    return 'The occupation position should be supported by a duties matrix, qualifications, references and employment evidence showing that the nominated occupation is the best and most defensible classification.';
+  }
+  if (/employment|work history|continuity/.test(c)) {
+    return 'The employment chronology should be reconstructed from objective records. Any gaps, unpaid leave, role changes or sponsor changes should be explained before lodgement.';
+  }
+  if (/salary|market/.test(c)) {
+    return 'The salary position should be verified against employment contracts, payroll records, market salary or agreement settings and any applicable concession terms.';
+  }
+  if (/english/.test(c)) {
+    return 'The application should not proceed on assumed English eligibility. The original test result, exemption basis or agreement concession should be checked against the current threshold before final advice.';
+  }
+  if (/health/.test(c)) {
+    return 'Any health disclosure should be considered early because it may affect timing, evidence strategy and whether further medical material is required before final advice.';
+  }
+  if (/character|integrity|4020|migration history|compliance/.test(c)) {
+    return 'The applicant’s immigration, police, court and document history should be reviewed for consistency and completeness so that any issue can be addressed proactively rather than at procedural fairness stage.';
+  }
+  if (/stream|subclass|pathway/.test(c)) {
+    return 'The selected pathway appears capable of assessment, but the file should not be treated as lodgement ready until the stream, nomination and applicant criteria are confirmed against original evidence.';
+  }
+  return cleanText(item.finding || built.body || 'This criterion may be capable of being satisfied, but it should be verified against the original evidence and current legal settings before lodgement action.');
+}
+
+function v10DelegateIssue(criterion, item, built) {
+  const c = String(criterion || '').toLowerCase();
+  if (/labour agreement|concession/.test(c)) return 'A delegate is likely to test the exact agreement terms, occupation coverage, concession availability and sponsor compliance records.';
+  if (/sponsor|nomination|genuine|operational/.test(c)) return 'A delegate is likely to test whether the role is genuine, ongoing, supported by business records and properly connected to the employer’s operations.';
+  if (/occupation|anzsco/.test(c)) return 'A delegate is likely to look beyond the job title and compare actual duties, seniority, technical functions, qualifications and employment history.';
+  if (/employment|work history|salary|market/.test(c)) return 'A delegate may compare claimed employment and salary against payroll, PAYG/tax, superannuation, visa and employer records.';
+  if (/english/.test(c)) return 'A delegate will require clear evidence that the English threshold, exemption or concession applies at the relevant time.';
+  if (/health|character|integrity|migration history/.test(c)) return 'A delegate may scrutinise public interest, credibility, prior visa history and document consistency issues.';
+  return cleanText(item.delegate_scrutiny || item.delegateScrutiny || built.body || 'The Department is likely to examine whether the instructions are supported by independent evidence.');
+}
+
+function v10ActionRequired(criterion, item, built) {
+  const c = String(criterion || '').toLowerCase();
+  if (/labour agreement|concession/.test(c)) return 'Obtain and review the executed Labour Agreement and confirm occupation coverage, concessions, nomination limits and compliance settings.';
+  if (/sponsor|nomination|genuine|operational/.test(c)) return 'Prepare a nomination evidence brief linking the employer’s business need, organisation chart, role duties, payroll capacity and position availability.';
+  if (/occupation|anzsco/.test(c)) return 'Prepare a duties and ANZSCO matrix with references, qualifications, CV and licensing or registration material where relevant.';
+  if (/employment|work history/.test(c)) return 'Build a chronology supported by contracts, payslips, tax records, superannuation and visa/work-rights records.';
+  if (/salary|market/.test(c)) return 'Reconcile contract, payroll, market salary or agreement concession evidence before relying on the salary position.';
+  if (/english/.test(c)) return 'Verify the original English test result, passport exemption or agreement concession before final lodgement advice.';
+  if (/health/.test(c)) return 'Obtain relevant health disclosures and supporting medical material if any issue is indicated.';
+  if (/character|integrity|migration history|compliance/.test(c)) return 'Review police certificates, court records, prior decisions, Department correspondence and prior application records.';
+  return cleanText(item.recommendation || built.strategy || 'Verify original documents and resolve any inconsistency before final advice is issued.');
+}
+
+function v10OverallRisk(criteria) {
+  const joined = criteria.map(c => c.risk).join(' ').toLowerCase();
+  if (/critical/.test(joined)) return 'Critical issue to resolve before lodgement';
+  if (/elevated/.test(joined)) return 'Elevated managed risk';
+  if (/moderate/.test(joined)) return 'Moderate managed risk';
+  return 'Managed risk';
+}
+
+function v10Viability(position, criteria) {
+  const raw = String(position || '').toLowerCase();
+  if (/not recommended|not suitable|critical|bar|invalid|cannot/i.test(raw)) return 'Do not lodge until material issues are resolved';
+  if (/ready|suitable|capable|supportable/i.test(raw) && !/not/.test(raw)) return 'Potentially viable subject to verification';
+  if (criteria.some(c => /critical/i.test(c.risk))) return 'Do not lodge until threshold issues are resolved';
+  return 'Potentially viable but not yet lodgement ready';
+}
+
+function v10Recommendation(subclass, stream, position, issue, criteria) {
+  const viability = v10Viability(position, criteria);
+  const risks = criteria.filter(c => /elevated|critical/i.test(c.risk)).map(c => c.criterion).slice(0, 3);
+  const riskText = risks.length ? risks.join(', ') : cleanText(issue || 'evidence reconciliation and lodgement strategy');
+  return `On the information presently available, I do not identify an immediate basis to rule out the Subclass ${cleanText(subclass)} ${cleanText(stream)} pathway. However, I would not recommend lodgement until the key risk areas are verified against original documents. My present position is: ${viability}. The immediate focus should be ${riskText}.`;
+}
+
+function v10ExecutiveOpinionText(subclass, stream, position, issue, criteria) {
+  const risk = v10OverallRisk(criteria);
+  const recommendation = v10Recommendation(subclass, stream, position, issue, criteria);
+  return `${recommendation}
+
+This advice should be treated as a professional pre-lodgement opinion. It is not enough that a pathway is identifiable. The practical question is whether the applicant evidence, employer records, nomination material, visa history and public interest information can withstand Departmental scrutiny at the time of decision.
+
+The file should now be converted into a lodgement-ready evidence brief. That means confirming the legal pathway first, reconciling the objective records second, and only then deciding whether to proceed, pause for further evidence or redirect to an alternative strategy.`;
+}
+
+function v10WriteExecutivePanel(doc, rows) {
+  const cleanedRows = rows.map(([l, v]) => [cleanText(l), cleanText(v)]);
+  let h = 42;
+  for (const [, v] of cleanedRows) h += doc.font('Helvetica').fontSize(9.2).heightOfString(v, { width: 310, lineGap: 2.2 }) + 18;
+  ensureSpace(doc, h + 12);
+  const y = doc.y;
+  doc.roundedRect(PAGE.L, y, PAGE.WIDTH, h, 14).fillAndStroke('#fffaf0', '#e8c976');
+  doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.navy).text('Executive recommendation', PAGE.L + 16, y + 15, { width: 460 });
+  let cy = y + 42;
+  for (const [label, value] of cleanedRows) {
+    const vh = doc.font('Helvetica').fontSize(9.2).heightOfString(value, { width: 310, lineGap: 2.2 });
+    doc.font('Helvetica-Bold').fontSize(8.2).fillColor(BRAND.muted).text(label.toUpperCase(), PAGE.L + 16, cy + 1, { width: 145 });
+    doc.font('Helvetica').fontSize(9.2).fillColor(BRAND.ink).text(value, PAGE.L + 165, cy, { width: 310, lineGap: 2.2 });
+    cy += Math.max(18, vh) + 14;
+  }
+  doc.y = y + h + 14;
+  doc.x = PAGE.L;
+}
+
+function v10WriteCriterionCard(doc, item) {
+  const colour = riskColour(item.risk);
+  const rows = [
+    ['Professional finding', item.professionalFinding],
+    ['Delegate concern', item.delegateIssue],
+    ['Action before lodgement', item.actionRequired]
+  ];
+  let h = 62;
+  for (const [, v] of rows) h += doc.font('Helvetica').fontSize(9).heightOfString(cleanText(v), { width: 330, lineGap: 2.2 }) + 15;
+  ensureSpace(doc, h + 12);
+  const y = doc.y;
+  doc.roundedRect(PAGE.L, y, PAGE.WIDTH, h, 13).fillAndStroke('#ffffff', BRAND.line);
+  doc.roundedRect(PAGE.L + 15, y + 15, 150, 22, 11).fillAndStroke(colour.bg, colour.border);
+  doc.font('Helvetica-Bold').fontSize(8.1).fillColor(colour.text).text(cleanText(item.risk), PAGE.L + 26, y + 21, { width: 130, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(11.4).fillColor(BRAND.navy).text(cleanText(item.criterion), PAGE.L + 180, y + 17, { width: 340 });
+  let cy = y + 50;
+  for (const [label, value] of rows) {
+    const v = cleanText(value);
+    const vh = doc.font('Helvetica').fontSize(9).heightOfString(v, { width: 330, lineGap: 2.2 });
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(BRAND.muted).text(label.toUpperCase(), PAGE.L + 16, cy + 1, { width: 135 });
+    doc.font('Helvetica').fontSize(9).fillColor(BRAND.ink).text(v, PAGE.L + 155, cy, { width: 330, lineGap: 2.2 });
+    cy += Math.max(18, vh) + 14;
+  }
+  doc.y = y + h + 12;
+  doc.x = PAGE.L;
+}
+
+function v10WriteRiskMatrix(doc, criteria) {
+  writeTitle(doc, 'Risk and evidence matrix', { gold: true });
+  writePara(doc, 'The following matrix identifies the issues most likely to affect lodgement readiness and Departmental scrutiny. It is designed as a practical action plan, not as a guarantee of outcome.', { size: 9.7 });
+  criteria.slice(0, 8).forEach(item => {
+    const line = `${item.criterion}: ${item.risk}. Required action: ${item.actionRequired}`;
+    writeBullet(doc, line);
+  });
+}
+
+function v10EvidencePriorityRows(criteria, evidenceItems) {
+  const fromCriteria = criteria.map(c => c.actionRequired);
+  const items = uniqueClean([...fromCriteria, ...evidenceItems]).slice(0, 14);
+  const priority = [];
+  let i = 1;
+  for (const item of items) {
+    priority.push([String(i++), item, /english|agreement|nomination|salary|character|health|4020|refusal|cancellation/i.test(item) ? 'High' : 'Important']);
+  }
+  return priority;
+}
+
+function v10WriteActionPlan(doc, rows) {
+  writeTitle(doc, 'Client action plan', { gold: true });
+  writePara(doc, 'Before the matter is treated as lodgement ready, I recommend the following controlled evidence steps.', { size: 9.8 });
+  for (const [n, action, priority] of rows.slice(0, 10)) {
+    ensureSpace(doc, 48);
+    const y = doc.y;
+    doc.circle(PAGE.L + 11, y + 12, 10).fill(priority === 'High' ? BRAND.gold : BRAND.blue);
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#ffffff').text(n, PAGE.L + 7, y + 7, { width: 10, align: 'center' });
+    doc.font('Helvetica-Bold').fontSize(9.1).fillColor(priority === 'High' ? '#8a5b00' : BRAND.blue).text(priority.toUpperCase(), PAGE.L + 34, y, { width: 90 });
+    doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.ink).text(cleanText(action), PAGE.L + 110, y, { width: 385, lineGap: 2.4 });
+    doc.y = y + Math.max(32, doc.font('Helvetica').fontSize(9.5).heightOfString(cleanText(action), { width: 385, lineGap: 2.4 }) + 10);
+    doc.x = PAGE.L;
+  }
+}
+
+function v10StreamFramework(subclass, stream) {
+  const st = String(stream || '').toLowerCase();
+  if (st.includes('labour')) {
+    return `The Labour Agreement stream is dependent on the precise terms of the employer’s executed agreement. The assessment should not assume that the standard TRT or Direct Entry requirements apply in the same way. The agreement terms should be checked for occupation coverage, available concessions, salary settings, English or age settings, nomination limits and sponsor compliance obligations.`;
+  }
+  if (/trt|temporary residence/.test(st)) {
+    return 'The Temporary Residence Transition stream depends on the applicant’s qualifying employment, visa history, sponsor continuity, nominated occupation continuity and any transitional settings. Payroll, tax, superannuation and visa records should be reconciled before the pathway is treated as strategically safe.';
+  }
+  if (/direct/.test(st)) {
+    return 'The Direct Entry stream should be tested against skills, qualifications, occupation alignment, nomination evidence and any mandatory assessment or registration requirements. The strongest file will align the applicant’s background with the nominated occupation using objective evidence.';
+  }
+  return `The Subclass ${cleanText(subclass)} pathway should be assessed against the selected stream, current legislative instruments, Departmental policy guidance and the applicant’s objective evidence. The pathway should not be treated as lodgement ready until each threshold issue has been verified.`;
+}
+
+function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
+  if (!adviceBundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');
+  return new Promise((resolve, reject) => {
+    try {
+      let legalPack = null;
+      try { legalPack = assertKnowledgebaseEnforcedAdviceBundle(adviceBundle); } catch (_err) { legalPack = adviceBundle.legalSourcePack || null; }
+      const advice = getAdvice(adviceBundle) || {};
+      const facts = extractFactsObject(assessment || {}, adviceBundle || {});
+      const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], 'Visa'));
+      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
+      const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
+      const title = `Subclass ${subclass} professional migration advice letter`;
+      const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
+      const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
+      const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
+      const position = professionalPosition(adviceBundle || {}, advice || {});
+      const issue = primaryIssue(adviceBundle || {}, advice || {});
+      const criteria = v10BuildCriteria(advice, adviceBundle || {}, subclass, stream);
+      const evidenceItems = collectEvidence(advice || {}, adviceBundle || {});
+      const viability = v10Viability(position, criteria);
+      const overallRisk = v10OverallRisk(criteria);
+
+      const doc = createDoc({
+        Title: `Bircan Migration - ${title}`,
+        Author: 'Bircan Migration & Education',
+        Subject: `Senior migration agent advice letter for assessment ${assessment.id || ''}`
+      });
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('error', reject);
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+      drawCover(doc, { title, reference: assessment.id || '—', applicantName, applicantEmail, clientEmail, subclass, stream, generatedAt });
+      addPage(doc, 'Senior migration agent advice letter');
+
+      writeTitle(doc, 'Executive legal opinion', { gold: true, size: 17 });
+      writePara(doc, v10ExecutiveOpinionText(subclass, stream, position, issue, criteria), { size: 10.3 });
+      v10WriteExecutivePanel(doc, [
+        ['Professional position', viability],
+        ['Risk rating', overallRisk],
+        ['Primary issue', issue],
+        ['Recommendation', 'Do not proceed to lodgement until the identified evidence issues are verified against original documents and current legal settings.']
+      ]);
+
+      writeTitle(doc, 'Subclass and stream framework', { gold: true });
+      writePara(doc, v10StreamFramework(subclass, stream));
+      writeCard(doc, 'Matter details', [
+        ['Reference', assessment.id || '—'],
+        ["Applicant's name", applicantName],
+        ['Applicant email', applicantEmail],
+        ['Client account email', clientEmail],
+        ['Subclass', subclass],
+        ['Stream assessed', stream],
+        ['Generated', generatedAt]
+      ]);
+
+      writeTitle(doc, 'Pathway strategy', { gold: true });
+      writePara(doc, `The selected pathway should be treated as the primary strategy only if the legal framework and evidence base support it. The client should not rely on the pathway label alone. The stronger approach is to test the sponsor, nomination, occupation, employment history, English or concession position, and public interest criteria before a final lodgement recommendation is issued.`, { size: 10 });
+      for (const row of buildPathwayRows(stream).slice(0, 5)) writePathwayBlock(doc, ...row);
+
+      writeTitle(doc, 'Criterion-by-criterion professional assessment', { gold: true });
+      writePara(doc, 'I have assessed the key criteria by reference to the information provided, the selected subclass and stream, likely delegate scrutiny and the evidence that should be obtained before lodgement action. The findings below are deliberately expressed as professional advice rather than checklist outcomes.', { size: 9.8 });
+      criteria.slice(0, 9).forEach(item => v10WriteCriterionCard(doc, item));
+
+      v10WriteRiskMatrix(doc, criteria);
+
+      writeTitle(doc, 'Delegate scrutiny strategy', { gold: true });
+      writePara(doc, 'In employer-sponsored and nomination-dependent matters, Departmental scrutiny commonly focuses on the objective evidence. A well-prepared file should explain the pathway, reconcile the employer and applicant records, and pre-empt obvious concerns before they become procedural fairness issues.');
+      uniqueClean([
+        'Ensure the nomination documents, employer business records and position duties tell one consistent story.',
+        'Reconcile payroll, taxation, superannuation and visa records against the claimed employment chronology.',
+        'Explain any unusual role changes, leave periods, visa history issues or document inconsistencies upfront.',
+        'Avoid relying on broad statements where specific business, payroll, agreement or employment records are available.',
+        'Confirm the English threshold, exemption or concession before final advice if it is relevant to the stream.'
+      ]).forEach(item => writeBullet(doc, item));
+
+      writeTitle(doc, 'Evidence required before final lodgement advice', { gold: true });
+      const grouped = groupEvidence(evidenceItems);
+      if (grouped.length) {
+        for (const [group, items] of grouped.slice(0, 5)) {
+          writeSubheading(doc, group);
+          items.slice(0, 5).forEach(item => writeBullet(doc, item));
+        }
+      } else {
+        ['Executed agreement or stream evidence', 'Nomination and employer business records', 'Position description and duties matrix', 'Employment, payroll, tax and superannuation records', 'English, health, character and migration-history evidence'].forEach(item => writeBullet(doc, item));
+      }
+
+      v10WriteActionPlan(doc, v10EvidencePriorityRows(criteria, evidenceItems));
+
+      writeTitle(doc, 'Alternative pathway position', { gold: true });
+      writePara(doc, 'If the primary pathway cannot be made lodgement ready, an alternative strategy should be considered deliberately rather than urgently. The correct fallback pathway will depend on the employer’s sponsorship status, occupation evidence, regional location, skills position, English level, visa history and long-term migration objective. Temporary employer-sponsored, permanent employer-sponsored, regional or skilled pathways should be compared only after the primary evidence gaps are understood.');
+
+      writeTitle(doc, 'Final professional recommendation', { gold: true, size: 17 });
+      writePara(doc, `${v10Recommendation(subclass, stream, position, issue, criteria)}
+
+My recommendation is to proceed by evidence preparation, not immediate lodgement. If the Labour Agreement or stream-specific requirements, nomination evidence, occupation alignment, English/concession position and public interest records are confirmed, the matter may be capable of progressing with a properly prepared submission and evidence brief. If any of those matters cannot be confirmed, the strategy should be paused or redirected before filing.
+
+This advice is based on the information presently available. Final lodgement advice should be issued only after original documents, employer material, migration history records and current legal settings are reviewed.`);
+
+      writeTitle(doc, 'Legal and professional basis');
+      writePara(doc, `This advice has been prepared by reference to the information supplied, the selected visa pathway, the Migration Act 1958, the Migration Regulations 1994, relevant legislative instruments and current Departmental policy guidance as applicable to the selected subclass and stream. Bircan Migration retains internal source-control records for quality assurance. Those internal records are not reproduced in this client-facing advice letter.`);
+      if (legalPack && legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId) {
+        writePara(doc, `The legal and policy materials relevant to the selected subclass and stream were loaded for this assessment. The professional conclusions remain subject to confirmation of current law and policy at the time final advice is issued.`, { size: 9.3 });
+      }
+
+      writeTitle(doc, 'Important notice');
+      writePara(doc, advice.disclaimer || 'This professional migration advice is based on the information presently available and remains subject to review of original documents, current legislation, legislative instruments, policy guidance and Departmental requirements at the relevant time. It is not a guarantee of visa grant, nomination approval or sponsorship approval. No application should be lodged until final instructions and evidence are professionally verified.');
+
+      ensureSpace(doc, 95);
+      doc.font('Helvetica').fontSize(10).fillColor(BRAND.ink).text('Yours faithfully,', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.moveDown(0.65);
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.navy).text('Kenan Bircan JP', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.ink).text('Registered Migration Agent | MARN: 1463685', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.text('Bircan Migration & Education', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.moveDown(0.9);
+      doc.fontSize(8).fillColor(BRAND.muted).text('This advice letter is subject to review of original documents, current law, policy and final instructions before lodgement action.', PAGE.L, doc.y, { width: PAGE.WIDTH, align: 'center' });
+
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+
+module.exports = { buildAssessmentPdfBuffer: buildAssessmentPdfBufferV10, buildAppealAdvicePdfBuffer, sha256 };
+
