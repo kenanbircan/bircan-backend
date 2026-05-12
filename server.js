@@ -1386,11 +1386,12 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.1-dashboard-index-performance-patch',
+    version: '12.2.2-dashboard-email-pdf-route-patch',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
     smtpConfigured: Boolean(process.env.SMTP_HOST),
+    documentEmailPdfRoute: true,
     appBaseUrl: APP_BASE_URL,
     corsPatch: 'real-pdf-pipeline-cookie-plus-bearer',
     pdfMode: 'state-machine-issued-pdf-only',
@@ -5652,6 +5653,142 @@ app.get('/api/documents/pdf-view', asyncRoute(async (req, res) => {
     return sendAppealAssessmentPdf({ client: { email: payload.email } }, res, payload.id);
   }
   return res.status(400).json({ ok: false, error: 'Unsupported document type.' });
+}));
+
+
+
+// ---- Dashboard Documents Centre email + review routes (2026-05-12) ----
+// Frontend route used by account-dashboard.html. Must be mounted before the 404 handler.
+function buildSmtpTransporter() {
+  if (!process.env.SMTP_HOST) return null;
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined
+  });
+}
+
+function smtpFromAddress() {
+  return process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@bircanmigration.au';
+}
+
+async function resolveReadyDashboardDocument({ type, id, accountEmail }) {
+  const cleanType = normaliseServiceType(type);
+  const cleanId = String(id || '').trim();
+  const cleanEmail = normaliseEmail(accountEmail);
+  if (!cleanId) throw Object.assign(new Error('Document reference is missing.'), { statusCode: 400 });
+
+  if (cleanType === 'visa_assessment') {
+    let assessment = await resolveAssessmentForAccount(cleanId, cleanEmail);
+    if (!assessment) throw Object.assign(new Error('Assessment was not found for this account.'), { statusCode: 404 });
+    const plan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
+    if (!isInstantPlan(plan) && assessment.release_at && new Date(assessment.release_at).getTime() > Date.now()) {
+      throw Object.assign(new Error('PDF is still locked under the selected release plan.'), { statusCode: 423 });
+    }
+    if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid' && isInstantPlan(plan)) {
+      try {
+        await generateAssessmentPdfNow(assessment.id, cleanEmail);
+        assessment = await resolveAssessmentForAccount(assessment.id, cleanEmail) || assessment;
+      } catch (err) {
+        console.error('Instant PDF generation before email failed:', err.message);
+      }
+    }
+    if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
+      throw Object.assign(new Error('PDF not ready. The advice letter has not been issued yet.'), { statusCode: 409 });
+    }
+    return {
+      serviceType: 'visa_assessment',
+      id: assessment.id,
+      title: `Subclass ${assessment.visa_type || 'Visa'} advice letter`,
+      to: assessment.client_email || cleanEmail,
+      subject: `Your Subclass ${assessment.visa_type || 'Visa'} advice letter is ready`,
+      text: `Your Bircan Migration advice letter for reference ${assessment.id} is attached.`,
+      filename: assessment.pdf_filename || `Bircan-${assessment.visa_type || 'Visa'}-${assessment.id}.pdf`,
+      pdfBytes: assessment.pdf_bytes
+    };
+  }
+
+  if (cleanType === 'appeals_assessment') {
+    const rows = (await query(
+      `SELECT * FROM appeals_assessments WHERE id=$1 AND lower(client_email)=lower($2) LIMIT 1`,
+      [cleanId, cleanEmail]
+    )).rows;
+    const appeal = rows[0];
+    if (!appeal) throw Object.assign(new Error('Appeals assessment was not found for this account.'), { statusCode: 404 });
+    const plan = safePlan(appeal.active_plan || appeal.selected_plan || 'instant');
+    if (!isInstantPlan(plan) && appeal.release_at && new Date(appeal.release_at).getTime() > Date.now()) {
+      throw Object.assign(new Error('Appeals PDF is still locked under the selected release plan.'), { statusCode: 423 });
+    }
+    if (!hasIssuedPdfBytes(appeal.pdf_bytes)) {
+      throw Object.assign(new Error('Appeals advice PDF is not ready yet.'), { statusCode: 409 });
+    }
+    return {
+      serviceType: 'appeals_assessment',
+      id: appeal.id,
+      title: `Appeals advice letter${appeal.visa_subclass ? ' - subclass ' + appeal.visa_subclass : ''}`,
+      to: appeal.client_email || cleanEmail,
+      subject: `Your Bircan Migration appeals advice letter is ready`,
+      text: `Your Bircan Migration appeals advice letter for reference ${appeal.id} is attached.`,
+      filename: appeal.pdf_filename || `Bircan-Appeals-${appeal.id}.pdf`,
+      pdfBytes: appeal.pdf_bytes
+    };
+  }
+
+  throw Object.assign(new Error('Unsupported document type.'), { statusCode: 400 });
+}
+
+async function sendDashboardPdfEmail(req, res) {
+  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type || 'visa_assessment');
+  const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.submissionId || req.body.reference);
+  const document = await resolveReadyDashboardDocument({ type: requestedType, id: requestedId, accountEmail: req.client.email });
+  const transporter = buildSmtpTransporter();
+  if (!transporter) return res.status(500).json({ ok: false, error: 'SMTP is not configured.' });
+
+  await transporter.sendMail({
+    from: smtpFromAddress(),
+    to: document.to,
+    subject: document.subject,
+    text: document.text,
+    attachments: [{ filename: document.filename, content: document.pdfBytes, contentType: 'application/pdf' }]
+  });
+
+  try {
+    await query(
+      `INSERT INTO document_events (service_type, service_ref, client_email, event_type, metadata)
+       VALUES ($1,$2,$3,'email_pdf',$4::jsonb)`,
+      [document.serviceType, document.id, req.client.email, JSON.stringify({ emailedTo: document.to, filename: document.filename, at: new Date().toISOString() })]
+    );
+  } catch (err) {
+    // Do not fail delivery just because the optional audit table is absent.
+    console.warn('document_events audit skipped:', err.message);
+  }
+
+  res.json({ ok: true, message: 'PDF emailed successfully.', emailedTo: document.to, id: document.id, type: document.serviceType });
+}
+
+app.post('/api/documents/email-pdf', requireAuth, asyncRoute(sendDashboardPdfEmail));
+
+// Backwards-compatible aliases used by older dashboards.
+app.post('/api/assessment/email-pdf', requireAuth, asyncRoute(async (req, res) => {
+  req.body = { ...(req.body || {}), type: 'visa_assessment', id: (req.body && (req.body.assessmentId || req.body.assessment_id || req.body.submissionId || req.body.id)) };
+  return sendDashboardPdfEmail(req, res);
+}));
+
+app.post('/api/documents/request-review', requireAuth, asyncRoute(async (req, res) => {
+  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type || 'visa_assessment');
+  const requestedId = String(req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference) || '').trim();
+  if (!requestedId) return res.status(400).json({ ok: false, error: 'Matter reference is missing.' });
+  try {
+    await query(
+      `INSERT INTO document_events (service_type, service_ref, client_email, event_type, metadata)
+       VALUES ($1,$2,$3,'manual_review_requested',$4::jsonb)`,
+      [normaliseServiceType(requestedType), requestedId, req.client.email, JSON.stringify({ requestedAt: new Date().toISOString() })]
+    );
+  } catch (err) {
+    console.warn('manual review audit skipped:', err.message);
+  }
+  res.json({ ok: true, message: 'Document review request submitted.', id: requestedId, type: normaliseServiceType(requestedType) });
 }));
 
 app.get('/api/assessment/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
