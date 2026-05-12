@@ -2012,12 +2012,25 @@ async function handlePublicVisaAssessmentStart(req, res) {
          WHERE lower(a.client_email)=lower($1)
            AND a.visa_type=$2
            AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
-           AND a.submission_fingerprint=$4
+           AND (
+             a.submission_fingerprint=$4
+             OR (
+               COALESCE(a.payment_status,'unpaid') <> 'paid'
+               AND lower(COALESCE(a.applicant_name,''))=lower(COALESCE($5,''))
+               AND a.created_at > now() - interval '2 hours'
+             )
+             OR (
+               COALESCE(a.payment_status,'')='paid'
+               AND a.stripe_session_id IS NOT NULL
+               AND lower(COALESCE(a.applicant_name,''))=lower(COALESCE($5,''))
+               AND a.created_at > now() - interval '30 minutes'
+             )
+           )
            AND a.created_at > now() - interval '24 hours'
          ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
                   a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
          LIMIT 1`,
-        [email, visaType, plan, submissionFingerprint]
+        [email, visaType, plan, submissionFingerprint, built.meta.applicantName || null]
       );
       const existing = existingRows.rows[0];
       if (existing) {
@@ -5164,7 +5177,8 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
   const out = [];
   for (const row of Array.isArray(rows) ? rows : []) {
     const serviceType = dashboardServiceType(row && (row.service_type || row.serviceType || row.product_type || row.productType || row.type || row.service));
-    const direct = idFields.map(f => row && row[f]).find(Boolean);
+    const dashboardDuplicate = row && (row.dashboard_duplicate_key || row.dashboardDuplicateKey);
+    const direct = dashboardDuplicate || idFields.map(f => row && row[f]).find(Boolean);
     const stripe = row && (row.stripe_session_id || row.stripeSessionId || row.session_id || row.sessionId);
     const intent = row && (row.stripe_payment_intent || row.stripePaymentIntent || row.payment_intent || row.paymentIntent);
     const key = String(direct ? `${serviceType}:id:${direct}` : stripe ? `${serviceType}:stripe:${stripe}` : intent ? `${serviceType}:intent:${intent}` : `${serviceType}:fallback:${JSON.stringify(row || {})}`).toLowerCase();
@@ -5323,7 +5337,7 @@ async function queryDashboardFastRows(email, clientId) {
       FROM matches
       ORDER BY id, COALESCE(updated_at, created_at) DESC NULLS LAST
     )
-    SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
+    SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
            selected_plan, active_plan,
            CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN 'pdf_ready'
                 WHEN payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
@@ -5405,7 +5419,7 @@ app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handle
 
 app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
-    `SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
+    `SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
             CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
             CASE
