@@ -1909,6 +1909,284 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+
+// ---------- Frontend compatibility API routes ----------
+// These routes support legacy/non-core frontend files without changing the current production flow.
+async function ensureAdminEmailAccountsTable() {
+  await query(`CREATE TABLE IF NOT EXISTS admin_email_accounts (
+    email text PRIMARY KEY,
+    role text,
+    note text,
+    password_hash text,
+    status text DEFAULT 'active',
+    provider text DEFAULT 'manual',
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
+  )`);
+}
+
+function publicEmailAccount(row) {
+  return {
+    email: row.email,
+    role: row.role || '',
+    note: row.note || '',
+    status: row.status || 'active',
+    provider: row.provider || 'manual',
+    hasPassword: Boolean(row.password_hash),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null
+  };
+}
+
+app.get('/api/admin/email-accounts', requireAdmin, asyncRoute(async (_req, res) => {
+  await ensureAdminEmailAccountsTable();
+  const { rows } = await query(`SELECT * FROM admin_email_accounts ORDER BY email ASC`);
+  res.json({ ok: true, accounts: rows.map(publicEmailAccount), emailAccounts: rows.map(publicEmailAccount) });
+}));
+
+app.post('/api/admin/email-accounts', requireAdmin, asyncRoute(async (req, res) => {
+  await ensureAdminEmailAccountsTable();
+  const email = normaliseEmail(req.body.email);
+  if (!email || !email.includes('@')) return res.status(400).json({ ok: false, error: 'Valid email account is required.' });
+  const role = String(req.body.role || '').trim();
+  const note = String(req.body.note || '').trim();
+  const status = String(req.body.status || 'active').trim() || 'active';
+  const provider = String(req.body.provider || 'manual').trim() || 'manual';
+  const password = String(req.body.password || '').trim();
+  const hash = password ? await bcrypt.hash(password, 10) : null;
+  const { rows } = await query(
+    `INSERT INTO admin_email_accounts (email, role, note, password_hash, status, provider)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (email) DO UPDATE SET
+       role=EXCLUDED.role,
+       note=EXCLUDED.note,
+       password_hash=COALESCE(EXCLUDED.password_hash, admin_email_accounts.password_hash),
+       status=EXCLUDED.status,
+       provider=EXCLUDED.provider,
+       updated_at=now()
+     RETURNING *`,
+    [email, role, note, hash, status, provider]
+  );
+  res.json({ ok: true, account: publicEmailAccount(rows[0]) });
+}));
+
+app.delete('/api/admin/email-accounts/:email', requireAdmin, asyncRoute(async (req, res) => {
+  await ensureAdminEmailAccountsTable();
+  const email = normaliseEmail(req.params.email);
+  const result = await query(`DELETE FROM admin_email_accounts WHERE lower(email)=lower($1)`, [email]);
+  res.json({ ok: true, deleted: result.rowCount || 0, email });
+}));
+
+app.post('/api/admin/email/change-password', requireAdmin, asyncRoute(async (req, res) => {
+  await ensureAdminEmailAccountsTable();
+  const email = normaliseEmail(req.body.email);
+  const password = String(req.body.password || '');
+  if (!email || !email.includes('@')) return res.status(400).json({ ok: false, error: 'Valid email account is required.' });
+  if (password.length < 6) return res.status(400).json({ ok: false, error: 'Password must be at least 6 characters.' });
+  const hash = await bcrypt.hash(password, 10);
+  const { rows } = await query(
+    `INSERT INTO admin_email_accounts (email, password_hash, status, provider)
+     VALUES ($1,$2,'active','manual')
+     ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash, updated_at=now()
+     RETURNING *`,
+    [email, hash]
+  );
+  res.json({ ok: true, account: publicEmailAccount(rows[0]), message: 'Password control updated for this admin email record.' });
+}));
+
+app.post('/api/admin/email-accounts/test', requireAdmin, asyncRoute(async (req, res) => {
+  const target = normaliseEmail(req.body.email || process.env.ADMIN_EMAIL || process.env.SMTP_USER || process.env.EMAIL_USER || '');
+  const configured = Boolean(process.env.SMTP_HOST && (process.env.SMTP_USER || process.env.EMAIL_USER));
+  if (!configured) return res.json({ ok: true, configured: false, skipped: true, message: 'SMTP is not configured. Email account route is available, but no test email was sent.' });
+  if (!target) return res.status(400).json({ ok: false, error: 'No target email was supplied and no admin email is configured.' });
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true' || Number(process.env.SMTP_PORT || 587) === 465,
+    auth: { user: process.env.SMTP_USER || process.env.EMAIL_USER, pass: process.env.SMTP_PASS || process.env.EMAIL_PASS }
+  });
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.EMAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER,
+    to: target,
+    subject: 'Bircan Migration email settings test',
+    text: 'This is a backend email settings test from Bircan Migration.'
+  });
+  res.json({ ok: true, configured: true, sent: true, to: target });
+}));
+
+async function restoreClientFromStripeSession(req, res, options = {}) {
+  if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
+  const sessionId = req.body.sessionId || req.body.session_id || req.query.session_id || req.query.sessionId;
+  if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
+  let session = await stripe.checkout.sessions.retrieve(sessionId);
+  session = await normalisePaidStripeSessionForAttachment(session);
+  let result = { attached: false, type: (session.metadata || {}).service_type || null };
+  const paid = session.payment_status === 'paid' || session.status === 'complete';
+  if (paid) result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email || (session.customer_details && session.customer_details.email));
+  let client = null;
+  if (email) {
+    client = (await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email])).rows[0] || null;
+    if (client) setSessionCookie(res, sign(client));
+  }
+  const token = client ? sign(client) : null;
+  return res.json({
+    ok: true,
+    verified: paid,
+    status: paid ? 'paid' : (session.payment_status || session.status || 'open'),
+    sessionId,
+    service: result.type || (session.metadata || {}).service_type || null,
+    assessmentId: result.assessmentId || (session.metadata || {}).assessment_id || null,
+    accessId: result.accessId || (session.metadata || {}).citizenship_access_id || null,
+    citizenshipAccessId: result.accessId || (session.metadata || {}).citizenship_access_id || null,
+    plan: result.plan || (session.metadata || {}).plan || req.query.plan || null,
+    client,
+    user: client,
+    token,
+    accessToken: token,
+    dashboardAccessToken: client ? signDashboardAccessToken(client) : null,
+    redirectUrl: options.redirectUrl || `${APP_BASE_URL}/account-dashboard.html?session_id=${encodeURIComponent(sessionId)}`
+  });
+}
+
+app.get('/api/stripe/verify-session', asyncRoute((req, res) => restoreClientFromStripeSession(req, res)));
+app.post('/api/stripe/verify-session', asyncRoute((req, res) => restoreClientFromStripeSession(req, res)));
+app.get('/checkout/verify-session', asyncRoute((req, res) => restoreClientFromStripeSession(req, res)));
+app.post('/checkout/verify-session', asyncRoute((req, res) => restoreClientFromStripeSession(req, res)));
+app.get('/api/auth/restore-from-session', asyncRoute((req, res) => restoreClientFromStripeSession(req, res)));
+
+async function createCheckoutStartHandoff(req, serviceType) {
+  if (!req.client) {
+    const err = new Error('Login required before checkout.');
+    err.statusCode = 401;
+    throw err;
+  }
+  const body = req.body || {};
+  const email = normaliseEmail(body.email || req.client.email);
+  const plan = serviceType === 'citizenship_test' ? normaliseCitizenshipPlan(body.plan || body.selectedPlan || body.pack || '20') : safePlan(body.plan || body.selectedPlan || body.turnaround || 'instant');
+  let serviceRef = String(body.serviceRef || body.service_ref || body.assessmentId || body.assessment_id || body.submissionId || body.submission_id || body.appealAssessmentId || body.appeal_assessment_id || body.accessId || body.access_id || body.citizenshipAccessId || body.citizenship_access_id || '').trim();
+
+  if (serviceType === 'citizenship_test') {
+    // Citizenship checkout can safely use the existing direct handler to return a real Stripe URL.
+    return null;
+  }
+  if (!serviceRef) {
+    const err = new Error('Missing assessment reference for checkout. Submit the assessment first.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const session = await upsertServiceSession({
+    serviceType,
+    serviceRef,
+    email,
+    clientId: req.client.id,
+    plan,
+    status: 'login_confirmed',
+    paymentStatus: 'unpaid',
+    metadata: { compatibility_public_checkout: true, portal_login_confirmed_at: new Date().toISOString(), portal_login_email: req.client.email, require_fresh_login: false }
+  });
+  const params = new URLSearchParams({
+    service: serviceType === 'appeals_assessment' ? 'appeals' : 'visa',
+    service_session_id: session.id,
+    assessment_id: serviceRef,
+    plan,
+    email
+  });
+  if (serviceType === 'appeals_assessment') params.set('appeal_assessment_id', serviceRef);
+  return { ok: true, service: serviceType, serviceSessionId: session.id, service_session_id: session.id, assessmentId: serviceRef, assessment_id: serviceRef, plan, url: `${APP_BASE_URL}/checkout-start.html?${params.toString()}`, redirectUrl: `${APP_BASE_URL}/checkout-start.html?${params.toString()}` };
+}
+
+app.post('/api/public/visa-assessment/checkout', requireAuth, asyncRoute(async (req, res) => {
+  res.json(await createCheckoutStartHandoff(req, 'visa_assessment'));
+}));
+
+app.post('/api/public/appeals-assessment/checkout', requireAuth, asyncRoute(async (req, res) => {
+  res.json(await createCheckoutStartHandoff(req, 'appeals_assessment'));
+}));
+
+app.post('/api/public/citizenship/checkout', requireAuth, asyncRoute(handleCitizenshipCheckoutSession));
+
+function journeyFallbackView(assessment, documents = []) {
+  const id = assessment && assessment.id;
+  const paid = assessment && assessment.payment_status === 'paid';
+  const hasPdf = Boolean(assessment && assessment.has_pdf);
+  const stageLabel = hasPdf ? 'Advice letter ready' : paid ? 'Professional review in progress' : 'Payment required';
+  return {
+    ok: true,
+    assessmentId: id,
+    stageLabel,
+    completionPercent: hasPdf ? 100 : paid ? 60 : 25,
+    professionalMessage: hasPdf ? 'Your issued advice letter is ready in the dashboard.' : paid ? 'Your matter is moving through review and document preparation.' : 'Complete checkout before professional review can commence.',
+    timeline: [
+      { label: 'Assessment submitted', completed: true },
+      { label: 'Payment confirmed', completed: paid, active: !paid },
+      { label: 'Professional review', completed: hasPdf, active: paid && !hasPdf },
+      { label: 'Advice letter issued', completed: hasPdf }
+    ],
+    nextAction: hasPdf ? { action: 'open_dashboard', label: 'Open dashboard', message: 'Open the dashboard to view available document actions.' } : paid ? { action: 'submit_review', label: 'Request review update', message: 'Request a review update if documents have been supplied.' } : { action: 'checkout', label: 'Continue to checkout', message: 'Complete payment to unlock the professional review pathway.' },
+    documentsRequired: documents.length ? documents : [
+      { name: 'Passport biodata page', status: 'Required', uploaded: false },
+      { name: 'Current visa evidence', status: 'Required if applicable', uploaded: false },
+      { name: 'Supporting documents for claimed criteria', status: 'Required', uploaded: false }
+    ]
+  };
+}
+
+app.post('/api/journey/bootstrap', requireAuth, asyncRoute(async (req, res) => {
+  const assessmentId = String(req.body.assessmentId || req.body.assessment_id || req.body.id || '').trim();
+  if (!assessmentId) return res.status(400).json({ ok: false, error: 'assessmentId is required.' });
+  const { rows } = await query(
+    `SELECT id, payment_status, status, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 THEN true ELSE false END AS has_pdf
+     FROM assessments
+     WHERE id=$1 AND (client_id=$2 OR lower(client_email)=lower($3) OR lower(applicant_email)=lower($3))
+     LIMIT 1`,
+    [assessmentId, req.client.id, req.client.email]
+  );
+  if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
+  res.json(journeyFallbackView(rows[0]));
+}));
+
+app.post('/api/journey/:assessmentId/documents', requireAuth, asyncRoute(async (req, res) => {
+  const assessmentId = String(req.params.assessmentId || '').trim();
+  if (!assessmentId) return res.status(400).json({ ok: false, error: 'assessmentId is required.' });
+  const { rows } = await query(
+    `SELECT id, payment_status, status, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 THEN true ELSE false END AS has_pdf
+     FROM assessments
+     WHERE id=$1 AND (client_id=$2 OR lower(client_email)=lower($3) OR lower(applicant_email)=lower($3))
+     LIMIT 1`,
+    [assessmentId, req.client.id, req.client.email]
+  );
+  if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
+  const name = String(req.body.name || 'Uploaded document').trim();
+  res.json(journeyFallbackView(rows[0], [{ name, status: 'Recorded', uploaded: true }]));
+}));
+
+app.post('/api/journey/:assessmentId/submit-review', requireAuth, asyncRoute(async (req, res) => {
+  const assessmentId = String(req.params.assessmentId || '').trim();
+  const { rows } = await query(
+    `SELECT id, payment_status, status, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 THEN true ELSE false END AS has_pdf
+     FROM assessments
+     WHERE id=$1 AND (client_id=$2 OR lower(client_email)=lower($3) OR lower(applicant_email)=lower($3))
+     LIMIT 1`,
+    [assessmentId, req.client.id, req.client.email]
+  );
+  if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
+  res.json(journeyFallbackView({ ...rows[0], payment_status: 'paid' }));
+}));
+
+app.get('/api/citizenship/my-entitlement', requireAuth, asyncRoute(async (req, res) => {
+  const access = await getCitizenshipAccessForClient(req.client.email);
+  const active = access.find(c => c.payment_status === 'paid' || c.status === 'active') || access[0] || null;
+  res.json({ ok: true, entitlement: active, activeAccess: active, citizenshipAccess: access, citizenship: access, hasAccess: Boolean(active) });
+}));
+app.get('/api/citizenship/entitlement', requireAuth, asyncRoute(async (req, res) => {
+  const access = await getCitizenshipAccessForClient(req.client.email);
+  const active = access.find(c => c.payment_status === 'paid' || c.status === 'active') || access[0] || null;
+  res.json({ ok: true, entitlement: active, activeAccess: active, citizenshipAccess: access, citizenship: access, hasAccess: Boolean(active) });
+}));
+
+// ---------- End frontend compatibility API routes ----------
+
 async function adminTableExists(tableName) {
   const { rows } = await query(`SELECT to_regclass($1) AS exists`, [tableName]);
   return Boolean(rows[0] && rows[0].exists);
