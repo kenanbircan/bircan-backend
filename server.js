@@ -1777,7 +1777,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.1-dashboard-index-performance-patch',
+    version: '12.2.2-strict-same-subclass-idempotency',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2278,21 +2278,12 @@ async function handleAssessmentSubmit(req, res) {
            OR lower(applicant_email)=lower($1)
            OR client_id=$6
          )
-         AND (
-           submission_fingerprint=$4
-           OR (
-             COALESCE(payment_status,'unpaid') <> 'paid'
-             AND lower(COALESCE(applicant_name,''))=lower(COALESCE($5,''))
-             AND created_at > now() - interval '6 hours'
-           )
-           OR (
-             COALESCE(payment_status,'')='paid'
-             AND stripe_session_id IS NOT NULL
-             AND lower(COALESCE(applicant_name,''))=lower(COALESCE($5,''))
-             AND created_at > now() - interval '24 hours'
-           )
-         )
          AND created_at > now() - interval '48 hours'
+         -- Strict same-service idempotency:
+         -- once the same client/email has a recent matter for the same subclass and plan,
+         -- reuse it instead of creating another paid assessment through retries, repeated
+         -- checkout clicks, payment-return loops or autofill test repeats. The old
+         -- fingerprint match is still saved, but it is no longer the only protection.
        ORDER BY CASE WHEN payment_status='paid' THEN 4 WHEN stripe_session_id IS NOT NULL THEN 3 WHEN status='checkout_created' THEN 2 ELSE 1 END DESC,
                 updated_at DESC NULLS LAST,
                 created_at DESC NULLS LAST
@@ -2421,21 +2412,12 @@ async function handlePublicVisaAssessmentStart(req, res) {
            )
            AND a.visa_type=$2
            AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
-           AND (
-             a.submission_fingerprint=$4
-             OR (
-               COALESCE(a.payment_status,'unpaid') <> 'paid'
-               AND lower(COALESCE(a.applicant_name,''))=lower(COALESCE($5,''))
-               AND a.created_at > now() - interval '6 hours'
-             )
-             OR (
-               COALESCE(a.payment_status,'')='paid'
-               AND a.stripe_session_id IS NOT NULL
-               AND lower(COALESCE(a.applicant_name,''))=lower(COALESCE($5,''))
-               AND a.created_at > now() - interval '24 hours'
-             )
-           )
            AND a.created_at > now() - interval '48 hours'
+           -- Strict public handoff idempotency:
+           -- same email + same subclass + same plan must reuse the most recent matter
+           -- in this window, even if autofill/timestamps/random fields change the answer
+           -- fingerprint. This stops creating multiple paid assessment records from one
+           -- user journey.
          ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
                   a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
          LIMIT 1`,
