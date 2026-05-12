@@ -460,6 +460,8 @@ async function optionalAuth(req, _res, next) {
 // service_session_id/assessment_id/email but without the browser sending the
 // cookie or bearer token. For checkout creation only, recover the client from
 // the login-confirmed service session, while still enforcing same-email ownership.
+const BIRCAN_CHECKOUT_AUTH_BRIDGE_PATCH = 'checkout-auth-bridge-service-session-v1';
+
 async function requireCheckoutAuth(req, res, next) {
   try {
     const token = (req.cookies && req.cookies.bm_session) || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -1910,6 +1912,8 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     appBaseUrl: APP_BASE_URL,
     corsPatch: 'real-pdf-pipeline-cookie-plus-bearer',
     pdfMode: 'state-machine-issued-pdf-only',
+    paymentCheckoutReusePatch: typeof BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH !== 'undefined' ? BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH : null,
+    checkoutAuthBridgePatch: typeof BIRCAN_CHECKOUT_AUTH_BRIDGE_PATCH !== 'undefined' ? BIRCAN_CHECKOUT_AUTH_BRIDGE_PATCH : null,
     dashboardAccessPatch: DASHBOARD_ACCESS_PATCH,
     subclass190Engine: 'deterministic-legal-engine-v2-no-gpt-outcome',
     evidenceValidationLayer: true,
@@ -1930,6 +1934,16 @@ app.get('/api/readiness', asyncRoute(async (_req, res) => {
   });
   res.status(report.ok ? 200 : 500).json(report);
 }));
+
+
+app.get('/api/admin/patch-markers', (_req, res) => {
+  res.json({
+    ok: true,
+    paymentCheckoutReusePatch: typeof BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH !== 'undefined' ? BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH : null,
+    checkoutAuthBridgePatch: typeof BIRCAN_CHECKOUT_AUTH_BRIDGE_PATCH !== 'undefined' ? BIRCAN_CHECKOUT_AUTH_BRIDGE_PATCH : null,
+    serverPatchVerification: 'checkout-markers-visible-v1'
+  });
+});
 
 app.get('/api/routes', (_req, res) => {
   const routes = hardening.listExpressRoutes(app);
