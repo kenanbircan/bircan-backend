@@ -3,7 +3,7 @@ const matrices = require('./advice-matrices.json');
 const coverage = require('./knowledgebase_coverage.json');
 const { evaluateDecisionEngine } = require('./decisionEngines');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream } = require('./knowledgebaseLoader');
-const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-5.5';
+const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
 function normSubclass(v){ return String(v || '').replace(/[^0-9]/g, ''); }

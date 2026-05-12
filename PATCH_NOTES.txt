@@ -1,0 +1,13 @@
+Bircan Migration Backend Final Patch - 12 May 2026
+
+Applied production fixes:
+1. Removed temporary admin cleanup route: GET /api/admin/run-hard-stop-paid-visa-cleanup.
+2. Enforced strict same-email checkout rule for visa_assessment service sessions.
+3. Preserved flexible portal-account attachment only for non-visa service sessions such as appeals.
+4. Removed unsafe SESSION_SECRET fallback. Production now refuses to boot without SESSION_SECRET or JWT_SECRET.
+5. Changed adviceEngine default OpenAI model from gpt-5.5 to gpt-4.1. Override in Render with OPENAI_ADVICE_MODEL.
+6. Updated backend health version marker to 12.2.3-production-email-lock-admin-route-removed.
+7. Ran node --check successfully on all JavaScript backend files included in this ZIP.
+
+Upload these files to the backend repository root, replacing existing files with the same names.
+Keep your /knowledgebase and /migrations folders in the repo unless you intentionally manage them separately.

@@ -42,7 +42,10 @@ const { installClientJourneyRoutes, ensureClientJourneySchema } = require('./cli
 const app = express();
 app.use(hardening.requestIdMiddleware);
 const PORT = process.env.PORT || 4242;
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || 'CHANGE_ME_IN_RENDER_ENV';
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET;
+if (!SESSION_SECRET && (process.env.NODE_ENV === 'production' || process.env.RENDER)) {
+  throw new Error('SESSION_SECRET or JWT_SECRET is required in production. Refusing to boot with an unsafe fallback secret.');
+}
 const APP_BASE_URL = process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || 'https://bircanmigration.au';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY_TEST || process.env.STRIPE_SECRET_KEY_LIVE;
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
@@ -858,34 +861,66 @@ async function getServiceSessionForCheckout(req) {
   if (!session) {
     throw Object.assign(new Error('Checkout handoff was not found. The assessment was not saved before login, so Stripe has been stopped. Please submit the assessment again from the selected plan button.'), { statusCode: 404, code: 'SERVICE_SESSION_NOT_FOUND' });
   }
-  const startedEmail = normaliseEmail(session.client_email);
-  const loggedInEmail = normaliseEmail(req.client.email);
 
-  // Production handoff fix:
-  // The applicant/refusal email and the portal login email may be different.
-  // Do not block checkout just because the public appeal form was started with
-  // another email. Attach the unpaid service session to the authenticated portal
-  // account, but preserve the original applicant email in metadata and in the
-  // underlying appeals_assessments.applicant_email column.
   const existingMetadata = session.metadata || {};
+  const sessionServiceType = normaliseServiceType(session.service_type || existingMetadata.service_type || serviceType);
+  const startedEmail = normaliseEmail(session.client_email || existingMetadata.original_started_email || existingMetadata.applicant_email);
+  const loggedInEmail = normaliseEmail(req.client && req.client.email);
+
+  // Payment handoff must be deliberate. The login page confirms this by setting
+  // portal_login_confirmed_at before checkout. Normal logins must go to dashboard,
+  // not Stripe, unless a real saved service_session_id is being carried through.
   if (existingMetadata.require_fresh_login && !existingMetadata.portal_login_confirmed_at) {
-    throw Object.assign(new Error('Login must be completed before Stripe payment. Please log in through the secure portal first.'), { statusCode: 401 });
+    throw Object.assign(new Error('Login must be completed before Stripe payment. Please log in through the secure portal first.'), { statusCode: 401, code: 'FRESH_LOGIN_REQUIRED' });
+  }
+
+  // Strict self-service rule: visa assessments must be paid from the same portal
+  // email used when the assessment was submitted. Appeals may preserve a different
+  // applicant/refusal email, but visa self-service access is account-email locked.
+  if (sessionServiceType === 'visa_assessment') {
+    if (startedEmail && loggedInEmail && startedEmail !== loggedInEmail) {
+      throw Object.assign(
+        new Error('This visa assessment must be paid from the same email address used to submit the assessment. Please log in with the assessment email or submit the assessment again.'),
+        { statusCode: 403, code: 'VISA_EMAIL_MISMATCH', requiredEmail: startedEmail, loggedInEmail, serviceSessionId: session.id, assessmentId: session.service_ref || null }
+      );
+    }
+
+    if (session.service_ref) {
+      const assessmentRows = (await query(
+        `SELECT id, client_email, applicant_email FROM assessments WHERE id=$1 LIMIT 1`,
+        [session.service_ref]
+      )).rows;
+      const assessment = assessmentRows[0];
+      const assessmentEmail = normaliseEmail(assessment && (assessment.client_email || assessment.applicant_email));
+      if (assessmentEmail && loggedInEmail && assessmentEmail !== loggedInEmail) {
+        throw Object.assign(
+          new Error('This visa assessment belongs to a different email address. Please log in with the same email used in the assessment form.'),
+          { statusCode: 403, code: 'ASSESSMENT_EMAIL_MISMATCH', requiredEmail: assessmentEmail, loggedInEmail, serviceSessionId: session.id, assessmentId: session.service_ref }
+        );
+      }
+    }
   }
 
   const nextMetadata = {
     ...existingMetadata,
     original_started_email: existingMetadata.original_started_email || startedEmail || null,
-    portal_login_email: loggedInEmail || null
+    portal_login_email: loggedInEmail || null,
+    checkout_email_policy: sessionServiceType === 'visa_assessment' ? 'strict_same_email' : 'portal_account_attached',
+    checkout_email_checked_at: new Date().toISOString()
   };
+
+  const nextClientEmail = sessionServiceType === 'visa_assessment'
+    ? (session.client_email || req.client.email)
+    : req.client.email;
 
   await query(
     `UPDATE service_sessions
      SET client_id=$1, client_email=$2, metadata=COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at=now()
      WHERE id=$4`,
-    [req.client.id, req.client.email, JSON.stringify(nextMetadata), session.id]
+    [req.client.id, nextClientEmail, JSON.stringify(nextMetadata), session.id]
   );
   session.client_id = req.client.id;
-  session.client_email = req.client.email;
+  session.client_email = nextClientEmail;
   session.metadata = nextMetadata;
   return session;
 }
@@ -1771,38 +1806,7 @@ async function ensureSchema() {
 
 
 
-// ---- TEMPORARY DATABASE CLEANUP ROUTE: hard-stop duplicate paid visa matters ----
-// Remove this route after it returns ok:true, or rotate/delete MIGRATION_ADMIN_KEY in Render.
-app.get('/api/admin/run-hard-stop-paid-visa-cleanup', asyncRoute(async (req, res) => {
-  const providedKey = String(req.query.key || '');
-  const expectedKey = String(process.env.MIGRATION_ADMIN_KEY || '');
-
-  if (!expectedKey || providedKey !== expectedKey) {
-    return res.status(403).json({
-      ok: false,
-      error: 'Migration key required.'
-    });
-  }
-
-  const migrationPath = path.join(__dirname, 'migrations', 'hard-stop-one-active-paid-visa-per-account.sql');
-
-  if (!fs.existsSync(migrationPath)) {
-    return res.status(404).json({
-      ok: false,
-      error: 'SQL file not found.',
-      path: migrationPath
-    });
-  }
-
-  const sql = fs.readFileSync(migrationPath, 'utf8');
-  await query(sql);
-
-  res.json({
-    ok: true,
-    message: 'Hard-stop paid visa duplicate cleanup completed.',
-    action: 'Now remove this temporary route from server.js or rotate MIGRATION_ADMIN_KEY.'
-  });
-}));
+// Temporary duplicate-cleanup admin route removed for production safety.
 
 
 app.get('/api/health', asyncRoute(async (_req, res) => {
@@ -1812,7 +1816,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.2-strict-same-subclass-idempotency',
+    version: '12.2.3-production-email-lock-admin-route-removed',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
