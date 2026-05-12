@@ -334,7 +334,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Auth-Token', 'X-Bircan-Dashboard'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Auth-Token', 'X-Bircan-Dashboard', 'X-Dashboard-Access-Token'],
   exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
   optionsSuccessStatus: 204
 };
@@ -1386,15 +1386,15 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.2-dashboard-email-pdf-route-patch',
+    version: '12.2.1-dashboard-index-performance-patch',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
     smtpConfigured: Boolean(process.env.SMTP_HOST),
-    documentEmailPdfRoute: true,
     appBaseUrl: APP_BASE_URL,
     corsPatch: 'real-pdf-pipeline-cookie-plus-bearer',
     pdfMode: 'state-machine-issued-pdf-only',
+    dashboardAccessPatch: DASHBOARD_ACCESS_PATCH,
     subclass190Engine: 'deterministic-legal-engine-v2-no-gpt-outcome',
     evidenceValidationLayer: true,
     pathwayComparator: true,
@@ -1786,6 +1786,9 @@ app.post('/api/auth/register', asyncRoute(async (req, res) => {
   res.json({
     ok: true,
     token,
+    accessToken: token,
+    authToken: token,
+    dashboardAccessToken: (typeof signDashboardAccessToken === 'function' ? signDashboardAccessToken(client) : token),
     client,
     pendingVisaAssessment: visaCheckoutHandoffPayload(pendingVisaAssessment),
     pendingServiceSession
@@ -1809,6 +1812,9 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   res.json({
     ok: true,
     token,
+    accessToken: token,
+    authToken: token,
+    dashboardAccessToken: (typeof signDashboardAccessToken === 'function' ? signDashboardAccessToken(client) : token),
     client: { id: client.id, email: client.email, name: client.name },
     pendingVisaAssessment: visaCheckoutHandoffPayload(pendingVisaAssessment),
     pendingServiceSession
@@ -5005,6 +5011,125 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
   return out;
 }
 
+// ---- Dashboard access hardening: cookie, bearer, signed dashboard token, Stripe-return fallback ----
+const DASHBOARD_ACCESS_PATCH = 'dashboard-cookie-bearer-signed-token-stripe-session-v1';
+const DASHBOARD_TOKEN_TTL_SECONDS = 60 * 60 * 8;
+
+function dashboardTokenSecret() {
+  return process.env.DASHBOARD_TOKEN_SECRET || SESSION_SECRET;
+}
+
+function signDashboardAccessToken(client) {
+  if (!client || !client.id || !client.email) return null;
+  return jwt.sign(
+    { sub: client.id, email: normaliseEmail(client.email), scope: 'dashboard' },
+    dashboardTokenSecret(),
+    { expiresIn: DASHBOARD_TOKEN_TTL_SECONDS }
+  );
+}
+
+async function clientFromJwtToken(token, secret = SESSION_SECRET) {
+  if (!token) return null;
+  try {
+    const decoded = jwt.verify(String(token).replace(/^Bearer\s+/i, ''), secret);
+    const email = normaliseEmail(decoded.email);
+    let rows;
+    if (decoded.sub) rows = (await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [decoded.sub])).rows;
+    if ((!rows || !rows[0]) && email) rows = (await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email])).rows;
+    return rows && rows[0] ? rows[0] : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function dashboardRequestToken(req) {
+  return String(
+    (req.cookies && req.cookies.bm_session) ||
+    (req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
+    req.headers['x-auth-token'] ||
+    req.headers['x-dashboard-access-token'] ||
+    req.query.dashboard_token ||
+    req.query.dashboardToken ||
+    req.query.access_token ||
+    ''
+  ).trim();
+}
+
+function dashboardSessionId(req) {
+  return String(
+    (req.body && (req.body.session_id || req.body.sessionId || req.body.checkoutSessionId)) ||
+    (req.query && (req.query.session_id || req.query.sessionId || req.query.checkoutSessionId)) ||
+    ''
+  ).trim();
+}
+
+async function clientFromStripeDashboardSession(sessionId) {
+  if (!stripe || !sessionId || !/^cs_(test|live)_/i.test(sessionId)) return null;
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const md = session.metadata || {};
+    const email = normaliseEmail(md.client_email || md.applicant_email || session.customer_email || session.customer_details?.email);
+    if (!email) return null;
+    const { rows } = await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
+    return rows[0] || null;
+  } catch (err) {
+    console.warn('Dashboard Stripe-session access fallback failed:', err.message);
+    return null;
+  }
+}
+
+async function resolveDashboardAccess(req, res, next) {
+  try {
+    let client = null;
+    const rawToken = dashboardRequestToken(req);
+
+    // 1) Normal portal session cookie / bearer token.
+    client = await clientFromJwtToken(rawToken, SESSION_SECRET);
+
+    // 2) Dedicated signed dashboard access token.
+    if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
+
+    // 3) Stripe return fallback: verified checkout session email -> client account.
+    // This solves cross-site cookie loss when returning from Stripe to bircanmigration.au.
+    if (!client) client = await clientFromStripeDashboardSession(dashboardSessionId(req));
+
+    if (!client) return res.status(401).json({
+      ok: false,
+      error: 'Login required.',
+      code: 'DASHBOARD_ACCESS_REQUIRED',
+      accessMethods: ['cookie', 'bearer', 'dashboard_token', 'stripe_session_id']
+    });
+
+    req.client = client;
+    req.dashboardAccessToken = signDashboardAccessToken(client);
+    next();
+  } catch (err) {
+    console.error('Dashboard access resolver failed:', err.message);
+    res.status(401).json({ ok: false, error: 'Login required.', code: 'DASHBOARD_ACCESS_FAILED' });
+  }
+}
+
+app.get('/api/account/dashboard-access-token', resolveDashboardAccess, asyncRoute(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    dashboardAccessToken: req.dashboardAccessToken,
+    token: req.dashboardAccessToken,
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || null }
+  });
+}));
+
+app.post('/api/account/dashboard-access-token', resolveDashboardAccess, asyncRoute(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    dashboardAccessToken: req.dashboardAccessToken,
+    token: req.dashboardAccessToken,
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || null }
+  });
+}));
+
+
 
 
 // ---- Ultra-fast account dashboard endpoint ----
@@ -5093,6 +5218,9 @@ async function handleDashboardFast(req, res) {
     fast: true,
     loadMs: Date.now() - startedAt,
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    dashboardAccessToken: req.dashboardAccessToken || signDashboardAccessToken(req.client),
+    accessToken: req.dashboardAccessToken || signDashboardAccessToken(req.client),
+    accessPatch: DASHBOARD_ACCESS_PATCH,
     visa: visaRows,
     visaAssessments: visaRows,
     assessments: visaRows,
@@ -5105,31 +5233,10 @@ async function handleDashboardFast(req, res) {
   });
 }
 
-app.get('/api/account/dashboard-fast', requireAuth, asyncRoute(handleDashboardFast));
-app.get('/api/account/dashboard-lite', requireAuth, asyncRoute(handleDashboardFast));
+app.get('/api/account/dashboard-fast', resolveDashboardAccess, asyncRoute(handleDashboardFast));
+app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handleDashboardFast));
 
-// Permanent non-blocking dashboard bootstrap route.
-// This route never fails just because auth/cookies are missing. It lets the frontend open instantly
-// and hydrate records only when a valid cookie/bearer token is available.
-app.get('/api/account/dashboard-open', optionalAuth, asyncRoute(async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  if (!req.client) {
-    return res.json({
-      ok: true,
-      open: true,
-      unauthenticated: true,
-      client: null,
-      visa: [], visaAssessments: [], assessments: [],
-      appeals: [], appealsAssessments: [],
-      citizenship: [], citizenshipAccess: [],
-      payments: [],
-      counts: { visa: 0, appeals: 0, citizenship: 0, payments: 0 }
-    });
-  }
-  return handleDashboardFast(req, res);
-}));
-
-app.get('/api/account/dashboard', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
             CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
@@ -5653,142 +5760,6 @@ app.get('/api/documents/pdf-view', asyncRoute(async (req, res) => {
     return sendAppealAssessmentPdf({ client: { email: payload.email } }, res, payload.id);
   }
   return res.status(400).json({ ok: false, error: 'Unsupported document type.' });
-}));
-
-
-
-// ---- Dashboard Documents Centre email + review routes (2026-05-12) ----
-// Frontend route used by account-dashboard.html. Must be mounted before the 404 handler.
-function buildSmtpTransporter() {
-  if (!process.env.SMTP_HOST) return null;
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
-    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined
-  });
-}
-
-function smtpFromAddress() {
-  return process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@bircanmigration.au';
-}
-
-async function resolveReadyDashboardDocument({ type, id, accountEmail }) {
-  const cleanType = normaliseServiceType(type);
-  const cleanId = String(id || '').trim();
-  const cleanEmail = normaliseEmail(accountEmail);
-  if (!cleanId) throw Object.assign(new Error('Document reference is missing.'), { statusCode: 400 });
-
-  if (cleanType === 'visa_assessment') {
-    let assessment = await resolveAssessmentForAccount(cleanId, cleanEmail);
-    if (!assessment) throw Object.assign(new Error('Assessment was not found for this account.'), { statusCode: 404 });
-    const plan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
-    if (!isInstantPlan(plan) && assessment.release_at && new Date(assessment.release_at).getTime() > Date.now()) {
-      throw Object.assign(new Error('PDF is still locked under the selected release plan.'), { statusCode: 423 });
-    }
-    if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid' && isInstantPlan(plan)) {
-      try {
-        await generateAssessmentPdfNow(assessment.id, cleanEmail);
-        assessment = await resolveAssessmentForAccount(assessment.id, cleanEmail) || assessment;
-      } catch (err) {
-        console.error('Instant PDF generation before email failed:', err.message);
-      }
-    }
-    if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
-      throw Object.assign(new Error('PDF not ready. The advice letter has not been issued yet.'), { statusCode: 409 });
-    }
-    return {
-      serviceType: 'visa_assessment',
-      id: assessment.id,
-      title: `Subclass ${assessment.visa_type || 'Visa'} advice letter`,
-      to: assessment.client_email || cleanEmail,
-      subject: `Your Subclass ${assessment.visa_type || 'Visa'} advice letter is ready`,
-      text: `Your Bircan Migration advice letter for reference ${assessment.id} is attached.`,
-      filename: assessment.pdf_filename || `Bircan-${assessment.visa_type || 'Visa'}-${assessment.id}.pdf`,
-      pdfBytes: assessment.pdf_bytes
-    };
-  }
-
-  if (cleanType === 'appeals_assessment') {
-    const rows = (await query(
-      `SELECT * FROM appeals_assessments WHERE id=$1 AND lower(client_email)=lower($2) LIMIT 1`,
-      [cleanId, cleanEmail]
-    )).rows;
-    const appeal = rows[0];
-    if (!appeal) throw Object.assign(new Error('Appeals assessment was not found for this account.'), { statusCode: 404 });
-    const plan = safePlan(appeal.active_plan || appeal.selected_plan || 'instant');
-    if (!isInstantPlan(plan) && appeal.release_at && new Date(appeal.release_at).getTime() > Date.now()) {
-      throw Object.assign(new Error('Appeals PDF is still locked under the selected release plan.'), { statusCode: 423 });
-    }
-    if (!hasIssuedPdfBytes(appeal.pdf_bytes)) {
-      throw Object.assign(new Error('Appeals advice PDF is not ready yet.'), { statusCode: 409 });
-    }
-    return {
-      serviceType: 'appeals_assessment',
-      id: appeal.id,
-      title: `Appeals advice letter${appeal.visa_subclass ? ' - subclass ' + appeal.visa_subclass : ''}`,
-      to: appeal.client_email || cleanEmail,
-      subject: `Your Bircan Migration appeals advice letter is ready`,
-      text: `Your Bircan Migration appeals advice letter for reference ${appeal.id} is attached.`,
-      filename: appeal.pdf_filename || `Bircan-Appeals-${appeal.id}.pdf`,
-      pdfBytes: appeal.pdf_bytes
-    };
-  }
-
-  throw Object.assign(new Error('Unsupported document type.'), { statusCode: 400 });
-}
-
-async function sendDashboardPdfEmail(req, res) {
-  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type || 'visa_assessment');
-  const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.submissionId || req.body.reference);
-  const document = await resolveReadyDashboardDocument({ type: requestedType, id: requestedId, accountEmail: req.client.email });
-  const transporter = buildSmtpTransporter();
-  if (!transporter) return res.status(500).json({ ok: false, error: 'SMTP is not configured.' });
-
-  await transporter.sendMail({
-    from: smtpFromAddress(),
-    to: document.to,
-    subject: document.subject,
-    text: document.text,
-    attachments: [{ filename: document.filename, content: document.pdfBytes, contentType: 'application/pdf' }]
-  });
-
-  try {
-    await query(
-      `INSERT INTO document_events (service_type, service_ref, client_email, event_type, metadata)
-       VALUES ($1,$2,$3,'email_pdf',$4::jsonb)`,
-      [document.serviceType, document.id, req.client.email, JSON.stringify({ emailedTo: document.to, filename: document.filename, at: new Date().toISOString() })]
-    );
-  } catch (err) {
-    // Do not fail delivery just because the optional audit table is absent.
-    console.warn('document_events audit skipped:', err.message);
-  }
-
-  res.json({ ok: true, message: 'PDF emailed successfully.', emailedTo: document.to, id: document.id, type: document.serviceType });
-}
-
-app.post('/api/documents/email-pdf', requireAuth, asyncRoute(sendDashboardPdfEmail));
-
-// Backwards-compatible aliases used by older dashboards.
-app.post('/api/assessment/email-pdf', requireAuth, asyncRoute(async (req, res) => {
-  req.body = { ...(req.body || {}), type: 'visa_assessment', id: (req.body && (req.body.assessmentId || req.body.assessment_id || req.body.submissionId || req.body.id)) };
-  return sendDashboardPdfEmail(req, res);
-}));
-
-app.post('/api/documents/request-review', requireAuth, asyncRoute(async (req, res) => {
-  const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type || 'visa_assessment');
-  const requestedId = String(req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference) || '').trim();
-  if (!requestedId) return res.status(400).json({ ok: false, error: 'Matter reference is missing.' });
-  try {
-    await query(
-      `INSERT INTO document_events (service_type, service_ref, client_email, event_type, metadata)
-       VALUES ($1,$2,$3,'manual_review_requested',$4::jsonb)`,
-      [normaliseServiceType(requestedType), requestedId, req.client.email, JSON.stringify({ requestedAt: new Date().toISOString() })]
-    );
-  } catch (err) {
-    console.warn('manual review audit skipped:', err.message);
-  }
-  res.json({ ok: true, message: 'Document review request submitted.', id: requestedId, type: normaliseServiceType(requestedType) });
 }));
 
 app.get('/api/assessment/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
