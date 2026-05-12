@@ -392,7 +392,7 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
   }
 
   if (event.type === 'checkout.session.completed') {
-    const result = await attachPaidSessionIdempotent(event.data.object, { triggerGeneration: true, waitForPdf: false });
+    const result = await attachPaidSession(event.data.object, { triggerGeneration: true, waitForPdf: false });
     console.log('Stripe checkout attached:', result);
   }
   res.json({ received: true });
@@ -1421,6 +1421,16 @@ async function runPostgresIdempotencyRepair() {
 
 async function installPostgresIdempotencyConstraints() {
   await runPostgresIdempotencyRepair();
+
+  // Payment finalisation schema repair, May 2026:
+  // The old active-paid uniqueness rule blocked legitimate repeat purchases for
+  // the same client/subclass/plan and caused paid Stripe returns to fail with:
+  // duplicate key value violates unique constraint
+  // "idx_one_active_paid_visa_per_account_subclass_plan".
+  // Correct idempotency is enforced by Stripe session/payment identifiers, not by
+  // preventing a client from buying the same subclass/plan again.
+  await query(`DROP INDEX IF EXISTS idx_one_active_paid_visa_per_account_subclass_plan`);
+
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_idempotency_unique
     ON assessments (lower(client_email), visa_type, selected_plan, submission_fingerprint)
@@ -1431,6 +1441,16 @@ async function installPostgresIdempotencyConstraints() {
     ON service_sessions (service_type, service_ref)
     WHERE service_ref IS NOT NULL
   `);
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_stripe_session_id_unique
+    ON assessments (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL
+  `).catch(err => console.warn('assessments stripe_session_id unique index skipped:', err.message));
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_stripe_session_id_unique
+    ON service_sessions (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL
+  `).catch(err => console.warn('service_sessions stripe_session_id unique index skipped:', err.message));
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_session_id_unique
     ON payments (stripe_session_id)
@@ -1816,7 +1836,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.3-production-email-lock-admin-route-removed',
+    version: '12.2.4-payment-finalisation-index-repair',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2022,7 +2042,7 @@ async function restoreClientFromStripeSession(req, res, options = {}) {
   session = await normalisePaidStripeSessionForAttachment(session);
   let result = { attached: false, type: (session.metadata || {}).service_type || null };
   const paid = session.payment_status === 'paid' || session.status === 'complete';
-  if (paid) result = await attachPaidSessionIdempotent(session, { triggerGeneration: true, waitForPdf: false });
+  if (paid) result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email || (session.customer_details && session.customer_details.email));
   let client = null;
   if (email) {
@@ -2045,7 +2065,7 @@ async function restoreClientFromStripeSession(req, res, options = {}) {
     token,
     accessToken: token,
     dashboardAccessToken: client ? signDashboardAccessToken(client) : null,
-    redirectUrl: paid ? (options.redirectUrl || `${APP_BASE_URL}/account-dashboard.html?session_id=${encodeURIComponent(sessionId)}`) : null
+    redirectUrl: options.redirectUrl || `${APP_BASE_URL}/account-dashboard.html?session_id=${encodeURIComponent(sessionId)}`
   });
 }
 
@@ -2729,11 +2749,13 @@ async function handlePublicVisaAssessmentStart(req, res) {
            )
            AND a.visa_type=$2
            AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
-          AND COALESCE(a.payment_status,'unpaid') <> 'paid'
-          AND a.created_at > now() - interval '48 hours'
-          -- Public handoff idempotency only reuses unpaid/open checkout matters.
-          -- A paid assessment must never be reused for a new submit because that skips Stripe.
-         ORDER BY CASE WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
+           AND a.created_at > now() - interval '48 hours'
+           -- Strict public handoff idempotency:
+           -- same email + same subclass + same plan must reuse the most recent matter
+           -- in this window, even if autofill/timestamps/random fields change the answer
+           -- fingerprint. This stops creating multiple paid assessment records from one
+           -- user journey.
+         ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
                   a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
          LIMIT 1`,
         [email, visaType, plan]
@@ -3064,7 +3086,7 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
       customer_email: req.client.email,
       client_reference_id: assessment.id,
       line_items: [{ price, quantity: 1 }],
-      success_url: `${APP_BASE_URL}/payment-complete.html?service=visa_assessment&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&assessment_id=${encodeURIComponent(assessment.id)}`,
       metadata: {
         service_type: 'visa_assessment',
@@ -3113,7 +3135,7 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
       customer_email: req.client.email,
       client_reference_id: assessmentId,
       line_items: [{ price, quantity: 1 }],
-      success_url: `${APP_BASE_URL}/payment-complete.html?service=appeals_assessment&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_BASE_URL}/appeals-assessment.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&appeal_assessment_id=${encodeURIComponent(assessmentId)}`,
       metadata: { service_type: 'appeals_assessment', service_session_id: serviceSession.id, service_ref: assessmentId, assessment_id: assessmentId, appeal_assessment_id: assessmentId, visa_type: assessment.visa_subclass || 'appeals', plan, client_email: req.client.email }
     }, 'service-appeals-checkout', checkoutFingerprint({ serviceType: 'appeals_assessment', serviceRef: assessmentId, plan, price, email: req.client.email }));
@@ -3156,7 +3178,7 @@ app.post('/api/service/checkout-session', requireAuth, asyncRoute(async (req, re
       customer_email: req.client.email,
       client_reference_id: accessId,
       line_items: [{ price, quantity: 1 }],
-      success_url: `${APP_BASE_URL}/payment-complete.html?service=citizenship_test&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_BASE_URL}/citizenship.html?cancelled=1&service_session_id=${encodeURIComponent(serviceSession.id)}&plan=${encodeURIComponent(plan)}`,
       metadata: { service_type: 'citizenship_test', service_session_id: serviceSession.id, service_ref: accessId, citizenship_access_id: accessId, plan, client_email: req.client.email }
     }, 'service-citizenship-checkout', checkoutFingerprint({ serviceType: 'citizenship_test', serviceRef: accessId, plan, price, email: req.client.email }));
@@ -3237,7 +3259,7 @@ app.post('/api/appeals/create-checkout-session', requireAuth, asyncRoute(async (
     customer_email: req.client.email,
     client_reference_id: assessmentId,
     line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?service=appeals_assessment&session_id={CHECKOUT_SESSION_ID}`,
+    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${APP_BASE_URL}/appeals-assessment.html?cancelled=1&appeal_assessment_id=${encodeURIComponent(assessmentId)}`,
     metadata: {
       service_type: 'appeals_assessment',
@@ -3782,23 +3804,55 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
   }
 
   if (assessment.payment_status === 'paid') {
-    return res.status(409).json({
-      ok: false,
-      code: 'ASSESSMENT_ALREADY_PAID',
+    return res.json({
+      ok: true,
       alreadyPaid: true,
       assessmentId: assessment.id,
       assessment_id: assessment.id,
       plan: assessment.active_plan || assessment.selected_plan,
-      error: 'This assessment is already paid. Dashboard redirect is intentionally blocked from checkout creation. Start a fresh assessment if a new Stripe payment is required.'
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
+      url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
     });
   }
 
   const checkoutPlan = requestedVisaPlan(req, assessment.active_plan || assessment.selected_plan || 'instant');
 
-  // Do not redirect to dashboard from checkout creation because the client has not
-  // passed through Stripe for this new handoff. Older duplicate-paid guards are deliberately
-  // disabled here: a new saved assessment must either receive a fresh Stripe Checkout URL
-  // or fail with an explicit error, never return an account-dashboard URL.
+  // Same-client/subclass/plan paid-matter guard. If another recent assessment for
+  // this client/email/subclass/plan is already paid, redirect to that paid matter
+  // instead of issuing a fresh Stripe session. This protects the older direct
+  // checkout route as well as the service-session route.
+  const recentPaidRows = await query(
+    `SELECT id, selected_plan, active_plan, stripe_session_id
+     FROM assessments
+     WHERE visa_type=$2
+       AND COALESCE(active_plan, selected_plan, 'instant')=$3
+       AND payment_status='paid'
+       AND created_at > now() - interval '48 hours'
+       AND (client_id=$4 OR lower(client_email)=lower($1) OR lower(applicant_email)=lower($1))
+     ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+     LIMIT 1`,
+    [req.client.email, assessment.visa_type, checkoutPlan, req.client.id]
+  );
+  const recentPaid = recentPaidRows.rows[0];
+  if (recentPaid && recentPaid.id !== assessment.id) {
+    await query(
+      `UPDATE service_sessions
+       SET status='superseded_duplicate_checkout', payment_status='superseded', updated_at=now(),
+           metadata=COALESCE(metadata,'{}'::jsonb) || $1::jsonb
+       WHERE service_type='visa_assessment' AND service_ref=$2`,
+      [JSON.stringify({ superseded_by_assessment_id: recentPaid.id, reason: 'recent paid same client subclass plan' }), assessment.id]
+    ).catch(() => null);
+    return res.json({
+      ok: true,
+      alreadyPaid: true,
+      reusedPaidAssessment: true,
+      assessmentId: recentPaid.id,
+      assessment_id: recentPaid.id,
+      plan: recentPaid.active_plan || recentPaid.selected_plan || checkoutPlan,
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`,
+      url: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`
+    });
+  }
   const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
   if (!price) return res.status(500).json({ ok: false, error: `Missing Stripe price for visa plan ${checkoutPlan}.` });
   try { await assertStripePriceMatchesPlan({ serviceType: 'visa_assessment', plan: checkoutPlan, priceId: price }); }
@@ -3831,7 +3885,7 @@ app.post('/api/assessment/create-checkout-session', requireAuth, asyncRoute(asyn
     customer_email: req.client.email,
     client_reference_id: assessment.id,
     line_items: [{ price, quantity: 1 }],
-    success_url: `${APP_BASE_URL}/payment-complete.html?service=visa_assessment&session_id={CHECKOUT_SESSION_ID}`,
+    success_url: `${APP_BASE_URL}/payment-complete.html?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${APP_BASE_URL}/checkout-start.html?cancelled=1&assessment_id=${encodeURIComponent(assessment.id)}`,
     metadata: {
       service_type: 'visa_assessment',
@@ -4268,110 +4322,13 @@ async function attachPaidSession(session, options = {}) {
   return { attached: true, type: 'visa_assessment', assessmentId, plan: paidPlanForGeneration, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
 }
 
-
-function isDuplicateDatabaseError(err) {
-  const text = String((err && (err.code || err.message || err.detail)) || err || '');
-  return /23505|duplicate key|Duplicate record/i.test(text);
-}
-
-async function recoverPaidStripeAttachment(session, options = {}, cause = null) {
-  session = await normalisePaidStripeSessionForAttachment(session);
-  const md = session.metadata || {};
-  const serviceType = normaliseServiceType(md.service_type || '');
-  const paid = session.payment_status === 'paid' || session.status === 'complete';
-  if (!paid) throw cause || new Error(`Stripe session is not paid yet. Current status: ${session.payment_status || session.status || 'unknown'}`);
-
-  if (serviceType === 'visa_assessment') {
-    const assessmentId = md.assessment_id || md.service_ref || session.client_reference_id;
-    const email = normaliseEmail(md.client_email || session.customer_email || (session.customer_details && session.customer_details.email));
-    if (!assessmentId) throw cause || new Error('Stripe session is missing assessment_id metadata.');
-    const paidPlan = safePlan(md.plan || 'instant');
-    const nextAssessmentStatus = isInstantPlan(paidPlan) ? 'pdf_queued' : 'release_scheduled';
-
-    const clientRows = email ? (await query('SELECT id, email FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email])).rows : [];
-    const account = clientRows[0] || null;
-    const updateRows = (await query(
-      `UPDATE assessments
-       SET client_id=COALESCE($1, client_id),
-           client_email=COALESCE($2, client_email),
-           applicant_email=COALESCE(applicant_email, client_email, $2),
-           status=CASE WHEN pdf_bytes IS NOT NULL THEN 'pdf_ready' ELSE $3 END,
-           payment_status='paid',
-           stripe_session_id=$4,
-           stripe_payment_intent=$5,
-           amount_cents=COALESCE($6, amount_cents),
-           currency=COALESCE($7, currency, 'aud'),
-           selected_plan=$8,
-           active_plan=$8,
-           release_at=${releaseIntervalSqlForPlan(paidPlan)},
-           generation_error=NULL,
-           updated_at=now()
-       WHERE id=$9
-       RETURNING id, pdf_bytes`,
-      [account && account.id ? account.id : null, email || null, nextAssessmentStatus, session.id, session.payment_intent || null, session.amount_total || null, session.currency || 'aud', paidPlan, assessmentId]
-    )).rows;
-    const assessment = updateRows[0];
-    if (!assessment) throw cause || new Error(`Assessment not found for Stripe session ${session.id}`);
-
-    await query(
-      `UPDATE service_sessions
-       SET client_id=COALESCE($1, client_id),
-           client_email=COALESCE($2, client_email),
-           selected_plan=COALESCE($3, selected_plan),
-           status='paid',
-           payment_status='paid',
-           stripe_session_id=$4,
-           metadata=COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
-           updated_at=now()
-       WHERE id=$6 OR (service_type='visa_assessment' AND service_ref=$7)`,
-      [account && account.id ? account.id : null, email || null, paidPlan, session.id, JSON.stringify({ stripe_session_id: session.id, paid_recovery: true, paid_recovery_at: new Date().toISOString() }), md.service_session_id || null, assessmentId]
-    ).catch(err => console.warn('Service session paid recovery skipped:', err.message));
-
-    await query(
-      `INSERT INTO pdf_jobs (assessment_id, status, run_after)
-       VALUES ($1,$2,(SELECT COALESCE(release_at, now()) FROM assessments WHERE id=$1))
-       ON CONFLICT (assessment_id) DO UPDATE SET status=EXCLUDED.status, run_after=EXCLUDED.run_after, locked_at=NULL, last_error=NULL, updated_at=now()`,
-      [assessmentId, assessment.pdf_bytes ? 'completed' : 'queued']
-    ).catch(err => console.warn('PDF job paid recovery skipped:', err.message));
-
-    if (options.triggerGeneration && isInstantPlan(paidPlan) && !assessment.pdf_bytes) {
-      setImmediate(() => generateAssessmentPdfNow(assessmentId).catch(err => console.error('Immediate PDF generation failed after recovery:', err.message)));
-    }
-    return { attached: true, recovered: true, type: 'visa_assessment', assessmentId, plan: paidPlan, pdfReady: Boolean(assessment.pdf_bytes), paymentAudit: { ok: false, skipped: true, recoveredFromDuplicate: true } };
-  }
-
-  // For non-visa services, return a safe paid result only if the paid row already exists.
-  if (serviceType === 'appeals_assessment') {
-    const assessmentId = md.appeal_assessment_id || md.assessment_id || md.service_ref || session.client_reference_id;
-    const row = assessmentId ? (await query('SELECT id, payment_status, selected_plan, active_plan FROM appeals_assessments WHERE id=$1 LIMIT 1', [assessmentId])).rows[0] : null;
-    if (row && /paid/i.test(String(row.payment_status || ''))) return { attached: true, recovered: true, type: 'appeals_assessment', assessmentId, plan: safePlan(row.active_plan || row.selected_plan || md.plan || 'instant'), pdfReady: false };
-  }
-  if (serviceType === 'citizenship_test') {
-    const accessId = md.citizenship_access_id || md.service_ref || session.client_reference_id;
-    const row = accessId ? (await query('SELECT id, payment_status, selected_plan, active_plan FROM citizenship_access WHERE id=$1 LIMIT 1', [accessId])).rows[0] : null;
-    if (row && /paid|active/i.test(String(row.payment_status || ''))) return { attached: true, recovered: true, type: 'citizenship_test', assessmentId: row.id, accessId: row.id, plan: normaliseCitizenshipPlan(row.active_plan || row.selected_plan || md.plan || '20'), pdfReady: false };
-  }
-
-  throw cause || new Error('Paid Stripe session could not be attached idempotently.');
-}
-
-async function attachPaidSessionIdempotent(session, options = {}) {
-  try {
-    return await attachPaidSession(session, options);
-  } catch (err) {
-    if (!isDuplicateDatabaseError(err)) throw err;
-    console.warn('Duplicate during Stripe payment finalisation; recovering idempotently:', err.message);
-    return await recoverPaidStripeAttachment(session, options, err);
-  }
-}
-
 app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
   const sessionId = req.body.sessionId || req.body.session_id || req.query.session_id;
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSessionIdempotent(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4403,7 +4360,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSessionIdempotent(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4906,7 +4863,7 @@ async function finaliseStripePayment(req, res) {
 
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSessionIdempotent(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
   // This restores the client session from the paid Stripe session email, so the dashboard opens cleanly.
