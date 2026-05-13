@@ -109,6 +109,18 @@ const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !=
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
+const PDF_OPEN_ON_DEMAND_PATCH = 'paid-released-assessment-open-generates-pdf-v1';
+
+function requestBaseUrl(req) {
+  const proto = (req && (req.headers['x-forwarded-proto'] || req.protocol)) || 'https';
+  const host = req && req.get && req.get('host');
+  return host ? `${proto}://${host}` : (process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL || '');
+}
+
+function buildFinalPdfUrl(id, token = '') {
+  const base = `/api/assessment/${encodeURIComponent(id)}/final-pdf`;
+  return token ? `${base}?dashboard_token=${encodeURIComponent(token)}` : base;
+}
 
 // ---- Payment checkout reuse hardening ----
 // v2026-05-13: Public assessment start must never reuse a paid assessment for a new checkout.
@@ -1089,8 +1101,11 @@ function buildUnifiedServiceCard(row) {
   const secondsRemaining = Math.max(0, Number(row.release_seconds_remaining || 0));
   const locked = paid && secondsRemaining > 0;
   const hasPdf = row.has_pdf === true;
-  const ready = paid && !locked && (hasPdf || serviceType === 'citizenship_test');
-  const finalPdfUrl = serviceType === 'visa_assessment' && hasPdf && !locked ? `/api/assessment/${encodeURIComponent(row.id)}/final-pdf` : serviceType === 'appeals_assessment' && hasPdf && !locked ? `/api/appeals/${encodeURIComponent(row.id)}/final-pdf` : null;
+  // For paid/released visa matters, the Open PDF action must be available even if
+  // pdf_bytes have not been written yet. The final-pdf route generates the PDF on demand.
+  const canOpenVisaPdf = serviceType === 'visa_assessment' && paid && !locked;
+  const ready = paid && !locked && (hasPdf || canOpenVisaPdf || serviceType === 'citizenship_test');
+  const finalPdfUrl = canOpenVisaPdf ? buildFinalPdfUrl(row.id) : serviceType === 'appeals_assessment' && hasPdf && !locked ? `/api/appeals/${encodeURIComponent(row.id)}/final-pdf` : null;
   let actionLabel = 'Complete payment';
   if (serviceType === 'citizenship_test' && paid) actionLabel = 'Open paid exam';
   else if (locked) actionLabel = `${normalisePlanLabel(plan)} release pending`;
@@ -6396,7 +6411,26 @@ async function handleDashboardFast(req, res) {
   const clientId = req.client.id;
   const sessionId = dashboardSessionId(req);
   const rawFast = await queryDashboardFastRows(email, clientId, sessionId);
-  const visaRows = dedupeDashboardRows(rawFast.visaRows, ['duplicate_key', 'id']);
+  const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
+  const visaRows = dedupeDashboardRows(rawFast.visaRows, ['duplicate_key', 'id']).map(row => {
+    const plan = safePlan(row.active_plan || row.selected_plan || 'instant');
+    const paid = row.payment_status === 'paid';
+    const secondsRemaining = Math.max(0, Number(row.release_seconds_remaining || 0));
+    const locked = paid && secondsRemaining > 0;
+    const canOpenPdf = paid && !locked;
+    return {
+      ...row,
+      release_ready: canOpenPdf,
+      ready: canOpenPdf,
+      locked,
+      has_pdf: Boolean(row.has_pdf || canOpenPdf),
+      status: canOpenPdf ? 'pdf_ready' : row.status,
+      actionLabel: canOpenPdf ? 'Open PDF' : (paid ? `${normalisePlanLabel(plan)} release pending` : 'Complete payment'),
+      finalPdfUrl: canOpenPdf ? buildFinalPdfUrl(row.id, dashboardToken) : null,
+      pdfUrl: canOpenPdf ? buildFinalPdfUrl(row.id, dashboardToken) : null,
+      downloadUrl: canOpenPdf ? buildFinalPdfUrl(row.id, dashboardToken) : null
+    };
+  });
   const citizenshipRows = rawFast.citizenshipRows;
   res.setHeader('Cache-Control', 'no-store');
   res.json({
@@ -6404,8 +6438,8 @@ async function handleDashboardFast(req, res) {
     fast: true,
     loadMs: Date.now() - startedAt,
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
-    dashboardAccessToken: req.dashboardAccessToken || signDashboardAccessToken(req.client),
-    accessToken: req.dashboardAccessToken || signDashboardAccessToken(req.client),
+    dashboardAccessToken: dashboardToken,
+    accessToken: dashboardToken,
     accessPatch: DASHBOARD_ACCESS_PATCH,
     visa: visaRows,
     visaAssessments: visaRows,
@@ -6790,7 +6824,7 @@ app.get('/api/assessment/:id/payload-status', requireAuth, asyncRoute(async (req
   res.json({ ok: true, assessmentId: a.id, visaType: a.visa_type, status: a.status, paymentStatus: a.payment_status, hasPdf: a.has_pdf, payloadUsable: payloadLooksUsable(payload), answerCount: payloadAnswerCount(payload), payloadKeys: Object.keys((payload.answers || payload.formPayload || payload)).slice(0, 80), generationError: a.generation_error });
 }));
 
-app.get('/api/assessment/:id/status', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, visa_type, selected_plan, active_plan, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status, payment_status, pdf_generated_at, pdf_filename, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
      FROM assessments WHERE id=$1 AND lower(client_email)=lower($2)`,
@@ -6798,14 +6832,21 @@ app.get('/api/assessment/:id/status', requireAuth, asyncRoute(async (req, res) =
   );
   if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
   const assessment = rows[0];
-  const pdfAvailable = assessment.has_pdf === true;
+  const plan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
+  const paid = assessment.payment_status === 'paid';
+  const releaseAt = assessment.release_at ? new Date(assessment.release_at).getTime() : 0;
+  const locked = !isInstantPlan(plan) && releaseAt && releaseAt > Date.now();
+  const pdfAvailable = assessment.has_pdf === true || (paid && !locked);
+  const token = req.dashboardAccessToken || signDashboardAccessToken(req.client);
   res.json({
     ok: true,
     assessment: {
       ...assessment,
+      status: pdfAvailable ? 'pdf_ready' : assessment.status,
+      has_pdf: pdfAvailable,
       pdf_available: pdfAvailable,
-      finalPdfUrl: pdfAvailable ? `/api/assessment/${encodeURIComponent(assessment.id)}/final-pdf` : null,
-      pdfUrl: pdfAvailable ? `/api/assessment/${encodeURIComponent(assessment.id)}/final-pdf` : null
+      finalPdfUrl: pdfAvailable ? buildFinalPdfUrl(assessment.id, token) : null,
+      pdfUrl: pdfAvailable ? buildFinalPdfUrl(assessment.id, token) : null
     }
   });
 }));
@@ -6841,12 +6882,13 @@ async function sendAssessmentPdf(req, res, rawId) {
       timerText: formatDurationSeconds(seconds)
     });
   }
-  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid' && isInstantPlan(effectiveVisaPlan)) {
+  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid') {
     try {
-      await generateAssessmentPdfNow(assessment.id);
+      await generateAssessmentPdfNow(assessment.id, req.client.email);
       assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
     } catch (err) {
-      console.error('Instant visa PDF generation on open failed:', err.message);
+      console.error('Visa PDF generation on open failed:', err.message);
+      assessment.generation_error = err.message;
     }
   }
   if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
@@ -6867,11 +6909,11 @@ async function sendAssessmentPdf(req, res, rawId) {
   res.send(assessment.pdf_bytes);
 }
 
-app.get('/api/assessment/:id/final-pdf', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/assessment/:id/final-pdf', resolveDashboardAccess, asyncRoute(async (req, res) => {
   await sendAssessmentPdf(req, res, req.params.id);
 }));
 
-app.get('/api/assessments/:id/final-pdf', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/assessments/:id/final-pdf', resolveDashboardAccess, asyncRoute(async (req, res) => {
   await sendAssessmentPdf(req, res, req.params.id);
 }));
 
@@ -6988,14 +7030,16 @@ app.get('/api/documents/pdf-view', asyncRoute(async (req, res) => {
   return res.status(400).json({ ok: false, error: 'Unsupported document type.' });
 }));
 
-app.get('/api/assessment/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/assessment/:id/pdf', resolveDashboardAccess, asyncRoute(async (req, res) => {
   // Legacy compatibility only. Do not generate/serve a separate template PDF here.
-  res.redirect(307, `/api/assessment/${encodeURIComponent(req.params.id)}/final-pdf`);
+  const token = req.dashboardAccessToken || signDashboardAccessToken(req.client);
+  res.redirect(307, buildFinalPdfUrl(req.params.id, token));
 }));
 
-app.get('/api/assessments/:id/pdf', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/assessments/:id/pdf', resolveDashboardAccess, asyncRoute(async (req, res) => {
   // Legacy compatibility only. Do not generate/serve a separate template PDF here.
-  res.redirect(307, `/api/assessments/${encodeURIComponent(req.params.id)}/final-pdf`);
+  const token = req.dashboardAccessToken || signDashboardAccessToken(req.client);
+  res.redirect(307, buildFinalPdfUrl(req.params.id, token));
 }));
 
 app.post('/api/assessment/:id/email-pdf', requireAuth, asyncRoute(async (req, res) => {
