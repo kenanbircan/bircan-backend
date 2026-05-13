@@ -129,7 +129,7 @@ const BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH = 'public-start-never-reuse-paid-asses
 
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
-const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
+const VERIFY_PAYMENT_WAIT_FOR_PDF = false; // hard production lock: payment return must never wait for PDF generation
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -1919,7 +1919,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.3-production-email-lock-admin-route-removed',
+    version: '12.2.4-payment-finalise-no-wait-audit-background',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -4409,7 +4409,10 @@ async function attachPaidSession(session, options = {}) {
     }
   });
 
-  const paymentAudit = await recordPaymentAuditSafe(assessmentId, email, session);
+  // Payment audit is non-essential for the payment-return response.
+  // Run it in the background so /api/payments/finalise cannot hang on a ledger/schema/index issue.
+  const paymentAudit = { queued: true };
+  setImmediate(() => recordPaymentAuditSafe(assessmentId, email, session).catch(err => console.error('Background payment audit failed:', err.message)));
 
   let pdfResult = null;
   const paidPlanForGeneration = safePlan((session.metadata || {}).plan || 'instant');
@@ -4429,7 +4432,7 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4461,7 +4464,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4964,7 +4967,7 @@ async function finaliseStripePayment(req, res) {
 
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
   // This restores the client session from the paid Stripe session email, so the dashboard opens cleanly.
@@ -5669,18 +5672,6 @@ function visaGroupForSubclass10Grade(subclass) {
   return 'Subclass-specific migration pathway';
 }
 
-function evidenceFocusForVisaGroup10Grade(group) {
-  if (/Employer-sponsored/.test(group)) return 'sponsor, nomination, occupation, duties, salary, employer records, visa history and public interest evidence relevant to this subclass';
-  if (/Skilled migration/.test(group)) return 'skills assessment, EOI, invitation or nomination, points claims, English, employment, qualification and public interest evidence relevant to this subclass';
-  if (/Partner and family relationship/.test(group)) return 'relationship, sponsor eligibility, family composition, location, Schedule 3 where relevant, health and character evidence relevant to this subclass';
-  if (/Child, parent/.test(group)) return 'family relationship, sponsor eligibility, dependency, balance-of-family, carer/remaining-relative and public interest evidence relevant to this subclass';
-  if (/Business and investment/.test(group)) return 'nomination, business ownership, turnover, assets, investment, source-of-funds, residence and compliance evidence relevant to this subclass';
-  if (/Student, guardian and graduate/.test(group)) return 'course, CoE, genuine student/temporary stay, financial capacity, qualification, AFP, insurance, timing and public interest evidence relevant to this subclass';
-  if (/Visitor, medical/.test(group)) return 'visit purpose, funds, home ties, medical treatment, working-holiday eligibility, temporary stay and public interest evidence relevant to this subclass';
-  if (/Protection/.test(group)) return 'identity, nationality, protection claims, credibility, country information, state protection, relocation, exclusion and character/security evidence relevant to this subclass';
-  return 'client facts, uploaded evidence, visa history and public interest evidence relevant to this subclass';
-}
-
 function clientNextStepsForVisaGroup10Grade(group) {
   const base = [
     'Provide identity, passport, current location and current visa-status documents.',
@@ -5929,75 +5920,13 @@ function buildCriterionFindingFromProfile(profile, context) {
 }
 
 
-// ---- Universal subclass/stream lock ----
-// This resolver is deliberately subclass-agnostic but subclass-safe. It prevents a
-// Labour Agreement matter being contaminated by generic Direct Entry/TRT wording,
-// and it prevents non-employer subclasses from inheriting employer streams from
-// pathway-comparison text. Only explicit stream/pathway fields are allowed to set
-// the stream. Generic text, criterion names, evidence labels and fallback advice
-// are never scanned for a stream.
-const BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH = 'universal-subclass-stream-lock-all-assessments-v1';
-
-const STREAM_KEY_RE = /(selectedstream|stream|visaStream|visastream|nominationstream|nominationpathway|pathway|selectedpathway|assessmentstream|subclassstream)$/i;
-
-function cleanStreamCandidateValue(value) {
-  const raw = String(value || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!raw || /^(yes|no|true|false|a|b|c|n\/?a|na|none|null|undefined)$/i.test(raw)) return '';
-  return raw;
-}
-
-function streamAllowedForSubclass(subclass, stream) {
-  const code = String(subclass || '').replace(/[^0-9]/g, '');
-  const s = String(stream || '').toLowerCase();
-  if (!stream || stream === 'To be confirmed') return true;
-  if (['186','187'].includes(code)) return /temporary residence transition|trt|direct entry|labou?r agreement/.test(s);
-  if (['482','494'].includes(code)) return /core skills|specialist skills|labou?r agreement|employer sponsored|subsequent entrant|sid|skills in demand/.test(s);
-  if (['189','190','489','491'].includes(code)) return /points|skilled|nominated|regional|family sponsored|state|territory/.test(s);
-  if (['100','300','309','801','820'].includes(code)) return /partner|spouse|de facto|prospective marriage|permanent|temporary/.test(s);
-  if (['101','103','115','116','173','836'].includes(code)) return /child|parent|carer|remaining relative|contributory|aged/.test(s);
-  if (['188','888'].includes(code)) return /business|innovation|investor|significant investor|entrepreneur|premium investor/.test(s);
-  if (['500','590','485'].includes(code)) return /student|guardian|graduate|post|work|replacement|higher education|vocational|school|elicos|research/.test(s);
-  if (['417','462'].includes(code)) return /first|second|third|working holiday|work and holiday/.test(s);
-  if (code === '600') return /tourist|visitor|sponsored family|business visitor|approved destination|frequent traveller/.test(s);
-  if (code === '602') return /medical/.test(s);
-  if (['785','790','866'].includes(code)) return /protection|safe haven|temporary protection|humanitarian/.test(s);
-  return true;
-}
-
-function normaliseAssessmentStream(value, subclass = '') {
-  const raw = cleanStreamCandidateValue(value);
-  const t = raw.toLowerCase();
-  let out = '';
-  if (/labou?r\s*agreement|agreement\s*stream/.test(t)) out = 'Labour Agreement';
-  else if (/temporary\s*residence\s*transition|\btrt\b/.test(t)) out = 'Temporary Residence Transition';
-  else if (/direct\s*entry|\bde\b/.test(t)) out = 'Direct Entry';
-  else if (/core\s*skills|skills\s*in\s*demand|\bsid\b/.test(t)) out = 'Core Skills / Skills in Demand';
-  else if (/specialist\s*skills/.test(t)) out = 'Specialist Skills';
-  else if (/subsequent\s*entrant/.test(t)) out = 'Subsequent Entrant';
-  else out = raw;
-  if (!out || !streamAllowedForSubclass(subclass, out)) return 'To be confirmed';
-  return out;
-}
-
-function findExplicitAssessmentStream(assessment, flat = {}) {
-  const direct = [
-    assessment && assessment.selected_stream,
-    assessment && assessment.stream,
-    assessment && assessment.nomination_stream,
-    assessment && assessment.selectedStream
-  ];
-  for (const value of direct) {
-    const cleaned = cleanStreamCandidateValue(value);
-    if (cleaned) return cleaned;
-  }
-  for (const [key, value] of Object.entries(flat || {})) {
-    const nk = String(key || '').replace(/[^a-z0-9]/gi, '');
-    if (STREAM_KEY_RE.test(nk)) {
-      const cleaned = cleanStreamCandidateValue(value);
-      if (cleaned) return cleaned;
-    }
-  }
-  return '';
+function normaliseAssessmentStream(value) {
+  const t = String(value || '').trim().toLowerCase();
+  if (/labou?r\s*agreement|agreement\s*stream/.test(t)) return 'Labour Agreement';
+  if (/temporary\s*residence\s*transition|\btrt\b/.test(t)) return 'Temporary Residence Transition';
+  if (/direct\s*entry|\bde\b/.test(t)) return 'Direct Entry';
+  if (!t || /^(yes|no|true|false|a|b|c)$/.test(t)) return 'To be confirmed';
+  return String(value || '').trim();
 }
 
 async function buildFastLegalAdviceBundle(assessment) {
@@ -6020,7 +5949,7 @@ async function buildFastLegalAdviceBundle(assessment) {
     return fallback;
   }
 
-  const stream = normaliseAssessmentStream(findExplicitAssessmentStream(assessment, flat) || assessment.selected_stream || 'To be confirmed', subclass);
+  const stream = normaliseAssessmentStream(pickValue(['selectedStream', 'selected stream', 'stream', 'nominationStream'], assessment.selected_stream || 'To be confirmed'));
   const employer = pickValue(['employerName', 'employer name', 'currentEmployer', 'current employer'], 'the sponsoring employer');
 
   const legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
@@ -6053,7 +5982,7 @@ async function buildFastLegalAdviceBundle(assessment) {
   const riskLevel = /refused|cancelled|criminal|false|misleading|unlawful|section 48|8503|not resolved|not available/.test(riskSignals) ? 'HIGH' : 'MEDIUM';
   const position = riskLevel === 'HIGH' ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'PROCEED_AFTER_EVIDENCE_REVIEW';
   const visaGroup = visaGroupForSubclass10Grade(subclass);
-  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by subclass-specific legal criteria and criterion-by-criterion evidence within the ${visaGroup} framework. The assessment must reconcile ${evidenceFocusForVisaGroup10Grade(visaGroup)}.`;
+  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by subclass-specific legal criteria and criterion-by-criterion evidence within the ${visaGroup} framework. The assessment must reconcile the client facts, uploaded material, visa history and any sponsor, relationship, nomination, invitation, course, business, visitor or protection evidence relevant to this subclass.`;
   const sourceHash = crypto.createHash('sha256').update(JSON.stringify((legalSourcePack.sources || []).map(s => [s.authority, s.path, s.sha256]))).digest('hex');
 
   const evidenceRows = findings.map(f => ({
@@ -6090,17 +6019,8 @@ async function buildFastLegalAdviceBundle(assessment) {
       evidence_required: findings.map(f => f.evidence_gap).filter(Boolean),
       client_next_steps: clientNextStepsForVisaGroup10Grade(visaGroup),
       quality_flags: [],
-      disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.',
-      locked_subclass: subclass,
-      locked_stream: stream,
-      stream_lock_patch: BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH
+      disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.'
     },
-    canonicalSubclass: subclass,
-    canonicalStream: stream,
-    subclass: subclass,
-    stream: stream,
-    selectedStream: stream,
-    lockedPathway: { subclass, stream, patch: BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH },
     criterionFindings: findings,
     findings,
     legalSourcePack,
@@ -7101,6 +7021,7 @@ app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (
   const locked = !isInstantPlan(plan) && releaseAt && releaseAt > Date.now();
   const pdfAvailable = assessment.has_pdf === true || (paid && !locked);
   const token = req.dashboardAccessToken || signDashboardAccessToken(req.client);
+  res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
     assessment: {
