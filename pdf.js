@@ -1385,5 +1385,169 @@ This advice is based on the information presently available. Final lodgement adv
 }
 
 
-module.exports = { buildAssessmentPdfBuffer: buildAssessmentPdfBufferV10, buildAppealAdvicePdfBuffer, sha256 };
+function extractUniversalClientFacts(assessment, adviceBundle, facts) {
+  const out = [];
+  function add(label, value) {
+    const v = cleanText(value);
+    if (v && v !== '—' && !/^undefined|null$/i.test(v)) out.push([label, v]);
+  }
+  const payload = (assessment && assessment.form_payload) || {};
+  const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
+  const flat = {};
+  (function walk(obj, prefix='') {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [k,v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, key);
+      else flat[key] = Array.isArray(v) ? v.join(', ') : v;
+    }
+  })(answers);
+  function pick(labels) {
+    const wanted = labels.map(s => String(s).toLowerCase().replace(/[^a-z0-9]/g,''));
+    for (const [k,v] of Object.entries(flat)) {
+      const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g,'');
+      if (wanted.some(w => nk === w || nk.includes(w) || w.includes(nk))) return v;
+    }
+    return '';
+  }
+  add('Current location', pick(['currentLocation','current location','location']));
+  add('Current visa status', pick(['currentVisa','current visa','visaStatus','visa status']));
+  add('Nominated occupation / role', pick(['occupation','nominatedOccupation','nominated occupation','role','position']));
+  add('Employer / sponsor', pick(['employerName','employer name','sponsorName','sponsor name','businessName']));
+  add('Salary / remuneration', pick(['salary','annualSalary','baseSalary','remuneration']));
+  add('English position', pick(['english','englishTest','english score','ielts','pte']));
+  add('Age', pick(['age','dateOfBirth','date of birth']));
+  add('Relationship / family position', pick(['relationship','partner','spouse','de facto','sponsor relationship']));
+  add('Course / provider', pick(['course','provider','educationProvider','coe']));
+  add('Invitation / nomination position', pick(['invitation','stateNomination','nomination','eoi']));
+  add('Health disclosure', pick(['health','medical','health issue']));
+  add('Character / immigration history', pick(['character','police','refusal','cancellation','overstay','immigration history']));
+  if (!out.length) {
+    add('Information basis', 'Assessment questionnaire answers were received, but the PDF renderer could not safely extract detailed fact labels from the submitted payload. Original answers must be reviewed before final lodgement advice.');
+  }
+  return out.slice(0, 14);
+}
 
+function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
+  if (!adviceBundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');
+  assertKnowledgebaseEnforcedAdviceBundle(adviceBundle);
+  return new Promise((resolve, reject) => {
+    try {
+      const advice = getAdvice(adviceBundle);
+      const facts = extractFactsObject(assessment || {}, adviceBundle || {});
+      const subclass = cleanText((advice && advice.subclass) || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], ''));
+      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
+      const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
+      const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
+      const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
+      const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
+      const visaGroup = cleanText((advice && (advice.visa_group || advice.visaGroup)) || (adviceBundle.universalLegalGraph && adviceBundle.universalLegalGraph.family) || 'visa assessment');
+      const position = professionalPosition(adviceBundle || {}, advice || {});
+      const issue = primaryIssue(adviceBundle || {}, advice || {});
+      const findings = ((advice && advice.criterion_findings) || adviceBundle.criterionFindings || adviceBundle.findings || []).map(normaliseCriterionFinding);
+      const evidenceItems = collectEvidence(advice || {}, adviceBundle || {});
+      const title = `Subclass ${subclass} professional migration advice letter`;
+      const doc = createDoc({ Title: `Bircan Migration - ${title}`, Author: 'Bircan Migration & Education', Subject: `Professional migration advice ${assessment.id || ''}` });
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('error', reject);
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+      drawCover(doc, { title, reference: assessment.id || '—', applicantName, applicantEmail, clientEmail, subclass, stream, generatedAt });
+      addPage(doc);
+
+      writeTitle(doc, 'Scope and limitations', { gold: true, size: 16 });
+      writePara(doc, `This is a preliminary professional migration advice letter for the Subclass ${subclass}${stream ? ' ' + stream : ''} assessment. It is based on the client-provided assessment information and any material available to the system at generation. It is not a final lodgement instruction unless original documents, conflict checks, current legislation, instruments, policy and Departmental settings are reviewed.`);
+
+      writeTitle(doc, 'Client facts relied upon', { gold: true });
+      writeCard(doc, 'Matter and extracted facts', [
+        ['Reference', assessment.id || '—'],
+        ["Applicant's name", applicantName],
+        ['Applicant email', applicantEmail],
+        ['Client account email', clientEmail],
+        ['Subclass', subclass],
+        ['Stream / pathway', stream],
+        ['Visa group', visaGroup],
+        ['Generated', generatedAt],
+        ...extractUniversalClientFacts(assessment, adviceBundle, facts)
+      ]);
+
+      writeTitle(doc, 'Documents reviewed, not reviewed and required', { gold: true });
+      writeSubheading(doc, 'Documents sighted');
+      const sighted = uniqueClean([...(adviceBundle.documents && adviceBundle.documents.sighted || []), 'Assessment questionnaire responses']);
+      sighted.slice(0, 8).forEach(item => writeBullet(doc, item));
+      writeSubheading(doc, 'Documents not yet sighted / not verified');
+      uniqueClean([...(adviceBundle.documents && adviceBundle.documents.notSighted || []), 'Original identity documents', 'Original visa records', 'Original evidence supporting the selected subclass criteria', 'Current Departmental records and third-party records']).slice(0, 10).forEach(item => writeBullet(doc, item));
+      writeSubheading(doc, 'Documents required before lodgement-ready advice');
+      uniqueClean([...(adviceBundle.documents && adviceBundle.documents.requiredBeforeLodgement || []), ...evidenceItems]).slice(0, 14).forEach(item => writeBullet(doc, item));
+
+      writeTitle(doc, 'Executive legal opinion', { gold: true });
+      writePara(doc, buildExecutiveNarrative({ subclass, stream, position, issue }));
+      writeCard(doc, 'Professional recommendation', [
+        ['Present position', position],
+        ['Risk rating', (advice && advice.risk_level) || 'Evidence review required'],
+        ['Primary issue', issue],
+        ['Recommended action', 'Proceed by evidence preparation and legal verification before any lodgement action.']
+      ]);
+
+      writeTitle(doc, 'Subclass-specific legal framework', { gold: true });
+      writePara(doc, (advice && advice.primary_issue) || issue || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`);
+      if (advice && Array.isArray(advice.sections)) {
+        advice.sections.slice(0, 4).forEach(s => {
+          writeSubheading(doc, s.heading || 'Legal issue');
+          writePara(doc, s.body || '');
+        });
+      }
+
+      writeTitle(doc, 'Criteria-by-criteria legal assessment', { gold: true });
+      if (findings.length) {
+        findings.slice(0, 10).forEach(raw => {
+          const item = buildMatterFinding(raw);
+          writeRiskCard(doc, item.criterion, item.delegateRisk, [
+            ['Professional finding', item.position],
+            ['Delegate concern', item.body],
+            ['Evidence required', item.evidence],
+            ['Action before lodgement', item.strategy]
+          ]);
+        });
+      } else {
+        writePara(doc, 'No criterion findings were available in the advice bundle. Advice-grade generation should be blocked until subclass criteria are loaded.');
+      }
+
+      writeTitle(doc, 'Evidence gap and delegate risk matrix', { gold: true });
+      (findings.length ? findings : []).slice(0, 10).forEach(raw => {
+        const item = buildMatterFinding(raw);
+        writeBullet(doc, `${item.criterion}: ${item.delegateRisk}. Required action: ${item.strategy || item.evidence}`);
+      });
+
+      writeTitle(doc, 'Alternative pathway comparison', { gold: true });
+      const rows = buildPathwayRows(stream).slice(0, 6);
+      rows.forEach(row => writePathwayBlock(doc, ...row));
+
+      writeTitle(doc, 'Client action plan', { gold: true });
+      normaliseNextSteps((advice && advice.client_next_steps) || adviceBundle.recommendedNextSteps || evidenceItems, advice || {}).slice(0, 10).forEach(step => writeBullet(doc, step));
+
+      writeTitle(doc, 'Final professional recommendation', { gold: true });
+      writePara(doc, `On the information presently available, I would not treat this matter as lodgement ready until the client facts, original evidence and current legal settings have been reconciled. If the identified evidence can be verified and the subclass-specific criteria are satisfied, the matter may progress to a final lodgement recommendation. If the evidence cannot be verified, the strategy should be paused or redirected before filing.`);
+
+      writeTitle(doc, 'Legal and professional basis');
+      writePara(doc, 'This advice has been prepared by reference to the information supplied, the selected visa pathway, the Migration Act 1958, the Migration Regulations 1994, relevant legislative instruments and current Departmental policy guidance as applicable to the selected subclass and stream. Internal source-control and knowledgebase checks are retained by Bircan Migration for quality assurance and are not reproduced in this client-facing letter.');
+
+      writeTitle(doc, 'Important notice');
+      writePara(doc, (advice && advice.disclaimer) || 'This professional advice is preliminary and subject to review of original documents, current law, policy and final instructions before lodgement action. It is not a guarantee of visa grant.');
+
+      ensureSpace(doc, 80);
+      doc.font('Helvetica').fontSize(10).fillColor(BRAND.ink).text('Yours faithfully,', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.moveDown(0.55);
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.navy).text('Kenan Bircan JP', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.ink).text('Registered Migration Agent | MARN: 1463685', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.text('Bircan Migration & Education', PAGE.L, doc.y, { width: PAGE.WIDTH });
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+
+module.exports = { buildAssessmentPdfBuffer: buildAssessmentPdfBufferUniversal, buildAppealAdvicePdfBuffer, sha256 };
