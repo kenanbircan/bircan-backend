@@ -746,6 +746,70 @@ function writeCard(doc, title, rows) {
 }
 
 
+function writePremiumMatrix(doc, title, columns, rows, opts = {}) {
+  const safeRows = Array.isArray(rows) ? rows.slice(0, opts.limit || 12) : [];
+  if (!safeRows.length) return;
+  writeTitle(doc, title, { gold: true });
+  const colDefs = columns.map(c => ({
+    key: c.key,
+    label: cleanText(c.label || c.key),
+    width: c.width || Math.floor(PAGE.WIDTH / columns.length)
+  }));
+  const headerH = 24;
+  ensureSpace(doc, headerH + 40);
+  let y = doc.y;
+  doc.roundedRect(PAGE.L, y, PAGE.WIDTH, headerH, 8).fillAndStroke(BRAND.navy, BRAND.navy);
+  let x = PAGE.L + 8;
+  colDefs.forEach(c => {
+    doc.font('Helvetica-Bold').fontSize(7.8).fillColor('#ffffff').text(c.label.toUpperCase(), x, y + 8, { width: c.width - 10, lineBreak: false });
+    x += c.width;
+  });
+  doc.y = y + headerH;
+  for (const row of safeRows) {
+    const values = colDefs.map(c => cleanText(row && (row[c.key] !== undefined ? row[c.key] : row[c.label])) || '—');
+    const heights = values.map((v, idx) => doc.font('Helvetica').fontSize(8.2).heightOfString(v, { width: colDefs[idx].width - 10, lineGap: 1.5 }));
+    const rowH = Math.max(30, ...heights) + 12;
+    if (doc.y + rowH > PAGE.BOTTOM) {
+      addPage(doc);
+      y = doc.y;
+      doc.roundedRect(PAGE.L, y, PAGE.WIDTH, headerH, 8).fillAndStroke(BRAND.navy, BRAND.navy);
+      x = PAGE.L + 8;
+      colDefs.forEach(c => {
+        doc.font('Helvetica-Bold').fontSize(7.8).fillColor('#ffffff').text(c.label.toUpperCase(), x, y + 8, { width: c.width - 10, lineBreak: false });
+        x += c.width;
+      });
+      doc.y = y + headerH;
+    }
+    y = doc.y;
+    doc.rect(PAGE.L, y, PAGE.WIDTH, rowH).fillAndStroke('#ffffff', BRAND.line);
+    x = PAGE.L + 8;
+    values.forEach((v, idx) => {
+      doc.font('Helvetica').fontSize(8.2).fillColor(BRAND.ink).text(v, x, y + 8, { width: colDefs[idx].width - 10, lineGap: 1.5 });
+      x += colDefs[idx].width;
+    });
+    doc.y = y + rowH;
+  }
+  doc.moveDown(0.8);
+  doc.x = PAGE.L;
+}
+
+function writePremiumFindingCard(doc, raw) {
+  const item = buildMatterFinding(raw);
+  const legalReq = cleanText(raw.legalRequirement || raw.legislativeRequirement || buildLegislativeRequirementForCriterion(item.criterion));
+  const clientFact = cleanText(raw.clientFact || raw.knownFact || raw.fact || raw.relevantFact || 'The questionnaire answer is treated as client instruction and must be verified against original evidence.');
+  const finding = cleanText(raw.finding || item.position);
+  const consequence = cleanText(raw.legal_consequence || raw.legalConsequence || item.body);
+  writeRiskCard(doc, item.criterion, item.delegateRisk, [
+    ['Legal requirement', legalReq],
+    ['Client-specific fact', clientFact],
+    ['Professional finding', finding],
+    ['Legal consequence', consequence],
+    ['Evidence required', item.evidence],
+    ['Action before lodgement', item.strategy]
+  ]);
+}
+
+
 function writeFactsCard(doc, title, rows) {
   const cleanedRows = (rows || [])
     .map(([l, v]) => [cleanText(l), cleanText(v)])
@@ -1728,13 +1792,26 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       }
 
       writeTitle(doc, 'Executive legal opinion', { gold: true });
-      writePara(doc, buildExecutiveNarrative({ subclass, stream, position, issue }));
+      writePara(doc, (adviceBundle.premiumExecutiveOpinion || (advice && advice.executive_summary)) || buildExecutiveNarrative({ subclass, stream, position, issue }));
       writeCard(doc, 'Professional recommendation', [
-        ['Present position', position],
-        ['Risk rating', (advice && advice.risk_level) || 'Evidence review required'],
+        ['Present position', (adviceBundle.lodgementReadiness && adviceBundle.lodgementReadiness.label) || position],
+        ['Risk rating', (advice && advice.risk_level) || adviceBundle.riskLevel || 'Evidence review required'],
         ['Primary issue', issue],
-        ['Recommended action', 'Proceed by evidence preparation and legal verification before any lodgement action.']
+        ['Recommended action', (adviceBundle.lodgementReadiness && adviceBundle.lodgementReadiness.recommendedAction) || 'Proceed by evidence preparation and legal verification before any lodgement action.']
       ]);
+
+      writePremiumMatrix(doc, 'Legal outcome summary', [
+        { key:'area', label:'Area', width:120 },
+        { key:'currentPosition', label:'Current position', width:185 },
+        { key:'risk', label:'Risk', width:80 },
+        { key:'blocksLodgement', label:'Blocks lodgement now?', width:110 }
+      ], adviceBundle.legalOutcomeSummary || [], { limit: 12 });
+
+      writePremiumMatrix(doc, 'Known facts, missing facts and legal effect', [
+        { key:'knownFact', label:'Known fact', width:155 },
+        { key:'missingInformation', label:'Missing information', width:165 },
+        { key:'legalEffect', label:'Legal effect', width:175 }
+      ], adviceBundle.knownFactsMatrix || [], { limit: 12 });
 
       writeTitle(doc, 'Subclass-specific legal framework', { gold: true });
       writePara(doc, (advice && advice.primary_issue) || issue || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`);
@@ -1748,13 +1825,7 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       writeTitle(doc, 'Criteria-by-criteria legal assessment', { gold: true });
       if (findings.length) {
         findings.slice(0, 10).forEach(raw => {
-          const item = buildMatterFinding(raw);
-          writeRiskCard(doc, item.criterion, item.delegateRisk, [
-            ['Professional finding', item.position],
-            ['Delegate concern', item.body],
-            ['Evidence required', item.evidence],
-            ['Action before lodgement', item.strategy]
-          ]);
+          writePremiumFindingCard(doc, raw);
         });
       } else {
         writePara(doc, 'No criterion findings were available in the advice bundle. Advice-grade generation should be blocked until subclass criteria are loaded.');
@@ -1773,8 +1844,13 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       writeTitle(doc, 'Client action plan', { gold: true });
       normaliseNextSteps((advice && advice.client_next_steps) || adviceBundle.recommendedNextSteps || evidenceItems, advice || {}).slice(0, 10).forEach(step => writeBullet(doc, step));
 
+      if (Array.isArray(adviceBundle.commercialNextSteps) && adviceBundle.commercialNextSteps.length) {
+        writeTitle(doc, 'Recommended professional next step', { gold: true });
+        adviceBundle.commercialNextSteps.slice(0, 6).forEach(step => writeBullet(doc, step));
+      }
+
       writeTitle(doc, 'Final professional recommendation', { gold: true });
-      writePara(doc, `On the information presently available, I would not treat this matter as lodgement ready until the client facts, original evidence and current legal settings have been reconciled. If the identified evidence can be verified and the subclass-specific criteria are satisfied, the matter may progress to a final lodgement recommendation. If the evidence cannot be verified, the strategy should be paused or redirected before filing.`);
+      writePara(doc, adviceBundle.finalProfessionalRecommendation || `On the information presently available, I would not treat this matter as lodgement ready until the client facts, original evidence and current legal settings have been reconciled. If the identified evidence can be verified and the subclass-specific criteria are satisfied, the matter may progress to a final lodgement recommendation. If the evidence cannot be verified, the strategy should be paused or redirected before filing.`);
 
       writeTitle(doc, 'Legal and professional basis');
       writePara(doc, 'This advice has been prepared by reference to the information supplied, the selected visa pathway, the Migration Act 1958, the Migration Regulations 1994, relevant legislative instruments and current Departmental policy guidance as applicable to the selected subclass and stream. Internal source-control and knowledgebase checks are retained by Bircan Migration for quality assurance and are not reproduced in this client-facing letter.');

@@ -5981,6 +5981,10 @@ function buildCriterionFindingFromProfile(profile, context) {
     finding = 'The available questionnaire material does not finally establish this criterion. It must be assessed against the original evidence before lodgement-ready advice is issued.';
   }
 
+  const clientFact = answer
+    ? `Client instruction recorded: ${answer}. This is not treated as verified evidence until original documents are reviewed.`
+    : 'No final supporting fact was identified in the questionnaire for this criterion. The issue must be verified from original documents before final lodgement advice.';
+
   return {
     criterion: profile.criterion,
     finding,
@@ -5989,6 +5993,8 @@ function buildCriterionFindingFromProfile(profile, context) {
     recommendation: profile.recommendation,
     legislativeRequirement: legalRequirement,
     legalRequirement,
+    clientFact,
+    knownFact: clientFact,
     delegateRisk,
     body: finding,
     strategy: profile.recommendation,
@@ -6049,6 +6055,89 @@ function resolveExplicitStreamFromAssessment10Grade(assessment, answers, flat) {
     if (normalised) return normalised;
   }
   return '';
+}
+
+
+function riskBandFromDelegateRisk(value) {
+  const t = String(value || '').toLowerCase();
+  if (/elevated|critical|high|block/.test(t)) return 'High';
+  if (/moderate|review|required/.test(t)) return 'Medium';
+  if (/managed|standard|low|supportable/.test(t)) return 'Low';
+  return 'Medium';
+}
+
+function buildPremiumCommercialAdviceLayer({ subclass, stream, findings, flat, primaryIssue, riskLevel }) {
+  const text = JSON.stringify({ flat, findings }).toLowerCase();
+  const hasEnglishDetail = /pte|ielts|oet|toefl|cambridge|cae|component|reading|writing|speaking|listening/.test(text);
+  const hasEmployer = /employer|sponsor|business|nomination/.test(text);
+  const hasSalary = /salary|remuneration|payroll|payslip|superannuation|payg|amsr/.test(text);
+  const highFindings = (findings || []).filter(f => /elevated|critical|high/i.test(f.delegateRisk || '')).map(f => f.criterion);
+  const mediumFindings = (findings || []).filter(f => /moderate/i.test(f.delegateRisk || '')).map(f => f.criterion);
+  const blockingIssues = [];
+  if (!stream && ['186','187','188','407','408','482','485','500','590','600','602','785','790','820','888'].includes(String(subclass))) blockingIssues.push('Selected stream/pathway must be confirmed before lodgement-ready advice.');
+  if (!hasEnglishDetail) blockingIssues.push('English test type, component scores, validity date or exemption basis not fully verified.');
+  if (String(subclass) === '186' && /temporary residence transition|trt/i.test(stream || '') && !/457|482|sid|qualifying|continuous/.test(text)) blockingIssues.push('TRT qualifying employment and sponsor continuity are not yet objectively reconstructed.');
+  if (String(subclass) === '186' && /direct entry/i.test(stream || '') && !/skills assessment|qualification|registration|licen/.test(text)) blockingIssues.push('Direct Entry skills assessment, registration/licensing and occupation evidence are not yet fully verified.');
+  if (['186','187','482','494'].includes(String(subclass)) && !hasEmployer) blockingIssues.push('Employer nomination, genuine position and business-need evidence must be verified.');
+  if (['186','187','482','494'].includes(String(subclass)) && !hasSalary) blockingIssues.push('Salary, payroll, superannuation, tax and market salary evidence must be reconciled.');
+
+  const legalOutcomeSummary = (findings || []).slice(0, 12).map(f => ({
+    area: f.criterion,
+    currentPosition: f.finding || 'Requires professional verification against original evidence.',
+    risk: riskBandFromDelegateRisk(f.delegateRisk),
+    blocksLodgement: /elevated|critical|block|cannot|not satisfied|missing|refus|cancel/i.test(`${f.delegateRisk} ${f.finding} ${f.legal_consequence}`) ? 'Potentially, until resolved' : 'No, subject to verification'
+  }));
+
+  const knownFactsMatrix = (findings || []).slice(0, 12).map(f => ({
+    knownFact: f.clientFact || f.knownFact || 'Questionnaire instruction received but not verified.',
+    missingInformation: f.evidence_gap || f.evidence || 'Original supporting evidence and Departmental/source records.',
+    legalEffect: f.legal_consequence || 'The criterion cannot be treated as finally satisfied until verified.'
+  }));
+
+  const readinessLabel = blockingIssues.length || highFindings.length
+    ? 'Potentially supportable, but not lodgement-ready'
+    : 'Appears supportable subject to final document verification';
+  const recommendedAction = blockingIssues.length
+    ? 'Do not lodge yet. Resolve the listed evidence and legal verification issues first.'
+    : 'Proceed to final evidence verification before any lodgement action.';
+
+  const premiumExecutiveOpinion = `On the information presently provided, the Subclass ${subclass}${stream ? ' ' + stream : ''} pathway appears ${blockingIssues.length || highFindings.length ? 'potentially supportable but not lodgement-ready' : 'capable of progression subject to final verification'}. The presently manageable issues should be separated from the unresolved matters. The main legal and evidentiary work is to verify the client instructions against original documents, current law, sponsor or nomination material where relevant, and Departmental records. I would not recommend lodgement until each criterion below is reconciled and any blocking issue is resolved.`;
+
+  const finalProfessionalRecommendation = blockingIssues.length
+    ? `I do not recommend treating this matter as lodgement-ready on the current information. The pathway may be supportable, but only if the identified issues are resolved and the original evidence confirms the client instructions. In particular, the following matters require attention before filing: ${blockingIssues.slice(0, 6).join(' ')} If those records are consistent, the matter may proceed to final lodgement preparation. If they are inconsistent or incomplete, lodgement should be deferred or an alternative pathway considered.`
+    : `On the information presently available, the pathway appears capable of progression subject to final verification. The file should still not be lodged until original documents, current legal settings, sponsor or nomination material where relevant, and Departmental records confirm the client instructions. If verification remains consistent, the matter may progress to final lodgement preparation.`;
+
+  const commercialNextSteps = [
+    'Recommended service: evidence review and lodgement-readiness assessment before filing.',
+    'Purpose: convert the questionnaire position into a verified evidence brief mapped to each legal criterion.',
+    recommendedAction,
+    'After verification, issue a final written lodgement recommendation or redirect the strategy before filing.'
+  ];
+
+  return {
+    premiumExecutiveOpinion,
+    legalOutcomeSummary,
+    knownFactsMatrix,
+    lodgementReadiness: {
+      label: readinessLabel,
+      riskLevel: highFindings.length ? 'HIGH' : (mediumFindings.length ? riskLevel || 'MEDIUM' : 'LOW'),
+      recommendedAction,
+      blockingIssues
+    },
+    blockingIssues,
+    commercialNextSteps,
+    finalProfessionalRecommendation,
+    agentReview: {
+      releaseDecision: 'release_preliminary_only',
+      lodgementReady: false,
+      riskRating: highFindings.length ? 'high' : 'medium',
+      blockingIssues,
+      highRiskCriteria: highFindings,
+      mediumRiskCriteria: mediumFindings,
+      agentReviewRequired: true,
+      note: 'Client-facing PDF is preliminary. Final lodgement advice requires original evidence review and current legal verification.'
+    }
+  };
 }
 
 async function buildFastLegalAdviceBundle(assessment) {
@@ -6127,6 +6216,8 @@ async function buildFastLegalAdviceBundle(assessment) {
     evidenceGap: f.evidence_gap
   }));
 
+  const premiumLayer = buildPremiumCommercialAdviceLayer({ subclass, stream, findings, flat, primaryIssue, riskLevel });
+
   const sections = [
     { heading: 'Scope of advice', body: `This advice has been prepared as a senior migration agent assessment of the proposed Subclass ${subclass}${stream ? ' ' + stream : ''} pathway. It is based on the questionnaire information presently available and on the Bircan Migration legal knowledgebase source pack loaded for this subclass.` },
     { heading: 'Legal reasoning method', body: 'The matter has been assessed criterion by criterion. Each criterion is treated separately so that a positive answer in one area does not cure a gap in another. Questionnaire answers are instructions only; the legal position is not final until original documents and current legal settings are reviewed.' },
@@ -6142,12 +6233,12 @@ async function buildFastLegalAdviceBundle(assessment) {
       subclass,
       stream,
       visa_group: visaGroup,
-      risk_level: riskLevel,
-      lodgement_position: position,
+      risk_level: premiumLayer.lodgementReadiness.riskLevel || riskLevel,
+      lodgement_position: premiumLayer.lodgementReadiness.label || position,
       title: `Professional Migration Advice – Subclass ${subclass}`,
       advice_standard: 'universal-10-grade-all-assessment-subclasses-v1',
-      executive_summary: `I have considered the information presently available for the proposed Subclass ${subclass}${stream ? ' ' + stream : ''} pathway. The matter should be approached as a criterion-by-criterion evidence exercise. On the current instructions, the pathway may be capable of progression, but final lodgement advice should only be issued after the original documents and legal settings have been verified.`,
-      professional_position: 'Potentially viable only after subclass-specific legal criteria, client facts and original evidence are reconciled by a registered migration agent.',
+      executive_summary: premiumLayer.premiumExecutiveOpinion,
+      professional_position: premiumLayer.lodgementReadiness.label,
       primary_issue: primaryIssue,
       sections,
       criterion_findings: findings,
@@ -6162,6 +6253,7 @@ async function buildFastLegalAdviceBundle(assessment) {
       quality_flags: [],
       disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.'
     },
+    ...premiumLayer,
     criterionFindings: findings,
     findings,
     legalSourcePack,
@@ -6184,11 +6276,12 @@ async function buildFastLegalAdviceBundle(assessment) {
     },
     internalLegalAudit: {
       auditGeneratedAt: new Date().toISOString(),
-      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v1',
+      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v2-premium-commercial-advice',
       subclass,
       selectedStream: stream,
       criteriaAssessed: findings.map(f => f.criterion),
-      sourcesUsed: legalSourcePack.sources
+      sourcesUsed: legalSourcePack.sources,
+      agentReview: premiumLayer.agentReview
     },
     clientSafetyFilter: { enforced: true, removesInternalDebugLanguage: true },
     knowledgebaseEnforced: true,

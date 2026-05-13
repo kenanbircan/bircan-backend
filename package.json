@@ -1,10 +1,10 @@
 {
   "name": "bircan-final-self-migrating-server",
-  "version": "10.5.0-final-research-grade-migration-intelligence",
+  "version": "10.6.0-premium-10-advice-letter",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check db.js && node --check pdf.js && node --check adviceEngine.js && node --check knowledgebaseLoader.js"
+    "check": "node --check server.js && node --check db.js && node --check pdf.js && node --check adviceEngine.js && node --check knowledgebaseLoader.js && node --check migrationDecisionEngine.js"
   },
   "engines": {
     "node": "20.x"
