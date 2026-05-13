@@ -1388,34 +1388,39 @@ function v11AssessmentSummary(criteria) {
 }
 
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
-  const summary = v11AssessmentSummary(criteria);
-  writeTitle(doc, 'Assessment against grant criteria', { gold: true });
-  writePara(doc, `The backend validation layer requires the mandatory and triggered grant-criteria registry items to be assessed before a client PDF can be released. The client-facing summary below is deliberately concise. It presents the professional issues that matter for advice and lodgement strategy without reproducing internal registry code or raw system diagnostics.`, { size: 9.7 });
-  writeCard(doc, 'Coverage and assessment summary', [
-    ['Criteria assessed for this letter', String(summary.required)],
-    ['Elevated or threshold issues', String(summary.elevated)],
-    ['Managed verification issues', String(summary.managed)],
-    ['Pathway family', v11FamilyLabel(family)]
-  ]);
-  const top = criteria.slice(0, 12);
+  writeTitle(doc, 'Assessment against the relevant criteria', { gold: true });
+  writePara(doc, "I have assessed the pathway against the relevant legal criteria and the information presently available. The findings below focus on the issues that are most important to the client's lodgement strategy and evidence preparation.", { size: 9.8 });
+
+  const important = uniqueClean(criteria
+    .filter(item => /critical|elevated|high|threshold|not met|cannot|missing|weak|concern/i.test(`${item.risk} ${item.professionalFinding} ${item.actionRequired}`))
+    .map(item => item.criterion))
+    .slice(0, 5);
+
+  const fallback = uniqueClean(criteria.map(item => item.criterion)).slice(0, 5);
+  const findings = (important.length ? important : fallback).map((label, i) => {
+    const item = criteria.find(c => c.criterion === label) || criteria[i] || {};
+    const finding = cleanText(item.professionalFinding || item.actionRequired || 'This issue must be verified against original evidence before lodgement.');
+    return [String(i + 1), cleanText(label), finding];
+  });
+
+  writeCard(doc, 'Key professional findings', findings.map(([n, label, finding]) => [n + '. ' + label, finding]));
+
+  const top = criteria.slice(0, 8);
   top.forEach(item => {
     writeRiskCard(doc, item.criterion, item.risk, [
-      ['Assessment', item.professionalFinding],
-      ['Required action', item.actionRequired]
+      ['Professional assessment', item.professionalFinding],
+      ['Required before lodgement', item.actionRequired]
     ]);
   });
-  if (criteria.length > top.length) {
-    writePara(doc, `${criteria.length - top.length} further registry criteria were assessed and retained in the internal audit bundle. Any mandatory missing criterion would block PDF release before this letter is issued.`, { size: 9.2 });
-  }
 }
 
 function v11FinalRecommendation(subclass, stream, family, position, primaryIssue) {
   const pathway = `Subclass ${cleanText(subclass)}${stream ? ' ' + cleanText(stream) : ''}`;
-  return `My final preliminary recommendation is that the ${pathway} pathway should remain under consideration only on the basis that the identified evidence issues are resolved before lodgement action.
+  return `Based on the information presently available, I do not recommend immediate lodgement of the ${pathway} matter.
 
-The matter should now proceed to evidence preparation and professional verification, not immediate lodgement. The immediate focus should be ${cleanText(primaryIssue)}. If the original evidence, current legal source pack and Departmental records confirm the client instructions, the matter may progress to final lodgement preparation. If the evidence identifies a material weakness, the strategy should be revised before filing.
+The matter should move to evidence verification and lodgement-readiness review. The key issue is ${cleanText(primaryIssue)}. Original documents, current legal settings, Departmental records and any sponsor, nomination, relationship, protection, study or pathway-specific material must be checked before a final lodgement recommendation is issued.
 
-This recommendation is deliberately cautious. It protects the client from premature lodgement and preserves the professional standard required for ${v11FamilyLabel(family).toLowerCase()} advice.`;
+If the evidence remains consistent after review, the matter may progress to final preparation. If the evidence identifies a material weakness, the strategy should be revised before filing.`;
 }
 
 function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
@@ -1473,18 +1478,11 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
         ['Stream assessed', stream],
         ['Generated', generatedAt]
       ]);
-      writePara(doc, 'The factual basis of this advice is the assessment questionnaire and any information presently available to the backend at generation. Questionnaire answers are treated as client instructions until verified against original documents and Departmental records.', { size: 9.8 });
+      writePara(doc, 'The factual basis of this advice is the assessment questionnaire and any information presently available at the time of preparation. Questionnaire answers are treated as client instructions until verified against original documents and Departmental records.', { size: 9.8 });
 
       writeTitle(doc, 'Legal framework applied', { gold: true });
       writePara(doc, v11FrameworkText(subclass, stream, family));
-      writePara(doc, 'The legal source pack was loaded before this PDF was prepared. The source hierarchy is Act, Regulations, legislative instruments and then PAMs/policy. PAMs and policy guidance are not treated as overriding legislation or legislative instruments.', { size: 9.5 });
-      if (legalPack && legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId) {
-        writeCard(doc, 'Internal legal-source control', [
-          ['Knowledgebase snapshot', String(legalPack.knowledgebaseSnapshot.snapshotId).slice(0, 18)],
-          ['Sources loaded', String(Array.isArray(legalPack.sources) ? legalPack.sources.length : 0)],
-          ['Legal-version lock', adviceBundle.legalVersionLock?.aggregateSourceHash ? String(adviceBundle.legalVersionLock.aggregateSourceHash).slice(0, 18) : 'Recorded internally']
-        ]);
-      }
+      writePara(doc, 'This advice has been prepared by reference to the relevant legal framework for the selected pathway. Legislative requirements prevail over policy guidance. Policy guidance is considered only to the extent that it assists with practical assessment and Departmental decision-making practice.', { size: 9.5 });
 
       v11WriteGrantCriteriaSummary(doc, criteria, family);
 
@@ -1498,7 +1496,6 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
         ensureArray(items).slice(0, 7).forEach(item => writeBullet(doc, item));
       }
 
-      writeTitle(doc, 'Client action plan', { gold: true });
       const actionRows = nextSteps.length ? nextSteps.map((s, i) => [String(i + 1), s, /critical|high|english|health|character|nomination|claim|sponsor|relationship|points|financial/i.test(s) ? 'High' : 'Important']) : v10EvidencePriorityRows(criteria, evidenceItems);
       v10WriteActionPlan(doc, actionRows);
 
