@@ -31,6 +31,7 @@ const { query, tx } = require('./db');
 const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
 const { listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
+const { loadCriteriaRegistry, buildRegistryBackedFindings, validateCriteriaCoverage } = require('./validators/criteriaCoverageValidator');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
@@ -6061,15 +6062,10 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       await client.query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
       assessment.pdf_bytes = null;
     }
-    // Permanent production fix: paid/released matters must receive a real PDF immediately.
-    // The heavyweight GPT/knowledgebase engine must never be a prerequisite for dashboard PDF access.
-    // This also repairs legacy rows that were marked ready without saved PDF bytes.
-    const fastSaved = await saveFastAssessmentPdf(client, assessment, 'paid_release_open_or_worker');
-    return toPublicAssessment(fastSaved);
-
-    /* Heavy enhanced advice generation is intentionally bypassed for first PDF issuance.
-       It can be reintroduced later as a separate enhancement job that replaces pdf_bytes
-       after the preliminary PDF is already available to the client. */
+    // Permanent grant-criteria enforcement:
+    // Paid/released matters must no longer bypass the knowledgebase, GPT advice bundle,
+    // criteria registry and coverage validator. A PDF is issued only after the selected
+    // subclass registry has been converted into criterion findings and validated.
 
     if (!payloadLooksUsable(assessment.form_payload)) {
       const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
@@ -6112,6 +6108,39 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
         throw new Error('Internal legal audit missing. PDF generation blocked.');
       }
+
+      const registry = loadCriteriaRegistry(adviceBundle.legalSourcePack.subclass || assessmentForAdvice.visa_type || assessment.visa_type);
+      const coverageResult = buildRegistryBackedFindings({
+        registry,
+        adviceBundle,
+        legalPack: adviceBundle.legalSourcePack,
+        assessment: assessmentForAdvice,
+        facts: {
+          subclass: adviceBundle.legalSourcePack.subclass || assessmentForAdvice.visa_type || assessment.visa_type,
+          stream: adviceBundle.selectedStream || adviceBundle.stream || adviceBundle.advice?.stream || assessmentForAdvice.stream || assessmentForAdvice.selected_stream || assessmentForAdvice.visa_stream || ''
+        }
+      });
+      if (!coverageResult.audit.ok || coverageResult.audit.registryCoverageRate < 100) {
+        const err = new Error('Grant criteria coverage failed. PDF generation blocked before release.');
+        err.code = 'GRANT_CRITERIA_COVERAGE_FAILED';
+        err.audit = coverageResult.audit;
+        throw err;
+      }
+      adviceBundle.grantCriteriaFindings = coverageResult.findings;
+      adviceBundle.grantCriteriaCoverageAudit = coverageResult.audit;
+      adviceBundle.advice = {
+        ...(adviceBundle.advice || {}),
+        criterion_findings: coverageResult.findings,
+        grantCriteriaFindings: coverageResult.findings
+      };
+      adviceBundle.internalLegalAudit = {
+        ...(adviceBundle.internalLegalAudit || {}),
+        grantCriteriaCoverage: coverageResult.audit
+      };
+      validateCriteriaCoverage(registry, adviceBundle, adviceBundle.legalSourcePack, {
+        subclass: adviceBundle.legalSourcePack.subclass || assessmentForAdvice.visa_type || assessment.visa_type,
+        stream: coverageResult.audit.stream
+      });
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
