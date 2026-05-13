@@ -696,6 +696,60 @@ function writeCard(doc, title, rows) {
   doc.x = PAGE.L;
 }
 
+
+function writeFactsCard(doc, title, rows) {
+  const cleanedRows = (rows || [])
+    .map(([l, v]) => [cleanText(l), cleanText(v)])
+    .filter(([l, v]) => l || v);
+
+  const labelX = PAGE.L + 14;
+  const valueX = PAGE.L + 182;
+  const labelW = 150;
+  const valueW = PAGE.WIDTH - 204;
+  const rowGap = 7;
+  const titleH = title ? 30 : 0;
+
+  function drawTitleBand(continued = false) {
+    ensureSpace(doc, titleH + 28);
+    const y0 = doc.y;
+    doc.roundedRect(PAGE.L, y0, PAGE.WIDTH, titleH || 1, 10).fillAndStroke(BRAND.soft, BRAND.line);
+    if (title) {
+      doc.font('Helvetica-Bold').fontSize(11).fillColor(BRAND.navy)
+        .text(cleanText(title) + (continued ? ' continued' : ''), PAGE.L + 14, y0 + 10, { width: PAGE.WIDTH - 28 });
+    }
+    doc.y = y0 + titleH + 8;
+    doc.x = PAGE.L;
+  }
+
+  drawTitleBand(false);
+
+  for (const [label, value] of cleanedRows) {
+    const lab = label.toUpperCase();
+    const val = value || '—';
+    const labelH = doc.font('Helvetica-Bold').fontSize(8.1).heightOfString(lab, { width: labelW, lineGap: 1.2 });
+    const valueH = doc.font('Helvetica').fontSize(9.2).heightOfString(val, { width: valueW, lineGap: 2.4 });
+    const rowH = Math.max(18, labelH, valueH) + rowGap + 6;
+
+    if (doc.y + rowH > PAGE.BOTTOM) {
+      addPage(doc);
+      drawTitleBand(true);
+    }
+
+    const y = doc.y;
+    doc.font('Helvetica-Bold').fontSize(8.1).fillColor(BRAND.muted)
+      .text(lab, labelX, y + 2, { width: labelW, lineGap: 1.2 });
+    doc.font('Helvetica').fontSize(9.2).fillColor(BRAND.ink)
+      .text(val, valueX, y, { width: valueW, lineGap: 2.4 });
+    doc.moveTo(PAGE.L + 12, y + rowH - 3).lineTo(PAGE.R - 12, y + rowH - 3)
+      .strokeColor(BRAND.line).lineWidth(0.5).stroke();
+    doc.y = y + rowH;
+    doc.x = PAGE.L;
+  }
+
+  doc.moveDown(0.9);
+  doc.x = PAGE.L;
+}
+
 function riskColour(level) {
   const text = String(level || '').toLowerCase();
   if (text.includes('critical') || text.includes('elevated')) return { bg: '#fff4f3', border: '#f1b5b0', text: '#8a1f17' };
@@ -1532,7 +1586,7 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       writePara(doc, `This is a preliminary professional migration advice letter for the Subclass ${subclass}${stream ? ' ' + stream : ''} assessment. It is based on the client-provided assessment information and any material available to the system at generation. It is not a final lodgement instruction unless original documents, conflict checks, current legislation, instruments, policy and Departmental settings are reviewed.`);
 
       writeTitle(doc, 'Client facts relied upon', { gold: true });
-      writeCard(doc, 'Matter and extracted facts', [
+      writeFactsCard(doc, 'Matter and extracted facts', [
         ['Reference', assessment.id || '—'],
         ["Applicant's name", applicantName],
         ['Applicant email', applicantEmail],
@@ -1544,6 +1598,9 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
         ...extractUniversalClientFacts(assessment, adviceBundle, facts)
       ]);
 
+      // Keep the documents heading visually separate from the facts table.
+      // This prevents long client-fact rows from colliding with the next section.
+      ensureSpace(doc, 110);
       writeTitle(doc, 'Documents reviewed, not reviewed and required', { gold: true });
       writeSubheading(doc, 'Documents sighted');
       const sighted = uniqueClean([...(adviceBundle.documents && adviceBundle.documents.sighted || []), 'Assessment questionnaire responses']);
