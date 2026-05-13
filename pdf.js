@@ -476,7 +476,13 @@ function buildMatterFinding(item) {
   let body;
   let evidence;
   let strategy;
-  if (/direct entry.*stream|direct entry.*skills|skills assessment.*qualification|occupation and skills pathway/.test(lower)) {
+  if (/labou?r agreement|agreement coverage|agreement concessions|agreement terms/.test(lower)) {
+    body = 'The Labour Agreement pathway must be assessed against the executed agreement itself. The critical issue is whether the agreement expressly covers the nominated occupation, the employer, nomination limits, salary settings, English and age concessions, and any conditions attached to the agreement. The matter should not be treated as lodgement-ready merely because Labour Agreement was selected in the questionnaire.';
+    strategy = 'Obtain and review the executed Labour Agreement, occupation schedule, concession clauses, nomination limits and sponsor compliance material before confirming the pathway.';
+    evidence = 'Executed Labour Agreement, occupation coverage schedule, concession clauses, nomination limits, sponsor obligations, compliance records and nomination material.';
+    delegateRisk = 'Elevated Delegate Risk';
+    pos = 'Potentially supportable only if agreement terms and concessions are verified';
+  } else if (/direct entry.*stream|direct entry.*skills|skills assessment.*qualification|occupation and skills pathway/.test(lower)) {
     body = 'For the Direct Entry stream, the assessment should focus on skills assessment, occupation eligibility, qualifications, employment history, registration or licensing requirements and the fit between the applicant’s background and the nominated position. It should not be treated as a TRT qualifying-employment analysis unless the selected stream changes.';
     strategy = 'Verify the skills assessment, qualifications, CV, employment references, registration/licensing position and nominated-occupation alignment before relying on Direct Entry.';
     evidence = 'Skills assessment outcome, qualifications, transcripts, CV, employment references, registration/licensing evidence, duties statement and nominated occupation material.';
@@ -508,11 +514,20 @@ function buildMatterFinding(item) {
     const txt = JSON.stringify(item || {}).toLowerCase();
     const ageMatch = txt.match(/(?:recorded as|age[^0-9]{0,20})(\d{1,2})\s*(?:years|year|)/i);
     if (ageMatch) {
-      body = `The applicant is recorded as ${ageMatch[1]} years old. On the information provided, the age position appears capable of satisfying the ordinary age threshold, subject to passport/date-of-birth verification at lodgement and any stream-specific exemption review if required.`;
-      strategy = 'Confirm the applicant’s date of birth from passport evidence and check the age position at the relevant application date before final advice.';
-      evidence = 'Passport, birth/date-of-birth evidence, age-at-application calculation and exemption or concession material if required.';
-      delegateRisk = Number(ageMatch[1]) < 45 ? 'Managed Delegate Risk' : 'Moderate Delegate Risk';
-      pos = Number(ageMatch[1]) < 45 ? 'Presently supportable, subject to standard verification' : 'Material legal or evidentiary issue to be resolved';
+      const ageNum = Number(ageMatch[1]);
+      if (ageNum >= 45) {
+        body = `The applicant is recorded as ${ageNum} years old. This is a material age issue unless the selected stream, Labour Agreement, legislative instrument, exemption or concession pathway permits the applicant to proceed despite being over the ordinary age threshold. The matter should not be treated as lodgement-ready until the age concession or exemption basis is identified and evidenced.`;
+        strategy = 'Confirm age at the relevant application date and obtain the exact Labour Agreement concession, exemption or legislative basis before any lodgement-ready recommendation is issued.';
+        evidence = 'Passport/date-of-birth evidence, age-at-application calculation, executed Labour Agreement age concession clause, exemption evidence and any supporting employer/occupation material.';
+        delegateRisk = 'Elevated Delegate Risk';
+        pos = 'Potentially blocking issue until concession or exemption is verified';
+      } else {
+        body = `The applicant is recorded as ${ageNum} years old. The age position appears presently supportable, subject to passport/date-of-birth verification and timing of application.`;
+        strategy = 'Confirm the applicant’s date of birth from passport evidence and check the age position at the relevant application date before final advice.';
+        evidence = 'Passport, birth/date-of-birth evidence and age-at-application calculation.';
+        delegateRisk = 'Managed Delegate Risk';
+        pos = 'Presently supportable, subject to standard verification';
+      }
     } else {
       body = 'The age position must be confirmed from original passport and date-of-birth evidence before lodgement-ready advice is issued.';
       strategy = 'Confirm age at the relevant application date and obtain exemption evidence if the ordinary threshold is not clearly met.';
@@ -797,7 +812,7 @@ function writePremiumFindingCard(doc, raw) {
   const item = buildMatterFinding(raw);
   const legalReq = cleanText(raw.legalRequirement || raw.legislativeRequirement || buildLegislativeRequirementForCriterion(item.criterion));
   const clientFact = cleanText(raw.clientFact || raw.knownFact || raw.fact || raw.relevantFact || 'The questionnaire answer is treated as client instruction and must be verified against original evidence.');
-  const finding = cleanText(raw.finding || item.position);
+  const finding = cleanText(item.body || raw.finding || item.position);
   const consequence = cleanText(raw.legal_consequence || raw.legalConsequence || item.body);
   writeRiskCard(doc, item.criterion, item.delegateRisk, [
     ['Legal requirement', legalReq],
@@ -1374,7 +1389,13 @@ function v10ProfessionalFinding(criterion, item, built) {
     return 'The salary position should be verified against employment contracts, payroll records, market salary or agreement settings and any applicable concession terms.';
   }
   if (/english/.test(c)) {
-    return 'The application should not proceed on assumed English eligibility. The original test result, exemption basis or agreement concession should be checked against the current threshold before final advice.';
+    return 'The application should not proceed on assumed English eligibility. If English evidence is recorded as unavailable or not provided, the file requires an original test result, eligible passport evidence, exemption basis or Labour Agreement concession before lodgement-ready advice can be issued.';
+  }
+  if (/age/.test(c)) {
+    const txt = JSON.stringify(item || {}).toLowerCase();
+    const m = txt.match(/(?:recorded as|age[^0-9]{0,20})(\d{1,2})/i);
+    if (m && Number(m[1]) >= 45) return `The applicant is recorded as ${Number(m[1])} years old. This is a potentially blocking age issue unless a Labour Agreement concession, exemption or other lawful basis is expressly available and evidenced.`;
+    return 'The age position must be confirmed from passport/date-of-birth evidence and assessed at the relevant application date.';
   }
   if (/health/.test(c)) {
     return 'Any health disclosure should be considered early because it may affect timing, evidence strategy and whether further medical material is required before final advice.';
@@ -1635,7 +1656,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       writeTitle(doc, 'Final professional recommendation', { gold: true, size: 17 });
       writePara(doc, `${v10Recommendation(subclass, stream, position, issue, criteria)}
 
-My recommendation is to proceed by evidence preparation, not immediate lodgement. If the Labour Agreement or stream-specific requirements, nomination evidence, occupation alignment, English/concession position and public interest records are confirmed, the matter may be capable of progressing with a properly prepared submission and evidence brief. If any of those matters cannot be confirmed, the strategy should be paused or redirected before filing.
+My recommendation is to proceed by evidence preparation, not immediate lodgement. If the Labour Agreement or stream-specific requirements, nomination evidence, occupation alignment, age concession or exemption, English/concession position and public interest records are confirmed, the matter may be capable of progressing with a properly prepared submission and evidence brief. If any of those matters cannot be confirmed, the strategy should be paused or redirected before filing.
 
 This advice is based on the information presently available. Final lodgement advice should be issued only after original documents, employer material, migration history records and current legal settings are reviewed.`);
 
