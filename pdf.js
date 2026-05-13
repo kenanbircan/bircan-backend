@@ -373,14 +373,29 @@ function groupEvidence(items) {
 
 function normaliseNextSteps(items, advice) {
   const raw = uniqueClean(items);
+  const adviceObj = advice || {};
+  const stream = inferStream({}, {}, adviceObj);
+  const streamText = String(stream || adviceObj.stream || '').toLowerCase();
   const joined = raw.join(' ').toLowerCase();
+  const context = joined + ' ' + JSON.stringify(adviceObj || {}).toLowerCase();
   const steps = [];
   const add = s => { if (s && !steps.includes(s)) steps.push(s); };
   add('Obtain complete instructions and original supporting documents.');
-  if (/sponsor|nomination|employer|position|genuine/.test(joined + JSON.stringify(advice || {}))) add('Review the sponsoring employer’s operational evidence, nomination structure and business need for the role.');
-  if (/occupation|anzsco|skill|experience|duties|salary|payroll/.test(joined + JSON.stringify(advice || {}))) add('Reconcile the occupation, duties, salary and employment evidence against the nominated pathway.');
-  if (/labour agreement|agreement|concession|stream/.test(joined + JSON.stringify(advice || {}))) add('Check the applicable Labour Agreement terms, concessions and employer compliance requirements.');
-  add('Review English, health, character and immigration-history evidence before any final advice.');
+  if (/direct/.test(streamText)) {
+    add('Verify the Direct Entry skills assessment, qualifications, employment references, CV, licensing or registration evidence and occupation alignment.');
+    add('Review the employer nomination, genuine-position evidence, duties, salary and business need as one coherent file.');
+  } else if (/temporary residence|trt/.test(streamText)) {
+    add('Reconstruct the qualifying TRT employment period using visa, payroll, PAYG/tax, superannuation, leave and sponsor-continuity records.');
+    add('Review the nomination, genuine-position evidence, salary and occupation-continuity position before final advice.');
+  } else if (/labou?r agreement/.test(streamText)) {
+    add('Check the executed Labour Agreement, occupation coverage, concessions, nomination limits and employer compliance requirements.');
+    add('Reconcile duties, salary, English or age concessions and sponsor compliance against the actual agreement terms.');
+  } else {
+    if (/sponsor|nomination|employer|position|genuine/.test(context)) add('Review the sponsoring employer’s operational evidence, nomination structure and business need for the role.');
+    if (/occupation|anzsco|skill|experience|duties|salary|payroll/.test(context)) add('Reconcile the occupation, duties, salary and employment evidence against the nominated pathway.');
+    if (/labour agreement|agreement|concession/.test(context)) add('Check the applicable Labour Agreement terms, concessions and employer compliance requirements.');
+  }
+  add('Review English, age, health, character and immigration-history evidence before any final advice.');
   add('Prepare a final written position only after the evidence package has been professionally verified.');
   return steps.slice(0, 6);
 }
@@ -449,11 +464,19 @@ function buildMatterFinding(item) {
   const lower = criterion.toLowerCase();
   const tone = criterionTone(item);
   const pos = positionLabel(tone);
-  const delegateRisk = riskLevelForFinding(item);
+  let delegateRisk = riskLevelForFinding(item);
   let body;
   let evidence;
   let strategy;
-  if (/salary|market|income|remuneration|employment conditions/.test(lower)) {
+  if (/direct entry.*stream|direct entry.*skills|skills assessment.*qualification|occupation and skills pathway/.test(lower)) {
+    body = 'For the Direct Entry stream, the assessment should focus on skills assessment, occupation eligibility, qualifications, employment history, registration or licensing requirements and the fit between the applicant’s background and the nominated position. It should not be treated as a TRT qualifying-employment analysis unless the selected stream changes.';
+    strategy = 'Verify the skills assessment, qualifications, CV, employment references, registration/licensing position and nominated-occupation alignment before relying on Direct Entry.';
+    evidence = 'Skills assessment outcome, qualifications, transcripts, CV, employment references, registration/licensing evidence, duties statement and nominated occupation material.';
+  } else if (/trt|temporary residence|qualifying employment|sponsor continuity/.test(lower)) {
+    body = 'For the TRT stream, the critical analysis is whether qualifying employment, sponsor continuity, nominated occupation continuity and visa history can be demonstrated through objective records.';
+    strategy = 'Reconstruct the qualifying employment period from visa, payroll, PAYG/tax, superannuation, leave and employer confirmation records.';
+    evidence = '457/482/SID visa records, employment chronology, payslips, PAYG/tax records, superannuation, leave records and employer confirmation letters.';
+  } else if (/salary|market|income|remuneration|employment conditions/.test(lower)) {
     body = 'The salary position must be reconciled against the nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award or enterprise agreement material and any applicable concession. A delegate may compare the nominated salary against actual payments and employer records.';
     strategy = 'Reconcile the nomination salary, contract, payroll, tax, superannuation and market salary or concession evidence before relying on the salary position.';
     evidence = 'Nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award/enterprise agreement material and any concession evidence.';
@@ -470,12 +493,13 @@ function buildMatterFinding(item) {
     strategy = 'Any payroll irregularity, unpaid period, salary change or allowance structure should be explained in a short evidence note before final advice is issued.';
     evidence = 'Employment contract, payslips, PAYG/tax records, superannuation records, salary increase letters and market salary evidence.';
   } else if (/english/.test(lower)) {
-    body = 'The English requirement should be assessed by reference to the stream, validity period of any test result, passport evidence, exemptions and any concession contained in a labour agreement or relevant instrument.';
+    body = /labou?r agreement|concession/.test(lower) ? 'The English requirement should be assessed by reference to the stream, validity period of any test result, passport evidence, exemptions and any concession contained in a labour agreement or relevant instrument.' : 'The English requirement should be assessed by reference to the selected stream, validity period of any test result, eligible passport evidence and any exemption claimed. Raw test grades or scores must be checked against the original report and current threshold.';
     strategy = 'The file should not proceed on assumed English eligibility. The original test report or exemption evidence should be reviewed against the current legal threshold.';
-    evidence = 'Original English test result, passport evidence, exemption evidence or labour agreement concession material.';
+    evidence = /labou?r agreement|concession/.test(lower) ? 'Original English test result, passport evidence, exemption evidence or labour agreement concession material.' : 'Original English test result, passport evidence, exemption evidence and test validity records.';
   } else if (/health/.test(lower)) {
     const txt = JSON.stringify(item || {}).toLowerCase();
     if (/no health issue has been disclosed|standard health requirements/.test(txt)) {
+      delegateRisk = 'Standard Requirement';
       body = 'No health issue has been disclosed in the questionnaire. The applicant must still satisfy standard health requirements, and the position remains subject to Departmental health examinations and any family-member health considerations.';
       strategy = 'Complete standard health declarations and review any Departmental health request if issued.';
       evidence = 'Health declarations, Departmental health examination requests and family-member health information if applicable.';
@@ -487,6 +511,7 @@ function buildMatterFinding(item) {
   } else if (/character|integrity|4020|adverse/.test(lower)) {
     const txt = JSON.stringify(item || {}).toLowerCase();
     if (/no character, integrity|standard police|no adverse immigration/.test(txt)) {
+      delegateRisk = 'Standard Requirement';
       body = 'No character, integrity or adverse immigration-history issue has been disclosed in the questionnaire. The position remains subject to police clearances, Departmental records and document-consistency checks.';
       strategy = 'Obtain standard police and immigration-history records and check them for consistency before final advice.';
       evidence = 'Police certificates, VEVO/grant records, prior application records and Department correspondence if applicable.';
@@ -861,12 +886,14 @@ function buildStreamNarrative(stream) {
 }
 
 function buildPathwayRows(stream) {
+  const s = String(stream || '').toLowerCase();
+  const selected = label => `Selected pathway: ${label}`;
   return [
-    ['186 TRT', stream === 'Temporary Residence Transition' ? 'Primary pathway requiring evidence reconciliation' : 'Fallback pathway if qualifying employment and sponsor continuity are established', 'Employment continuity and sponsor history', 'Visa, payroll, tax and superannuation records'],
-    ['186 Direct Entry', stream === 'Direct Entry' ? 'Primary pathway requiring occupation and skills confirmation' : 'Fallback pathway if skills and occupation evidence are stronger than TRT evidence', 'Occupation alignment and skills evidence', 'Skills assessment, duties, qualifications and references'],
-    ['186 Labour Agreement', stream === 'Labour Agreement' ? 'Primary pathway governed by agreement terms' : 'Available only if the employer is covered by an applicable agreement', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records'],
-    ['482 Employer Sponsored', 'Temporary fallback pathway if permanent residence evidence is not ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
-    ['494 Regional', 'Regional fallback pathway where employer location and occupation settings support it', 'Regional location and employer sponsorship', 'Regional postcode, nomination evidence and occupation eligibility']
+    ['186 TRT', /temporary residence|trt/.test(s) ? selected('186 TRT') : 'Alternative only if qualifying employment and sponsor continuity are established', 'Employment continuity and sponsor history', 'Visa, payroll, tax and superannuation records'],
+    ['186 Direct Entry', /direct/.test(s) ? selected('186 Direct Entry') : 'Alternative only if skills and occupation evidence are stronger than TRT evidence', 'Occupation alignment and skills evidence', 'Skills assessment, duties, qualifications and references'],
+    ['186 Labour Agreement', /labou?r agreement/.test(s) ? selected('186 Labour Agreement') : 'Alternative only if the employer is covered by an applicable agreement', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records'],
+    ['482 Employer Sponsored', 'Fallback only if permanent residence evidence is not ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
+    ['494 Regional', 'Fallback only where employer location and occupation settings support it', 'Regional location and employer sponsorship', 'Regional postcode, nomination evidence and occupation eligibility']
   ];
 }
 
@@ -1119,8 +1146,10 @@ function v10StatusFromText(value) {
 function v10RiskLevel(criterion, item) {
   const c = String(criterion || '').toLowerCase();
   const combined = `${criterion || ''} ${item && (item.risk || item.risk_level || item.delegateRisk || item.position || item.finding || item.recommendation || '')}`.toLowerCase();
-  if (/4020|character|false|misrep|cancel|refus|bar|8503|section 48|health waiver|critical/.test(combined)) return 'Critical / threshold risk';
-  if (/english|concession|labour agreement|agreement terms|health|character|integrity|salary|market|elevated/.test(c + ' ' + combined)) return 'Elevated delegate risk';
+  if (/standard requirement|no health issue has been disclosed|no character, integrity|standard health requirements|standard police/.test(combined)) return 'Standard requirement';
+  if (/4020|false|misrep|cancel|refus|bar|8503|section 48|health waiver|critical/.test(combined)) return 'Critical / threshold risk';
+  if (/concession|labour agreement|agreement terms|salary|market|elevated/.test(c + ' ' + combined)) return 'Elevated delegate risk';
+  if (/english|health|character|integrity/.test(c + ' ' + combined)) return 'Managed standard requirement';
   if (/nomination|genuine|occupation|anzsco|employment|work history|sponsor|business|stream|moderate/.test(c + ' ' + combined)) return 'Moderate delegate risk';
   return 'Managed delegate risk';
 }
@@ -1128,6 +1157,46 @@ function v10RiskLevel(criterion, item) {
 function v10DefaultCriteria(subclass, stream) {
   const s = String(subclass || '').trim();
   const st = String(stream || '').toLowerCase();
+  if (s === '186' && /direct/.test(st)) {
+    return [
+      { criterion: 'Direct Entry stream eligibility, occupation and skills pathway', finding: 'The matter is being assessed as Direct Entry, not TRT or Labour Agreement. The primary analysis is skills assessment, occupation eligibility, qualifications, employment history and any registration or licensing requirement.' },
+      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must establish a genuine position, business need and capacity to employ the applicant in the nominated role.' },
+      { criterion: 'Direct Entry skills assessment, qualifications and employment evidence', finding: 'The skills assessment, qualifications, references, CV and licensing or registration material must support the nominated occupation.' },
+      { criterion: 'Genuine position and operational need', finding: 'The role should be supported by objective business records rather than general statements from the employer.' },
+      { criterion: 'Occupation, duties and ANZSCO alignment', finding: 'The nominated occupation should be supported by actual duties, qualifications, references and role evidence.' },
+      { criterion: 'Salary, market position and employment conditions', finding: 'Salary and employment terms should be internally consistent and defensible under the nomination and market salary framework.' },
+      { criterion: 'English language requirement', finding: 'The English requirement or exemption should be verified from original evidence before final advice.' },
+      { criterion: 'Age requirement or exemption', finding: 'Age at lodgement and any claimed exemption should be verified from original evidence.' },
+      { criterion: 'Standard requirement - health requirements', finding: 'No health issue should be treated as elevated unless disclosed or otherwise indicated. Standard health requirements still apply.' },
+      { criterion: 'Standard requirement - character and immigration history', finding: 'No character or adverse immigration-history issue should be treated as elevated unless disclosed or otherwise indicated. Standard checks still apply.' }
+    ];
+  }
+  if (s === '186' && /temporary residence|trt/.test(st)) {
+    return [
+      { criterion: 'TRT stream eligibility and qualifying employment pathway', finding: 'The TRT pathway depends on qualifying employment, visa history, sponsor continuity and occupation continuity.' },
+      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must establish a genuine position, business need and capacity to employ the applicant.' },
+      { criterion: 'Qualifying employment, sponsor continuity and work history', finding: 'Employment continuity should be reconciled against visa, payroll, tax, superannuation and leave records.' },
+      { criterion: 'Genuine position and operational need', finding: 'The role should be supported by objective business records.' },
+      { criterion: 'Salary, market position and employment conditions', finding: 'Salary and employment terms should be internally consistent and defensible.' },
+      { criterion: 'English language requirement or exemption', finding: 'English requirements or exemptions should be verified.' },
+      { criterion: 'Age requirement or exemption', finding: 'Age and any exemption must be verified.' },
+      { criterion: 'Standard requirement - health requirements', finding: 'Standard health requirements apply unless a health issue is disclosed.' },
+      { criterion: 'Standard requirement - character and immigration history', finding: 'Standard character and immigration-history checks apply unless an adverse issue is disclosed.' }
+    ];
+  }
+  if (s === '186' && /labou?r agreement/.test(st)) {
+    return [
+      { criterion: 'Labour Agreement coverage, occupation terms and selected pathway', finding: 'The pathway depends on the executed agreement, occupation coverage, nomination limits and any available concessions.' },
+      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must align with the agreement and show a genuine position.' },
+      { criterion: 'Agreement concessions and conditions', finding: 'Any English, age, salary or occupation concession must be expressly available under the agreement and supported by evidence.' },
+      { criterion: 'Genuine position and operational need', finding: 'The role must be genuine, available and supported by employer records.' },
+      { criterion: 'Salary and employment conditions under the agreement', finding: 'Salary and employment terms must be consistent with the agreement and supporting payroll records.' },
+      { criterion: 'English requirement or agreement concession', finding: 'English eligibility or concession must be verified under the agreement terms.' },
+      { criterion: 'Age requirement or agreement concession', finding: 'Age eligibility or concession must be verified under the agreement terms.' },
+      { criterion: 'Standard requirement - health requirements', finding: 'Standard health requirements apply unless a health issue is disclosed.' },
+      { criterion: 'Standard requirement - character and immigration history', finding: 'Standard character and immigration-history checks apply unless an adverse issue is disclosed.' }
+    ];
+  }
   const base = [];
   if (['186','187','482','494'].includes(s)) {
     base.push(
@@ -1514,7 +1583,8 @@ function extractUniversalClientFacts(assessment, adviceBundle, facts) {
     if (!v || v === '—' || /^undefined|null$/i.test(v)) return;
     if (opts.noBoolean && isBooleanLike(v)) return;
     if (opts.dobToAge) v = ageFromDob(v);
-    if (opts.english && /^\d+$/.test(v)) v = `English score reported: ${v}`;
+    if (opts.english && /^\d+$/.test(v)) v = `English score reported: ${v} — original test report and validity to be verified`;
+    if (opts.english && /^[A-E]$/i.test(v)) v = `English grade recorded as ${v.toUpperCase()} — test type, original report and validity to be verified`;
     out.push([label, v]);
   }
   const payload = (assessment && assessment.form_payload) || {};
@@ -1541,7 +1611,7 @@ function extractUniversalClientFacts(assessment, adviceBundle, facts) {
   add('Nominated occupation / role', pick(['occupation','nominatedOccupation','nominated occupation','jobTitle','job title','anzsco']), { noBoolean: true });
   add('Employer / sponsor', pick(['employerName','employer name','sponsorName','sponsor name','businessName']));
   add('Salary / remuneration', pick(['salary','annualSalary','baseSalary','remuneration']));
-  add('English position', pick(['english','englishTest','english score','ielts','pte']), { english: true });
+  add('English evidence', pick(['english-test-type','english test type','english','englishTest','english score','ielts','pte','oet','toefl']), { english: true });
   add('Age', pick(['age','dateOfBirth','date of birth']), { dobToAge: true });
   add('Relationship / family position', pick(['relationship','partner','spouse','de facto','sponsor relationship']));
   add('Course / provider', pick(['course','provider','educationProvider','coe']));
