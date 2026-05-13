@@ -5926,12 +5926,36 @@ function buildCriterionFindingFromProfile(profile, context) {
   if (/salary|market|remuneration|employment conditions/.test(lowerCriterion)) {
     finding = 'The salary and employment-conditions position must be reconciled against the nomination, employment contract, payroll, superannuation, tax records, market salary evidence and any applicable Labour Agreement concession.';
     legal_consequence = 'If salary, market salary or concession evidence cannot be reconciled, the nomination or stream position may become a primary refusal risk.';
+  } else if (/age/.test(lowerCriterion)) {
+    const ageText = String(answer || '').trim();
+    const ageNumber = /^\d{1,2}$/.test(ageText) ? Number(ageText) : null;
+    const dobMatch = ageText.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    let calculatedAge = ageNumber;
+    if (dobMatch) {
+      const dob = new Date(`${dobMatch[1]}-${dobMatch[2]}-${dobMatch[3]}T00:00:00Z`);
+      if (!Number.isNaN(dob.getTime())) {
+        const now = new Date();
+        calculatedAge = now.getUTCFullYear() - dob.getUTCFullYear();
+        const beforeBirthday = (now.getUTCMonth() < dob.getUTCMonth()) || (now.getUTCMonth() === dob.getUTCMonth() && now.getUTCDate() < dob.getUTCDate());
+        if (beforeBirthday) calculatedAge -= 1;
+      }
+    }
+    if (calculatedAge !== null && Number.isFinite(calculatedAge)) {
+      finding = `The applicant is recorded as ${calculatedAge} years old. On the information provided, the age position appears capable of satisfying the ordinary age threshold, subject to passport/date-of-birth verification at lodgement and any stream-specific exemption review if required.`;
+      delegateRisk = calculatedAge < 45 ? 'Managed Delegate Risk' : 'Moderate Delegate Risk';
+      legal_consequence = calculatedAge < 45 ? 'The age position appears presently supportable, subject to original passport/date-of-birth verification at the time relevant to the selected stream.' : 'The age position may require exemption or concession analysis before lodgement-ready advice can be issued.';
+    } else {
+      finding = 'The age position must be confirmed from passport and date-of-birth evidence before lodgement-ready advice is issued.';
+      delegateRisk = 'Moderate Delegate Risk';
+      legal_consequence = 'If the age threshold is not clearly met, an exemption or concession basis must be identified before the pathway is treated as viable.';
+    }
   } else if (/validity|identity|location/.test(lowerCriterion)) {
     finding = 'The identity, current location, current visa status and application-validity position appear capable of being assessed, but must be confirmed against passport, VEVO, grant notices, location evidence and any stream-specific validity prerequisites.';
     delegateRisk = 'Managed Delegate Risk';
   } else if (/health/.test(lowerCriterion)) {
     if (/^(no|false|none|nil)$/i.test(lowerAnswer)) {
-      finding = 'No health issue has been disclosed in the assessment response. Standard health requirements still need to be satisfied, but no elevated health concern is apparent from the present instructions.';
+      finding = 'No health issue has been disclosed in the assessment response. This is presently a standard requirement rather than an elevated risk issue, subject to routine Departmental health examinations and any family-member health considerations.';
+      legal_consequence = 'The health position appears presently supportable on the instructions, subject to standard health declarations, examination requests and family-member health checks if applicable.';
       delegateRisk = 'Standard Requirement';
     } else if (answer) {
       finding = 'A health-related disclosure or health information has been recorded. The issue should be reviewed early because it may affect timing, evidence strategy and final advice.';
@@ -5941,7 +5965,8 @@ function buildCriterionFindingFromProfile(profile, context) {
     }
   } else if (/character|integrity|4020|false|misleading|migration history|refusals|cancellations|compliance/.test(lowerCriterion)) {
     if (/^(no|false|none|nil)$/i.test(lowerAnswer)) {
-      finding = 'No character, integrity or adverse immigration-history issue has been disclosed in the assessment response. Standard police, Departmental record and document-consistency checks are still required before final advice.';
+      finding = 'No character, integrity or adverse immigration-history issue has been disclosed in the assessment response. This is presently a standard verification requirement, subject to police clearances, Departmental records and document-consistency checks.';
+      legal_consequence = 'The character and immigration-history position appears presently supportable on the instructions, subject to routine police, VEVO, Departmental and document-consistency checks.';
       delegateRisk = 'Standard Requirement';
     } else if (answer) {
       finding = 'A character, integrity or immigration-history disclosure has been recorded. The issue should be reviewed against police, court, Departmental and prior-application records before any lodgement-ready advice is issued.';

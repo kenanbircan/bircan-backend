@@ -426,14 +426,22 @@ function normaliseCriterionFinding(item) {
 }
 
 function niceCriterionName(name) {
-  return titleCaseWords(name || 'Criterion')
+  let text = titleCaseWords(name || 'Criterion')
+    .replace(/^Standard Requirement\s*[-–—:]?\s*/i, '')
+    .replace(/^Managed Standard Requirement\s*[-–—:]?\s*/i, '')
+    .replace(/^Managed Delegate Risk\s*[-–—:]?\s*/i, '')
+    .replace(/^Moderate Delegate Risk\s*[-–—:]?\s*/i, '')
+    .replace(/^Elevated Delegate Risk\s*[-–—:]?\s*/i, '')
     .replace(/Approved Sponsor \/ Sponsoring Employer/gi, 'Sponsoring Employer Position')
     .replace(/Approved Nomination \/ Nominated Position/gi, 'Nomination and Position Review')
     .replace(/Occupation Eligibility and Alignment/gi, 'Occupation and ANZSCO Alignment')
     .replace(/Pic 4020/g, 'PIC 4020')
     .replace(/Anzsco/g, 'ANZSCO')
     .replace(/Trt/g, 'TRT')
-    .replace(/Ens/g, 'ENS');
+    .replace(/Ens/g, 'ENS')
+    .replace(/Standard Requirement\s+Standard Requirement/gi, 'Standard Requirement')
+    .trim();
+  return text;
 }
 
 function riskLevelForFinding(item) {
@@ -463,7 +471,7 @@ function buildMatterFinding(item) {
   const criterion = niceCriterionName(item.criterion);
   const lower = criterion.toLowerCase();
   const tone = criterionTone(item);
-  const pos = positionLabel(tone);
+  let pos = positionLabel(tone);
   let delegateRisk = riskLevelForFinding(item);
   let body;
   let evidence;
@@ -496,10 +504,25 @@ function buildMatterFinding(item) {
     body = /labou?r agreement|concession/.test(lower) ? 'The English requirement should be assessed by reference to the stream, validity period of any test result, passport evidence, exemptions and any concession contained in a labour agreement or relevant instrument.' : 'The English requirement should be assessed by reference to the selected stream, validity period of any test result, eligible passport evidence and any exemption claimed. Raw test grades or scores must be checked against the original report and current threshold.';
     strategy = 'The file should not proceed on assumed English eligibility. The original test report or exemption evidence should be reviewed against the current legal threshold.';
     evidence = /labou?r agreement|concession/.test(lower) ? 'Original English test result, passport evidence, exemption evidence or labour agreement concession material.' : 'Original English test result, passport evidence, exemption evidence and test validity records.';
+  } else if (/age/.test(lower)) {
+    const txt = JSON.stringify(item || {}).toLowerCase();
+    const ageMatch = txt.match(/(?:recorded as|age[^0-9]{0,20})(\d{1,2})\s*(?:years|year|)/i);
+    if (ageMatch) {
+      body = `The applicant is recorded as ${ageMatch[1]} years old. On the information provided, the age position appears capable of satisfying the ordinary age threshold, subject to passport/date-of-birth verification at lodgement and any stream-specific exemption review if required.`;
+      strategy = 'Confirm the applicant’s date of birth from passport evidence and check the age position at the relevant application date before final advice.';
+      evidence = 'Passport, birth/date-of-birth evidence, age-at-application calculation and exemption or concession material if required.';
+      delegateRisk = Number(ageMatch[1]) < 45 ? 'Managed Delegate Risk' : 'Moderate Delegate Risk';
+      pos = Number(ageMatch[1]) < 45 ? 'Presently supportable, subject to standard verification' : 'Material legal or evidentiary issue to be resolved';
+    } else {
+      body = 'The age position must be confirmed from original passport and date-of-birth evidence before lodgement-ready advice is issued.';
+      strategy = 'Confirm age at the relevant application date and obtain exemption evidence if the ordinary threshold is not clearly met.';
+      evidence = 'Passport, date-of-birth evidence, age-at-application calculation and any exemption or concession evidence.';
+    }
   } else if (/health/.test(lower)) {
     const txt = JSON.stringify(item || {}).toLowerCase();
     if (/no health issue has been disclosed|standard health requirements/.test(txt)) {
       delegateRisk = 'Standard Requirement';
+      pos = 'Standard requirement subject to routine verification';
       body = 'No health issue has been disclosed in the questionnaire. The applicant must still satisfy standard health requirements, and the position remains subject to Departmental health examinations and any family-member health considerations.';
       strategy = 'Complete standard health declarations and review any Departmental health request if issued.';
       evidence = 'Health declarations, Departmental health examination requests and family-member health information if applicable.';
@@ -512,6 +535,7 @@ function buildMatterFinding(item) {
     const txt = JSON.stringify(item || {}).toLowerCase();
     if (/no character, integrity|standard police|no adverse immigration/.test(txt)) {
       delegateRisk = 'Standard Requirement';
+      pos = 'Presently supportable, subject to standard verification';
       body = 'No character, integrity or adverse immigration-history issue has been disclosed in the questionnaire. The position remains subject to police clearances, Departmental records and document-consistency checks.';
       strategy = 'Obtain standard police and immigration-history records and check them for consistency before final advice.';
       evidence = 'Police certificates, VEVO/grant records, prior application records and Department correspondence if applicable.';
@@ -782,8 +806,22 @@ function riskColour(level) {
   return { bg: '#edf8f2', border: '#a8d8bd', text: '#125c36' };
 }
 
+function cleanRiskHeading(title, level) {
+  let t = cleanText(title || 'Criterion');
+  const l = cleanText(level || '');
+  if (l) {
+    const escaped = l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    t = t.replace(new RegExp('^' + escaped + '\\s*[-–—:]?\\s*', 'i'), '');
+  }
+  t = t.replace(/^(Standard Requirement|Managed Standard Requirement|Managed Delegate Risk|Moderate Delegate Risk|Elevated Delegate Risk)\s*[-–—:]?\s*/i, '');
+  t = t.replace(/\bStandard Requirement\s+Standard Requirement\b/gi, 'Standard Requirement').trim();
+  return t || 'Criterion';
+}
+
 function writeRiskCard(doc, title, level, rows) {
-  const colour = riskColour(level);
+  const cleanLevel = cleanText(level || '');
+  const displayTitle = cleanRiskHeading(title, cleanLevel);
+  const colour = riskColour(cleanLevel);
   const cleanedRows = rows.map(([l, v]) => [cleanText(l), cleanText(v)]);
   let totalH = 58;
   for (const [l, v] of cleanedRows) {
@@ -796,8 +834,8 @@ function writeRiskCard(doc, title, level, rows) {
   const startY = doc.y;
   doc.roundedRect(PAGE.L, startY, PAGE.WIDTH, totalH, 12).fillAndStroke('#ffffff', BRAND.line);
   doc.roundedRect(PAGE.L + 14, startY + 14, 135, 22, 10).fillAndStroke(colour.bg, colour.border);
-  doc.font('Helvetica-Bold').fontSize(8.2).fillColor(colour.text).text(cleanText(level), PAGE.L + 24, startY + 20, { width: 116, lineBreak: false });
-  doc.font('Helvetica-Bold').fontSize(11.2).fillColor(BRAND.navy).text(cleanText(title), PAGE.L + 166, startY + 17, { width: 360 });
+  doc.font('Helvetica-Bold').fontSize(8.2).fillColor(colour.text).text(cleanLevel, PAGE.L + 24, startY + 20, { width: 116, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(11.2).fillColor(BRAND.navy).text(displayTitle, PAGE.L + 166, startY + 17, { width: 360 });
   let y = startY + 50;
   for (const [l, v] of cleanedRows) {
     doc.font('Helvetica-Bold').fontSize(8.1).fillColor(BRAND.muted).text(l.toUpperCase(), PAGE.L + 16, y + 2, { width: 130 });
@@ -1678,7 +1716,16 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       writeSubheading(doc, 'Documents not yet sighted / not verified');
       uniqueClean([...(adviceBundle.documents && adviceBundle.documents.notSighted || []), 'Original identity documents', 'Original visa records', 'Original evidence supporting the selected subclass criteria', 'Current Departmental records and third-party records']).slice(0, 10).forEach(item => writeBullet(doc, item));
       writeSubheading(doc, 'Documents required before lodgement-ready advice');
-      uniqueClean([...(adviceBundle.documents && adviceBundle.documents.requiredBeforeLodgement || []), ...evidenceItems]).slice(0, 14).forEach(item => writeBullet(doc, item));
+      const requiredDocs = uniqueClean([...(adviceBundle.documents && adviceBundle.documents.requiredBeforeLodgement || []), ...evidenceItems]).slice(0, 40);
+      const requiredGroups = groupEvidence(requiredDocs);
+      if (requiredGroups.length) {
+        for (const [group, items] of requiredGroups.slice(0, 5)) {
+          writeSubheading(doc, group);
+          items.slice(0, 4).forEach(item => writeBullet(doc, item));
+        }
+      } else {
+        requiredDocs.slice(0, 14).forEach(item => writeBullet(doc, item));
+      }
 
       writeTitle(doc, 'Executive legal opinion', { gold: true });
       writePara(doc, buildExecutiveNarrative({ subclass, stream, position, issue }));
@@ -1716,7 +1763,7 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       writeTitle(doc, 'Evidence gap and delegate risk matrix', { gold: true });
       (findings.length ? findings : []).slice(0, 10).forEach(raw => {
         const item = buildMatterFinding(raw);
-        writeBullet(doc, `${item.criterion}: ${item.delegateRisk}. Required action: ${item.strategy || item.evidence}`);
+        writeBullet(doc, `${cleanRiskHeading(item.criterion, item.delegateRisk)}: ${item.delegateRisk}. Required action: ${item.strategy || item.evidence}`);
       });
 
       writeTitle(doc, 'Alternative pathway comparison', { gold: true });
