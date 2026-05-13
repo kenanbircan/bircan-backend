@@ -5669,6 +5669,18 @@ function visaGroupForSubclass10Grade(subclass) {
   return 'Subclass-specific migration pathway';
 }
 
+function evidenceFocusForVisaGroup10Grade(group) {
+  if (/Employer-sponsored/.test(group)) return 'sponsor, nomination, occupation, duties, salary, employer records, visa history and public interest evidence relevant to this subclass';
+  if (/Skilled migration/.test(group)) return 'skills assessment, EOI, invitation or nomination, points claims, English, employment, qualification and public interest evidence relevant to this subclass';
+  if (/Partner and family relationship/.test(group)) return 'relationship, sponsor eligibility, family composition, location, Schedule 3 where relevant, health and character evidence relevant to this subclass';
+  if (/Child, parent/.test(group)) return 'family relationship, sponsor eligibility, dependency, balance-of-family, carer/remaining-relative and public interest evidence relevant to this subclass';
+  if (/Business and investment/.test(group)) return 'nomination, business ownership, turnover, assets, investment, source-of-funds, residence and compliance evidence relevant to this subclass';
+  if (/Student, guardian and graduate/.test(group)) return 'course, CoE, genuine student/temporary stay, financial capacity, qualification, AFP, insurance, timing and public interest evidence relevant to this subclass';
+  if (/Visitor, medical/.test(group)) return 'visit purpose, funds, home ties, medical treatment, working-holiday eligibility, temporary stay and public interest evidence relevant to this subclass';
+  if (/Protection/.test(group)) return 'identity, nationality, protection claims, credibility, country information, state protection, relocation, exclusion and character/security evidence relevant to this subclass';
+  return 'client facts, uploaded evidence, visa history and public interest evidence relevant to this subclass';
+}
+
 function clientNextStepsForVisaGroup10Grade(group) {
   const base = [
     'Provide identity, passport, current location and current visa-status documents.',
@@ -5862,7 +5874,7 @@ function buildCriterionFindingFromProfile(profile, context) {
     const wanted = (keys || []).map(k => String(k).toLowerCase().replace(/[^a-z0-9]/g, ''));
     for (const [k, v] of Object.entries(flat || {})) {
       const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (wanted.some(w => nk === w || nk.includes(w) || w.includes(nk))) {
+      if (wanted.some(w => nk === w || nk.endsWith(w) || nk.includes(w))) {
         const text = String(v || '').replace(/\s+/g, ' ').trim();
         if (text) return text;
       }
@@ -5870,17 +5882,36 @@ function buildCriterionFindingFromProfile(profile, context) {
     return '';
   }
   const answer = getAny(profile.answerKeys || []);
-  const status = criterionStatusFromAnswer(answer, 'The current instructions are supportive, subject to verification of original evidence and current legal settings.');
+  const status = criterionStatusFromAnswer(answer, 'The available instructions are presently supportive, subject to verification against original evidence and current legal settings.');
   const legalRequirement = buildSourceBackedRequirement(profile.criterion, subclass, stream, legalPack);
-  let finding;
-  if (answer) {
-    finding = `${status.finding} The assessment response recorded for this issue is: ${answer}. This response must be tested against original documents and any inconsistent Departmental, sponsor or third-party records before lodgement-ready advice is issued.`;
+  const lowerCriterion = String(profile.criterion || '').toLowerCase();
+  const lowerAnswer = String(answer || '').toLowerCase();
+  let finding = '';
+  let legal_consequence = 'The criterion may be capable of being satisfied, but only if the supporting documents confirm the instructions and no inconsistent Departmental, sponsor or third-party records emerge.';
+  let delegateRisk = status.tone === 'risk' ? 'Elevated Delegate Risk' : 'Moderate Delegate Risk';
+
+  if (/salary|market|remuneration|employment conditions/.test(lowerCriterion)) {
+    finding = 'The salary and employment-conditions position must be reconciled against the nomination, employment contract, payroll, superannuation, tax records, market salary evidence and any applicable Labour Agreement concession.';
+    legal_consequence = 'If salary, market salary or concession evidence cannot be reconciled, the nomination or stream position may become a primary refusal risk.';
+  } else if (/validity|identity|location/.test(lowerCriterion)) {
+    finding = 'The identity, current location, current visa status and application-validity position appear capable of being assessed, but must be confirmed against passport, VEVO, grant notices, location evidence and any stream-specific validity prerequisites.';
+    delegateRisk = 'Managed Delegate Risk';
+  } else if (/health/.test(lowerCriterion)) {
+    if (/^(no|false|none|nil)$/i.test(lowerAnswer)) {
+      finding = 'No health issue has been disclosed in the assessment response. Standard health requirements still need to be satisfied, but no elevated health concern is apparent from the present instructions.';
+      delegateRisk = 'Managed Delegate Risk';
+    } else if (answer) {
+      finding = 'A health-related disclosure or health information has been recorded. The issue should be reviewed early because it may affect timing, evidence strategy and final advice.';
+      delegateRisk = 'Elevated Delegate Risk';
+    } else {
+      finding = 'The health position cannot be finally confirmed from the available instructions and should be checked through standard health declarations and any required medical evidence.';
+    }
+  } else if (answer) {
+    finding = `${status.finding} The answer has been treated as client instructions only and must be tested against original documents and any inconsistent Departmental, sponsor or third-party records before lodgement-ready advice is issued.`;
   } else {
     finding = 'The available questionnaire material does not finally establish this criterion. It must be assessed against the original evidence before lodgement-ready advice is issued.';
   }
-  const legal_consequence = status.tone === 'risk'
-    ? 'If this issue is not resolved, it may create a material validity, nomination, refusal or evidentiary risk depending on the applicable criterion.'
-    : 'The criterion may be capable of being satisfied, but only if the supporting documents confirm the instructions and no inconsistent Departmental or employer records emerge.';
+
   return {
     criterion: profile.criterion,
     finding,
@@ -5889,12 +5920,84 @@ function buildCriterionFindingFromProfile(profile, context) {
     recommendation: profile.recommendation,
     legislativeRequirement: legalRequirement,
     legalRequirement,
-    delegateRisk: status.tone === 'risk' ? 'Elevated Delegate Risk' : 'Moderate Delegate Risk',
+    delegateRisk,
     body: finding,
     strategy: profile.recommendation,
     evidence: profile.evidence,
     sourceBasis: 'Bircan Migration knowledgebase legal-source pack, subclass matrix and questionnaire facts.'
   };
+}
+
+
+// ---- Universal subclass/stream lock ----
+// This resolver is deliberately subclass-agnostic but subclass-safe. It prevents a
+// Labour Agreement matter being contaminated by generic Direct Entry/TRT wording,
+// and it prevents non-employer subclasses from inheriting employer streams from
+// pathway-comparison text. Only explicit stream/pathway fields are allowed to set
+// the stream. Generic text, criterion names, evidence labels and fallback advice
+// are never scanned for a stream.
+const BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH = 'universal-subclass-stream-lock-all-assessments-v1';
+
+const STREAM_KEY_RE = /(selectedstream|stream|visaStream|visastream|nominationstream|nominationpathway|pathway|selectedpathway|assessmentstream|subclassstream)$/i;
+
+function cleanStreamCandidateValue(value) {
+  const raw = String(value || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw || /^(yes|no|true|false|a|b|c|n\/?a|na|none|null|undefined)$/i.test(raw)) return '';
+  return raw;
+}
+
+function streamAllowedForSubclass(subclass, stream) {
+  const code = String(subclass || '').replace(/[^0-9]/g, '');
+  const s = String(stream || '').toLowerCase();
+  if (!stream || stream === 'To be confirmed') return true;
+  if (['186','187'].includes(code)) return /temporary residence transition|trt|direct entry|labou?r agreement/.test(s);
+  if (['482','494'].includes(code)) return /core skills|specialist skills|labou?r agreement|employer sponsored|subsequent entrant|sid|skills in demand/.test(s);
+  if (['189','190','489','491'].includes(code)) return /points|skilled|nominated|regional|family sponsored|state|territory/.test(s);
+  if (['100','300','309','801','820'].includes(code)) return /partner|spouse|de facto|prospective marriage|permanent|temporary/.test(s);
+  if (['101','103','115','116','173','836'].includes(code)) return /child|parent|carer|remaining relative|contributory|aged/.test(s);
+  if (['188','888'].includes(code)) return /business|innovation|investor|significant investor|entrepreneur|premium investor/.test(s);
+  if (['500','590','485'].includes(code)) return /student|guardian|graduate|post|work|replacement|higher education|vocational|school|elicos|research/.test(s);
+  if (['417','462'].includes(code)) return /first|second|third|working holiday|work and holiday/.test(s);
+  if (code === '600') return /tourist|visitor|sponsored family|business visitor|approved destination|frequent traveller/.test(s);
+  if (code === '602') return /medical/.test(s);
+  if (['785','790','866'].includes(code)) return /protection|safe haven|temporary protection|humanitarian/.test(s);
+  return true;
+}
+
+function normaliseAssessmentStream(value, subclass = '') {
+  const raw = cleanStreamCandidateValue(value);
+  const t = raw.toLowerCase();
+  let out = '';
+  if (/labou?r\s*agreement|agreement\s*stream/.test(t)) out = 'Labour Agreement';
+  else if (/temporary\s*residence\s*transition|\btrt\b/.test(t)) out = 'Temporary Residence Transition';
+  else if (/direct\s*entry|\bde\b/.test(t)) out = 'Direct Entry';
+  else if (/core\s*skills|skills\s*in\s*demand|\bsid\b/.test(t)) out = 'Core Skills / Skills in Demand';
+  else if (/specialist\s*skills/.test(t)) out = 'Specialist Skills';
+  else if (/subsequent\s*entrant/.test(t)) out = 'Subsequent Entrant';
+  else out = raw;
+  if (!out || !streamAllowedForSubclass(subclass, out)) return 'To be confirmed';
+  return out;
+}
+
+function findExplicitAssessmentStream(assessment, flat = {}) {
+  const direct = [
+    assessment && assessment.selected_stream,
+    assessment && assessment.stream,
+    assessment && assessment.nomination_stream,
+    assessment && assessment.selectedStream
+  ];
+  for (const value of direct) {
+    const cleaned = cleanStreamCandidateValue(value);
+    if (cleaned) return cleaned;
+  }
+  for (const [key, value] of Object.entries(flat || {})) {
+    const nk = String(key || '').replace(/[^a-z0-9]/gi, '');
+    if (STREAM_KEY_RE.test(nk)) {
+      const cleaned = cleanStreamCandidateValue(value);
+      if (cleaned) return cleaned;
+    }
+  }
+  return '';
 }
 
 async function buildFastLegalAdviceBundle(assessment) {
@@ -5917,7 +6020,7 @@ async function buildFastLegalAdviceBundle(assessment) {
     return fallback;
   }
 
-  const stream = pickValue(['selectedStream', 'selected stream', 'stream', 'nominationStream'], assessment.selected_stream || 'To be confirmed');
+  const stream = normaliseAssessmentStream(findExplicitAssessmentStream(assessment, flat) || assessment.selected_stream || 'To be confirmed', subclass);
   const employer = pickValue(['employerName', 'employer name', 'currentEmployer', 'current employer'], 'the sponsoring employer');
 
   const legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
@@ -5950,7 +6053,7 @@ async function buildFastLegalAdviceBundle(assessment) {
   const riskLevel = /refused|cancelled|criminal|false|misleading|unlawful|section 48|8503|not resolved|not available/.test(riskSignals) ? 'HIGH' : 'MEDIUM';
   const position = riskLevel === 'HIGH' ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'PROCEED_AFTER_EVIDENCE_REVIEW';
   const visaGroup = visaGroupForSubclass10Grade(subclass);
-  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by subclass-specific legal criteria and criterion-by-criterion evidence within the ${visaGroup} framework. The assessment must reconcile the client facts, uploaded material, visa history and any sponsor, relationship, nomination, invitation, course, business, visitor or protection evidence relevant to this subclass.`;
+  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by subclass-specific legal criteria and criterion-by-criterion evidence within the ${visaGroup} framework. The assessment must reconcile ${evidenceFocusForVisaGroup10Grade(visaGroup)}.`;
   const sourceHash = crypto.createHash('sha256').update(JSON.stringify((legalSourcePack.sources || []).map(s => [s.authority, s.path, s.sha256]))).digest('hex');
 
   const evidenceRows = findings.map(f => ({
@@ -5987,8 +6090,17 @@ async function buildFastLegalAdviceBundle(assessment) {
       evidence_required: findings.map(f => f.evidence_gap).filter(Boolean),
       client_next_steps: clientNextStepsForVisaGroup10Grade(visaGroup),
       quality_flags: [],
-      disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.'
+      disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.',
+      locked_subclass: subclass,
+      locked_stream: stream,
+      stream_lock_patch: BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH
     },
+    canonicalSubclass: subclass,
+    canonicalStream: stream,
+    subclass: subclass,
+    stream: stream,
+    selectedStream: stream,
+    lockedPathway: { subclass, stream, patch: BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH },
     criterionFindings: findings,
     findings,
     legalSourcePack,

@@ -244,12 +244,102 @@ function extractFactsObject(assessment, adviceBundle) {
   };
 }
 
+// ---- Universal subclass/stream lock ----
+// The renderer must never infer stream from generic text, criteria names, pathway
+// comparison rows or fallback advice. It uses the locked backend pathway first and
+// only explicit stream/pathway fields second. This prevents cross-stream and
+// cross-subclass contamination across all visa assessment PDFs.
+const BIRCAN_UNIVERSAL_STREAM_LOCK_PATCH = 'universal-subclass-stream-lock-all-assessments-v1';
+const STREAM_KEY_RE = /(selectedstream|stream|visaStream|visastream|nominationstream|nominationpathway|pathway|selectedpathway|assessmentstream|subclassstream)$/i;
+
+function cleanStreamCandidateValue(value) {
+  const raw = cleanText(String(value || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim());
+  if (!raw || /^(yes|no|true|false|a|b|c|n\/?a|na|none|null|undefined)$/i.test(raw)) return '';
+  return raw;
+}
+
+function streamAllowedForSubclass(subclass, stream) {
+  const code = String(subclass || '').replace(/[^0-9]/g, '');
+  const s = String(stream || '').toLowerCase();
+  if (!stream || stream === 'To be confirmed') return true;
+  if (['186','187'].includes(code)) return /temporary residence transition|trt|direct entry|labou?r agreement/.test(s);
+  if (['482','494'].includes(code)) return /core skills|specialist skills|labou?r agreement|employer sponsored|subsequent entrant|sid|skills in demand/.test(s);
+  if (['189','190','489','491'].includes(code)) return /points|skilled|nominated|regional|family sponsored|state|territory/.test(s);
+  if (['100','300','309','801','820'].includes(code)) return /partner|spouse|de facto|prospective marriage|permanent|temporary/.test(s);
+  if (['101','103','115','116','173','836'].includes(code)) return /child|parent|carer|remaining relative|contributory|aged/.test(s);
+  if (['188','888'].includes(code)) return /business|innovation|investor|significant investor|entrepreneur|premium investor/.test(s);
+  if (['500','590','485'].includes(code)) return /student|guardian|graduate|post|work|replacement|higher education|vocational|school|elicos|research/.test(s);
+  if (['417','462'].includes(code)) return /first|second|third|working holiday|work and holiday/.test(s);
+  if (code === '600') return /tourist|visitor|sponsored family|business visitor|approved destination|frequent traveller/.test(s);
+  if (code === '602') return /medical/.test(s);
+  if (['785','790','866'].includes(code)) return /protection|safe haven|temporary protection|humanitarian/.test(s);
+  return true;
+}
+
+function normaliseAssessmentStream(value, subclass = '') {
+  const raw = cleanStreamCandidateValue(value);
+  const t = raw.toLowerCase();
+  let out = '';
+  if (/labou?r\s*agreement|agreement\s*stream/.test(t)) out = 'Labour Agreement';
+  else if (/temporary\s*residence\s*transition|\btrt\b/.test(t)) out = 'Temporary Residence Transition';
+  else if (/direct\s*entry|\bde\b/.test(t)) out = 'Direct Entry';
+  else if (/core\s*skills|skills\s*in\s*demand|\bsid\b/.test(t)) out = 'Core Skills / Skills in Demand';
+  else if (/specialist\s*skills/.test(t)) out = 'Specialist Skills';
+  else if (/subsequent\s*entrant/.test(t)) out = 'Subsequent Entrant';
+  else out = raw;
+  if (!out || !streamAllowedForSubclass(subclass, out)) return 'To be confirmed';
+  return out;
+}
+
+function findExplicitFactStream(facts) {
+  const explicit = deepPick(facts, ['selectedStream','selected stream','stream','nominationStream','nomination stream','selectedPathway','selected pathway'], '');
+  if (cleanStreamCandidateValue(explicit)) return explicit;
+  const flat = {};
+  (function walk(obj, prefix='') {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [k, v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, key);
+      else flat[key] = Array.isArray(v) ? v.join(', ') : v;
+    }
+  })(facts || {});
+  for (const [key, value] of Object.entries(flat)) {
+    const nk = String(key || '').replace(/[^a-z0-9]/gi, '');
+    if (STREAM_KEY_RE.test(nk) && cleanStreamCandidateValue(value)) return value;
+  }
+  return '';
+}
+
 function inferStream(assessment, adviceBundle, advice) {
-  const blob = JSON.stringify({ assessment, adviceBundle, advice }).toLowerCase();
-  if (/labour agreement|labor agreement|la stream|agreement concession/.test(blob)) return 'Labour Agreement';
-  if (/direct entry|de stream|skills assessment/.test(blob)) return 'Direct Entry';
-  if (/temporary residence transition|\btrt\b|457|482/.test(blob)) return 'Temporary Residence Transition';
+  const facts = extractFactsObject(assessment || {}, adviceBundle || {});
+  const subclass = cleanText((advice && (advice.locked_subclass || advice.subclass)) || adviceBundle?.lockedPathway?.subclass || adviceBundle?.canonicalSubclass || assessment?.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], ''));
+  const lockedCandidates = [
+    adviceBundle && adviceBundle.lockedPathway && adviceBundle.lockedPathway.stream,
+    adviceBundle && adviceBundle.canonicalStream,
+    advice && advice.locked_stream,
+    advice && advice.stream,
+    adviceBundle && adviceBundle.stream,
+    adviceBundle && adviceBundle.selectedStream,
+    adviceBundle && adviceBundle.legalSourcePack && adviceBundle.legalSourcePack.selectedStream,
+    assessment && assessment.selected_stream,
+    assessment && assessment.stream,
+    findExplicitFactStream(facts)
+  ];
+  for (const value of lockedCandidates) {
+    const resolved = normaliseAssessmentStream(value, subclass);
+    if (resolved && resolved !== 'To be confirmed') return resolved;
+  }
   return 'To be confirmed';
+}
+
+function scrubContradictoryStreamText(text, subclass, stream) {
+  let out = cleanText(text);
+  if (!out || !stream || stream === 'To be confirmed') return out;
+  const code = cleanText(subclass || '');
+  if (code === '186' || code === '187') {
+    out = out.replace(new RegExp(`Subclass\s+${code}\s+(Direct Entry|Temporary Residence Transition|TRT|Labou?r Agreement)`, 'gi'), `Subclass ${code} ${stream}`);
+  }
+  return out;
 }
 
 function inferApplicantName(assessment, adviceBundle, facts) {
@@ -751,14 +841,42 @@ function buildStreamNarrative(stream) {
   return 'The stream should be confirmed before final advice is issued. Once confirmed, the file should be tested against the relevant stream criteria, nomination requirements, evidence burden and any applicable concession or instrument.';
 }
 
-function buildPathwayRows(stream) {
-  return [
-    ['186 TRT', stream === 'Temporary Residence Transition' ? 'Primary pathway requiring evidence reconciliation' : 'Fallback pathway if qualifying employment and sponsor continuity are established', 'Employment continuity and sponsor history', 'Visa, payroll, tax and superannuation records'],
-    ['186 Direct Entry', stream === 'Direct Entry' ? 'Primary pathway requiring occupation and skills confirmation' : 'Fallback pathway if skills and occupation evidence are stronger than TRT evidence', 'Occupation alignment and skills evidence', 'Skills assessment, duties, qualifications and references'],
-    ['186 Labour Agreement', stream === 'Labour Agreement' ? 'Primary pathway governed by agreement terms' : 'Available only if the employer is covered by an applicable agreement', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records'],
-    ['482 Employer Sponsored', 'Temporary fallback pathway if permanent residence evidence is not ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
-    ['494 Regional', 'Regional fallback pathway where employer location and occupation settings support it', 'Regional location and employer sponsorship', 'Regional postcode, nomination evidence and occupation eligibility']
+function buildPathwayRows(subclassOrStream, maybeStream, maybeGroup) {
+  const subclass = /^\d+$/.test(String(subclassOrStream || '')) ? String(subclassOrStream) : '';
+  const stream = subclass ? cleanText(maybeStream || '') : cleanText(subclassOrStream || '');
+  const group = cleanText(maybeGroup || '');
+  const code = subclass.replace(/[^0-9]/g, '');
+  if (['186','187','482','494','407','408'].includes(code) || /Employer-sponsored/.test(group)) return [
+    [`${code || 'Employer sponsored'} ${stream && stream !== 'To be confirmed' ? stream : 'selected pathway'}`, 'Primary pathway subject to sponsor, nomination, occupation and evidence verification', 'Employer support and nominated role evidence', 'Sponsor, nomination, duties, salary, employment and public interest records'],
+    ['Temporary employer-sponsored option', 'Fallback where permanent residence evidence is not yet ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
+    ['Regional employer-sponsored option', 'Fallback where regional location and occupation settings support it', 'Regional employer and occupation settings', 'Regional postcode, nomination evidence and occupation eligibility']
   ];
+  if (['189','190','489','491'].includes(code) || /Skilled migration/.test(group)) return [
+    [`Subclass ${code || ''} selected skilled pathway`, 'Primary pathway subject to invitation/nomination and points evidence', 'Skills assessment, English and points position', 'EOI, invitation/nomination, skills, English, employment and points evidence'],
+    ['Subclass 189 Skilled Independent', 'Alternative if invitation and occupation settings support it', 'Independent points-tested pathway', 'EOI, invitation, occupation, skills and points evidence'],
+    ['Subclass 190/491 nominated or regional pathway', 'Alternative where state/territory or regional settings support it', 'Nomination and regional commitment', 'Nomination, regional/family sponsorship and points evidence']
+  ];
+  if (['100','300','309','461','801','820'].includes(code) || /Partner and family relationship/.test(group)) return [
+    [`Subclass ${code || ''} selected family/partner pathway`, 'Primary pathway subject to relationship and sponsor evidence', 'Relationship history and sponsor eligibility', 'Identity, sponsor, relationship, social, financial, household and commitment evidence'],
+    ['Onshore/offshore partner strategy', 'Alternative depending on location and validity settings', 'Continuity of relationship evidence', 'Location, visa status, Schedule 3 and relationship evidence'],
+    ['Prospective marriage or partner pathway', 'Alternative where relationship stage supports a different pathway', 'Future marriage or de facto/spouse evidence', 'Meeting, intention, relationship and sponsor evidence']
+  ];
+  if (['500','590','485'].includes(code) || /Student, guardian and graduate/.test(group)) return [
+    [`Subclass ${code || ''} selected study/graduate pathway`, 'Primary pathway subject to course, timing and public interest evidence', 'Study, qualification or guardian basis', 'CoE/course, OSHC, funds, English, AFP, qualification and timing evidence'],
+    ['Student or guardian pathway', 'Alternative where course or welfare settings support it', 'Course relevance and welfare support', 'CoE, welfare, funds, OSHC and temporary stay evidence'],
+    ['Graduate pathway', 'Alternative if Australian study and timing requirements are met', 'Qualification and post-study work position', 'Completion, transcript, AFP, insurance and English evidence']
+  ];
+  if (['600','602','417','462'].includes(code) || /Visitor, medical/.test(group)) return [
+    [`Subclass ${code || ''} selected temporary stay pathway`, 'Primary pathway subject to genuine temporary stay evidence', 'Purpose, funds and temporary stay position', 'Itinerary, invitation, funds, home ties and travel history'],
+    ['Visitor or medical treatment option', 'Alternative depending on purpose and treatment arrangements', 'Purpose-specific evidence', 'Treatment, invitation, funds and stay arrangements'],
+    ['Working holiday option', 'Alternative where passport, age and previous visa history support it', 'Passport eligibility and specified work if relevant', 'Passport, age, prior visa and specified work evidence']
+  ];
+  if (['785','790','866'].includes(code) || /Protection/.test(group)) return [
+    [`Subclass ${code || ''} protection pathway`, 'Primary pathway subject to claims, credibility and country evidence', 'Protection claims and identity evidence', 'Claims statement, identity, country information and supporting records'],
+    ['Complementary protection analysis', 'Alternative protection basis if Convention reason is not established', 'Risk of significant harm evidence', 'Country information, personal risk evidence and credibility records'],
+    ['Humanitarian/protection strategy', 'Alternative only after professional review of claims and bars', 'Jurisdiction, bars and exclusion issues', 'Visa history, timing, character/security and exclusion evidence']
+  ];
+  return [[`Subclass ${code || ''} selected pathway`, 'Primary pathway subject to subclass-specific evidence verification', 'Subclass-specific evidence position', 'Identity, visa history, eligibility and public interest evidence']];
 }
 
 function buildAssessmentPdfBuffer(assessment, adviceBundle) {
@@ -1388,8 +1506,25 @@ This advice is based on the information presently available. Final lodgement adv
 function extractUniversalClientFacts(assessment, adviceBundle, facts) {
   const out = [];
   function add(label, value) {
-    const v = cleanText(value);
-    if (v && v !== '—' && !/^undefined|null$/i.test(v)) out.push([label, v]);
+    let v = cleanText(value);
+    if (!v || v === '—' || /^undefined|null$/i.test(v)) return;
+    if (/^(yes|true)$/i.test(v) && !/disclosure|available|sighted|confirmed/i.test(label)) return;
+    if (/^(no|false)$/i.test(v) && !/disclosure|history|issue/i.test(label)) return;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v) && /age/i.test(label)) {
+      const dob = new Date(v + 'T00:00:00Z');
+      if (!isNaN(dob)) {
+        const now = new Date();
+        let age = now.getUTCFullYear() - dob.getUTCFullYear();
+        const m = now.getUTCMonth() - dob.getUTCMonth();
+        if (m < 0 || (m === 0 && now.getUTCDate() < dob.getUTCDate())) age--;
+        v = `${age} (date of birth recorded)`;
+      }
+    }
+    if (/english/i.test(label)) {
+      const map = { a:'English evidence to be confirmed', b:'English evidence / concession position to be confirmed', c:'English position requires review' };
+      v = map[v.toLowerCase()] || v;
+    }
+    out.push([label, v]);
   }
   const payload = (assessment && assessment.form_payload) || {};
   const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
@@ -1406,25 +1541,26 @@ function extractUniversalClientFacts(assessment, adviceBundle, facts) {
     const wanted = labels.map(s => String(s).toLowerCase().replace(/[^a-z0-9]/g,''));
     for (const [k,v] of Object.entries(flat)) {
       const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g,'');
-      if (wanted.some(w => nk === w || nk.includes(w) || w.includes(nk))) return v;
+      if (wanted.some(w => nk === w || nk.endsWith(w) || nk.includes(w))) {
+        const text = String(v || '').trim();
+        if (text) return text;
+      }
     }
     return '';
   }
   add('Current location', pick(['currentLocation','current location','location']));
   add('Current visa status', pick(['currentVisa','current visa','visaStatus','visa status']));
-  add('Nominated occupation / role', pick(['occupation','nominatedOccupation','nominated occupation','role','position']));
+  add('Nominated occupation / role', pick(['nominatedOccupation','nominated occupation','occupationName','occupation name','jobTitle','job title','positionTitle','position title']));
   add('Employer / sponsor', pick(['employerName','employer name','sponsorName','sponsor name','businessName']));
   add('Salary / remuneration', pick(['salary','annualSalary','baseSalary','remuneration']));
-  add('English position', pick(['english','englishTest','english score','ielts','pte']));
-  add('Age', pick(['age','dateOfBirth','date of birth']));
+  add('English position', pick(['englishLevel','english level','englishTest','english test','englishScore','english score','ielts','pte']));
+  add('Age', pick(['age','dateOfBirth','date of birth','dob']));
   add('Relationship / family position', pick(['relationship','partner','spouse','de facto','sponsor relationship']));
   add('Course / provider', pick(['course','provider','educationProvider','coe']));
-  add('Invitation / nomination position', pick(['invitation','stateNomination','nomination','eoi']));
-  add('Health disclosure', pick(['health','medical','health issue']));
-  add('Character / immigration history', pick(['character','police','refusal','cancellation','overstay','immigration history']));
-  if (!out.length) {
-    add('Information basis', 'Assessment questionnaire answers were received, but the PDF renderer could not safely extract detailed fact labels from the submitted payload. Original answers must be reviewed before final lodgement advice.');
-  }
+  add('Invitation / nomination position', pick(['invitation','stateNomination','state nomination','eoi']));
+  add('Health disclosure', pick(['seriousMedical','serious medical','healthIssues','health issues','medicalCondition','medical condition']));
+  add('Character / immigration history', pick(['criminalHistory','criminal history','characterIssues','character issues','visaRefused','visa refused','visaCancelled','visa cancelled','overstay','immigration history']));
+  if (!out.length) add('Information basis', 'Assessment questionnaire answers were received, but detailed fact labels require professional review against the original payload.');
   return out.slice(0, 14);
 }
 
@@ -1491,11 +1627,11 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       ]);
 
       writeTitle(doc, 'Subclass-specific legal framework', { gold: true });
-      writePara(doc, (advice && advice.primary_issue) || issue || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`);
+      writePara(doc, scrubContradictoryStreamText((advice && advice.primary_issue) || issue || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`, subclass, stream));
       if (advice && Array.isArray(advice.sections)) {
         advice.sections.slice(0, 4).forEach(s => {
           writeSubheading(doc, s.heading || 'Legal issue');
-          writePara(doc, s.body || '');
+          writePara(doc, scrubContradictoryStreamText(s.body || '', subclass, stream));
         });
       }
 
@@ -1521,7 +1657,7 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       });
 
       writeTitle(doc, 'Alternative pathway comparison', { gold: true });
-      const rows = buildPathwayRows(stream).slice(0, 6);
+      const rows = buildPathwayRows(subclass, stream, visaGroup).slice(0, 6);
       rows.forEach(row => writePathwayBlock(doc, ...row));
 
       writeTitle(doc, 'Client action plan', { gold: true });
