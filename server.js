@@ -390,7 +390,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Auth-Token', 'X-Bircan-Dashboard', 'X-Dashboard-Access-Token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Auth-Token', 'X-Bircan-Dashboard', 'X-Dashboard-Access-Token', 'X-Dashboard-Token'],
   exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
   optionsSuccessStatus: 204
 };
@@ -1919,7 +1919,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.4-payment-finalise-no-wait-audit-background',
+    version: '12.2.6-dashboard-access-token-detail-routes-v2',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -3865,8 +3865,11 @@ async function finaliseCitizenshipPayment(req, res) {
   }
 
   const redirectUrl = `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || '')}&session_id=${encodeURIComponent(sessionId)}`;
+  const dashboardAccessToken = client ? signDashboardAccessToken(client) : null;
   res.json({
     ok: true,
+    dashboardAccessToken,
+    token: dashboardAccessToken,
     status: 'paid',
     paymentLinked: true,
     service: 'citizenship',
@@ -6618,9 +6621,11 @@ function dashboardRequestToken(req) {
     (req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
     req.headers['x-auth-token'] ||
     req.headers['x-dashboard-access-token'] ||
+    req.headers['x-dashboard-token'] ||
     req.query.dashboard_token ||
     req.query.dashboardToken ||
     req.query.access_token ||
+    req.query.dashboardAccessToken ||
     ''
   ).trim();
 }
@@ -7043,7 +7048,7 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
 // Full visa assessment history for the client portal. This endpoint is separate
 // from the mixed dashboard feed so previous visa cards are never overwritten by
 // the newest assessment card.
-app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/account/visa/all', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
             selected_plan, active_plan,
@@ -7079,7 +7084,7 @@ app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
 // Full citizenship access history for the client portal. This is separate from
 // the mixed dashboard feed so previous paid test packs are never overwritten in
 // the client dashboard when a new pack is purchased.
-app.get('/api/account/citizenship-access', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/account/citizenship-access', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, 'citizenship_test' AS service_type, selected_plan, active_plan, exam_allowance, attempts_used,
             GREATEST(0, exam_allowance - attempts_used) AS attempts_remaining,
@@ -7098,12 +7103,12 @@ app.get('/api/account/citizenship-access', requireAuth, asyncRoute(async (req, r
 // Full appeals list for the client portal. This endpoint is intentionally
 // separate from the mixed dashboard feed so appeal cards are never lost when
 // service_sessions/payments joins or frontend service-card de-duplication change.
-app.get('/api/account/citizenship', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/account/citizenship', resolveDashboardAccess, asyncRoute(async (req, res) => {
   req.url = '/api/account/citizenship-access';
   return res.redirect(307, '/api/account/citizenship-access');
 }));
 
-app.get('/api/account/appeals/all', requireAuth, asyncRoute(async (req, res) => {
+app.get('/api/account/appeals/all', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `WITH owned AS (
        SELECT DISTINCT a.*,
