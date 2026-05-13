@@ -244,81 +244,45 @@ function extractFactsObject(assessment, adviceBundle) {
   };
 }
 
-function normalisePdfStream(value) {
-  const raw = cleanText(value || '');
-  const t = raw.toLowerCase();
-  if (/labou?r\s*agreement|agreement\s*stream/.test(t)) return 'Labour Agreement';
-  if (/temporary\s*residence\s*transition|trt/.test(t)) return 'Temporary Residence Transition';
-  if (/direct\s*entry|de/.test(t)) return 'Direct Entry';
-  if (!t || /^(yes|no|true|false|a|b|c|null|undefined|to be confirmed)$/i.test(t)) return 'To be confirmed';
+function normaliseStreamLabel(value) {
+  const raw = cleanText(value);
+  const t = raw.toLowerCase().replace(/[\s_-]+/g, ' ');
+  if (/labou?r agreement|agreement stream/.test(t)) return 'Labour Agreement';
+  if (/temporary residence transition|\btrt\b|transition stream/.test(t)) return 'Temporary Residence Transition';
+  if (/direct entry|\bde\b|direct entry stream/.test(t)) return 'Direct Entry';
+  if (/^(yes|no|true|false|a|b|c|0|1|-|—|to be confirmed|unknown|unsure|not sure)$/.test(t)) return '';
   return raw;
 }
 
-function explicitPdfStream(assessment, adviceBundle, advice, facts) {
-  const candidates = [
-    adviceBundle && adviceBundle.lockedMatter && adviceBundle.lockedMatter.stream,
-    advice && advice.stream,
+function inferStream(assessment, adviceBundle, advice) {
+  const facts = extractFactsObject(assessment || {}, adviceBundle || {});
+  const direct = [
     assessment && assessment.selected_stream,
     assessment && assessment.stream,
-    assessment && assessment.nomination_stream,
     assessment && assessment.visa_stream,
-    deepPick(facts || {}, ['selectedStream','selected_stream','stream','nominationStream','visaStream','pathway'], '')
+    assessment && assessment.pathway,
+    assessment && assessment.selected_pathway,
+    advice && advice.stream,
+    advice && advice.selectedStream,
+    advice && advice.selected_stream,
+    adviceBundle && adviceBundle.lockedMatter && adviceBundle.lockedMatter.stream,
+    adviceBundle && adviceBundle.internalLegalAudit && adviceBundle.internalLegalAudit.selectedStream,
+    adviceBundle && adviceBundle.legalSourcePack && adviceBundle.legalSourcePack.selectedStream,
+    facts && facts.selectedStream,
+    facts && facts.selected_stream,
+    facts && facts.stream,
+    facts && facts.visaStream,
+    facts && facts.visa_stream,
+    facts && facts.pathway,
+    deepPick(facts, ['meta.selectedStream','meta.selected_stream','meta.stream'], '')
   ];
-  for (const value of candidates) {
-    const normalised = normalisePdfStream(value);
-    if (normalised !== 'To be confirmed') return normalised;
+  for (const value of direct) {
+    const v = normaliseStreamLabel(value);
+    if (v) return v;
   }
   return 'To be confirmed';
 }
 
-function resolveLockedMatterForPdf(assessment, adviceBundle, advice, facts) {
-  const subclass = cleanText((adviceBundle && adviceBundle.lockedMatter && adviceBundle.lockedMatter.subclass) || (advice && advice.subclass) || (assessment && assessment.visa_type) || deepPick(facts || {}, ['subclass', 'visaSubclass', 'visa_type'], ''));
-  const stream = explicitPdfStream(assessment || {}, adviceBundle || {}, advice || {}, facts || {});
-  const visaGroup = cleanText((adviceBundle && adviceBundle.lockedMatter && adviceBundle.lockedMatter.visaGroup) || (advice && (advice.visa_group || advice.visaGroup)) || (adviceBundle && adviceBundle.universalLegalGraph && adviceBundle.universalLegalGraph.family) || visaGroupForPdfSubclass(subclass));
-  return { subclass, stream, visaGroup };
-}
-
-function visaGroupForPdfSubclass(subclass) {
-  const code = String(subclass || '').replace(/[^0-9]/g, '');
-  if (['100','300','309','461','801','820'].includes(code)) return 'Partner and family relationship visas';
-  if (['101','103','115','116','173','836'].includes(code)) return 'Child, parent, remaining relative and carer visas';
-  if (['186','187','407','408','482','494'].includes(code)) return 'Employer-sponsored, training and temporary activity visas';
-  if (['189','190','489','491'].includes(code)) return 'Skilled migration visas';
-  if (['188','888'].includes(code)) return 'Business and investment visas';
-  if (['500','590','485'].includes(code)) return 'Student, guardian and graduate visas';
-  if (['417','462','600','602'].includes(code)) return 'Visitor, medical treatment and working holiday visas';
-  if (['785','790','866'].includes(code)) return 'Protection and humanitarian visas';
-  return 'Subclass-specific migration pathway';
-}
-
-function lockedPrimaryIssue(subclass, stream, visaGroup) {
-  const streamLabel = stream && stream !== 'To be confirmed' ? ' ' + stream : '';
-  let focus = 'the client facts, uploaded material, visa history and subclass-specific supporting evidence';
-  if (/Employer-sponsored/.test(visaGroup)) focus = 'sponsor, nomination, occupation, duties, salary, employer records, visa history and public interest evidence';
-  else if (/Skilled migration/.test(visaGroup)) focus = 'EOI, invitation, skills assessment, points claims, English, nomination or sponsorship, employment, qualifications and public interest evidence';
-  else if (/Partner and family relationship/.test(visaGroup)) focus = 'sponsor eligibility, relationship history, financial, household, social, commitment, location, timing and public interest evidence';
-  else if (/Child, parent/.test(visaGroup)) focus = 'family relationship, dependency, sponsor eligibility, custody, carer, balance-of-family, assurance-of-support, queue/timing and public interest evidence';
-  else if (/Business and investment/.test(visaGroup)) focus = 'stream selection, nomination, business ownership, turnover, assets, investment, source-of-funds, residence and compliance evidence';
-  else if (/Student, guardian and graduate/.test(visaGroup)) focus = 'course, genuine student/temporary stay, financial capacity, English, OSHC, welfare, qualification, Australian study and timing evidence';
-  else if (/Visitor, medical/.test(visaGroup)) focus = 'temporary stay purpose, funds, home ties, itinerary, sponsorship, medical treatment, working holiday eligibility and public interest evidence';
-  else if (/Protection/.test(visaGroup)) focus = 'identity, protection claims, credibility, country information, state protection, relocation, exclusion, character and security evidence';
-  return `Whether the Subclass ${subclass}${streamLabel} pathway can be supported by subclass-specific legal criteria and criterion-by-criterion evidence within the ${visaGroup} framework. The assessment must reconcile ${focus} relevant to this subclass and stream.`;
-}
-
-function sanitiseLockedText(text, subclass, stream) {
-  let out = cleanText(text || '');
-  if (!out) return out;
-  const code = String(subclass || '').replace(/[^0-9]/g, '');
-  const streamLabel = stream && stream !== 'To be confirmed' ? ` ${stream}` : '';
-  if (code) {
-    out = out.replace(new RegExp(`Subclass\s+${code}\s+(Direct Entry|Temporary Residence Transition|TRT|Labour Agreement|To be confirmed)`, 'gi'), `Subclass ${code}${streamLabel}`);
-  }
-  if (stream !== 'Labour Agreement') {
-    out = out.replace(/Check the applicable Labour Agreement terms, concessions and employer compliance requirements\.?/gi, 'Check the selected stream requirements, employer compliance and supporting evidence.');
-    out = out.replace(/Labour Agreement concession evidence/gi, 'stream-specific exemption or concession evidence');
-  }
-  return out;
-}
 
 function inferApplicantName(assessment, adviceBundle, facts) {
   return cleanText(
@@ -407,22 +371,18 @@ function groupEvidence(items) {
   return Object.entries(buckets).filter(([, list]) => list.length);
 }
 
-function normaliseNextSteps(items, advice, locked = {}) {
+function normaliseNextSteps(items, advice) {
   const raw = uniqueClean(items);
   const joined = raw.join(' ').toLowerCase();
   const steps = [];
   const add = s => { if (s && !steps.includes(s)) steps.push(s); };
-  const stream = locked.stream || normalisePdfStream(advice && advice.stream);
-  const visaGroup = locked.visaGroup || '';
   add('Obtain complete instructions and original supporting documents.');
-  if (/Employer-sponsored/.test(visaGroup) || /sponsor|nomination|employer|position|genuine/.test(joined + JSON.stringify(advice || {}))) add('Review the sponsoring employer’s operational evidence, nomination structure and business need for the role.');
+  if (/sponsor|nomination|employer|position|genuine/.test(joined + JSON.stringify(advice || {}))) add('Review the sponsoring employer’s operational evidence, nomination structure and business need for the role.');
   if (/occupation|anzsco|skill|experience|duties|salary|payroll/.test(joined + JSON.stringify(advice || {}))) add('Reconcile the occupation, duties, salary and employment evidence against the nominated pathway.');
-  if (stream === 'Labour Agreement') add('Check the applicable Labour Agreement terms, concessions and employer compliance requirements.');
-  if (stream === 'Direct Entry') add('Check Direct Entry skills, occupation, English and nomination evidence before final advice.');
-  if (stream === 'Temporary Residence Transition') add('Check TRT qualifying employment, sponsor continuity and occupation continuity before final advice.');
+  if (/labour agreement|agreement|concession|stream/.test(joined + JSON.stringify(advice || {}))) add('Check the applicable Labour Agreement terms, concessions and employer compliance requirements.');
   add('Review English, health, character and immigration-history evidence before any final advice.');
   add('Prepare a final written position only after the evidence package has been professionally verified.');
-  return steps.slice(0, 7);
+  return steps.slice(0, 6);
 }
 
 function criterionTone(item) {
@@ -441,10 +401,12 @@ function positionLabel(tone) {
 
 function normaliseCriterionFinding(item) {
   return {
+    ...(item || {}),
     criterion: item.criterion || item.heading || item.title || 'Criterion',
     finding: item.finding || item.status || item.evidenceStatus || item.body || '',
-    legal_consequence: item.legal_consequence || item.legalConsequence || item.legalEffect || '',
-    recommendation: item.recommendation || item.missingEvidence || ''
+    legal_consequence: item.legal_consequence || item.legalConsequence || item.legalEffect || item.strategy || '',
+    recommendation: item.recommendation || item.missingEvidence || item.evidence_gap || item.evidence || '',
+    delegateRisk: item.delegateRisk || item.delegate_risk || item.riskLevel || item.risk_level || ''
   };
 }
 
@@ -460,7 +422,10 @@ function niceCriterionName(name) {
 }
 
 function riskLevelForFinding(item) {
+  const provided = cleanText(item && (item.delegateRisk || item.delegate_risk || item.riskLevel || item.risk_level));
+  if (provided) return provided;
   const combined = JSON.stringify(item || {}).toLowerCase();
+  if (/no health issue has been disclosed|no character, integrity|standard health requirements|standard police/.test(combined)) return 'Managed Standard Requirement';
   if (/refus|cancel|bar|pic 4020|false|misleading|character concern|health undertaking|invalid|not satisfied|critical|high risk/.test(combined)) return 'Elevated Delegate Risk';
   if (/missing|unable|inconsistent|concern|limited|moderate|review|required|adverse|gap/.test(combined)) return 'Moderate Delegate Risk';
   return 'Low Delegate Risk';
@@ -488,7 +453,11 @@ function buildMatterFinding(item) {
   let body;
   let evidence;
   let strategy;
-  if (/sponsor|employer|nomination|position|genuine/.test(lower)) {
+  if (/salary|market|income|remuneration|employment conditions/.test(lower)) {
+    body = 'The salary position must be reconciled against the nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award or enterprise agreement material and any applicable concession. A delegate may compare the nominated salary against actual payments and employer records.';
+    strategy = 'Reconcile the nomination salary, contract, payroll, tax, superannuation and market salary or concession evidence before relying on the salary position.';
+    evidence = 'Nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award/enterprise agreement material and any concession evidence.';
+  } else if (/sponsor|employer|nomination|position|genuine/.test(lower)) {
     body = 'The nomination and employer material must show a coherent connection between the business operations, the nominated position, the applicant’s actual duties and the ongoing need for the role. A delegate is likely to test whether the position is supported by the employer’s structure, payroll capacity, trading activity and organisational chart, rather than relying only on broad employer assertions.';
     strategy = 'Before a lodgement-ready opinion is issued, the employer file should be organised so that the nomination, position description, duties, reporting lines, salary records and business need all tell one consistent story.';
     evidence = 'Nomination approval, organisational chart, position description, business need explanation, payroll capacity material, employment contract, payslips, tax and superannuation records.';
@@ -497,25 +466,27 @@ function buildMatterFinding(item) {
     strategy = 'The strongest approach is to reconcile the applicant’s CV, references, qualifications, skills assessment and day-to-day duties before the matter is treated as lodgement ready.';
     evidence = 'Detailed duties statement, CV, employment references, qualifications, skills assessment, licensing or registration evidence where applicable.';
   } else if (/salary|market|income/.test(lower)) {
-    body = 'The salary position must be reconciled against the nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award or enterprise agreement material and any stream-specific concession. A delegate may compare the nominated salary against actual payments and employer records.';
-    strategy = 'Reconcile nomination salary, contract salary, actual payroll, superannuation and market salary evidence before relying on the salary position.';
-    evidence = 'Nomination salary record, employment contract, payslips, payroll records, PAYG/tax records, superannuation records, market salary evidence, award or enterprise agreement material and any stream-specific concession evidence.';
+    body = 'The salary position must be internally consistent across the nomination, contract, payroll and tax records. A delegate may give close attention to any difference between nominated salary, actual payments, superannuation records and the duties actually performed.';
+    strategy = 'Any payroll irregularity, unpaid period, salary change or allowance structure should be explained in a short evidence note before final advice is issued.';
+    evidence = 'Employment contract, payslips, PAYG/tax records, superannuation records, salary increase letters and market salary evidence.';
   } else if (/english/.test(lower)) {
     body = 'The English requirement should be assessed by reference to the stream, validity period of any test result, passport evidence, exemptions and any concession contained in a labour agreement or relevant instrument.';
     strategy = 'The file should not proceed on assumed English eligibility. The original test report or exemption evidence should be reviewed against the current legal threshold.';
     evidence = 'Original English test result, passport evidence, exemption evidence or labour agreement concession material.';
   } else if (/health/.test(lower)) {
-    if (/no health issue has been disclosed|standard health requirements/i.test(JSON.stringify(item || {}))) {
+    const txt = JSON.stringify(item || {}).toLowerCase();
+    if (/no health issue has been disclosed|standard health requirements/.test(txt)) {
       body = 'No health issue has been disclosed in the questionnaire. The applicant must still satisfy standard health requirements, and the position remains subject to Departmental health examinations and any family-member health considerations.';
       strategy = 'Complete standard health declarations and review any Departmental health request if issued.';
       evidence = 'Health declarations, Departmental health examination requests and family-member health information if applicable.';
     } else {
-      body = 'The health position must be considered against the applicant’s disclosures, family composition and any medical information already available. A disclosed health issue is not necessarily disqualifying, but it must be identified early because it can affect timing, evidence strategy and final advice.';
+      body = 'The health position must be considered against the applicant’s disclosures, family composition and any medical information already available. A health issue is not necessarily disqualifying, but it must be identified early because it can affect timing, evidence strategy and final advice.';
       strategy = 'Any disclosed medical issue should be reviewed before lodgement timing is settled.';
       evidence = 'Health examination records, medical reports, specialist letters and family member health disclosures.';
     }
   } else if (/character|integrity|4020|adverse/.test(lower)) {
-    if (/no character or integrity issue has been disclosed|no adverse migration-history issue has been disclosed/i.test(JSON.stringify(item || {}))) {
+    const txt = JSON.stringify(item || {}).toLowerCase();
+    if (/no character, integrity|standard police|no adverse immigration/.test(txt)) {
       body = 'No character, integrity or adverse immigration-history issue has been disclosed in the questionnaire. The position remains subject to police clearances, Departmental records and document-consistency checks.';
       strategy = 'Obtain standard police and immigration-history records and check them for consistency before final advice.';
       evidence = 'Police certificates, VEVO/grant records, prior application records and Department correspondence if applicable.';
@@ -835,48 +806,14 @@ function buildStreamNarrative(stream) {
   return 'The stream should be confirmed before final advice is issued. Once confirmed, the file should be tested against the relevant stream criteria, nomination requirements, evidence burden and any applicable concession or instrument.';
 }
 
-function buildPathwayRows(subclass, stream, visaGroup) {
-  const code = String(subclass || '').replace(/[^0-9]/g, '');
-  const s = normalisePdfStream(stream);
-  if (['186','187','482','494','407','408'].includes(code) || /Employer-sponsored/.test(visaGroup || '')) {
-    const rows = [];
-    if (code === '186' || code === '187' || !code) {
-      if (s === 'Direct Entry') rows.push(['186 Direct Entry', 'Primary pathway subject to sponsor, nomination, occupation and evidence verification', 'Employer support and nominated role evidence', 'Sponsor, nomination, duties, salary, employment and public interest records']);
-      else if (s === 'Temporary Residence Transition') rows.push(['186 TRT', 'Primary pathway subject to qualifying employment and sponsor continuity verification', 'Employment continuity and sponsor history', 'Visa, payroll, tax, superannuation and sponsor continuity records']);
-      else if (s === 'Labour Agreement') rows.push(['186 Labour Agreement', 'Primary pathway governed by executed agreement terms', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records']);
-      else rows.push(['Employer nominated permanent pathway', 'Primary pathway to be confirmed by selected stream evidence', 'Sponsor, nomination and occupation evidence', 'Stream selection, nomination, salary and public interest records']);
-    }
-    if (code === '482') rows.push(['482 temporary employer-sponsored pathway', 'Primary temporary sponsored pathway subject to sponsor, nomination and occupation evidence', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings, duties, salary and occupation evidence']);
-    else rows.push(['Temporary employer-sponsored option', 'Fallback where permanent residence evidence is not yet ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence']);
-    if (code === '494') rows.push(['494 regional employer-sponsored pathway', 'Primary or fallback where regional location and occupation settings support it', 'Regional employer and occupation settings', 'Regional postcode, nomination evidence and occupation eligibility']);
-    else rows.push(['Regional employer-sponsored option', 'Fallback where regional location and occupation settings support it', 'Regional employer and occupation settings', 'Regional postcode, nomination evidence and occupation eligibility']);
-    return rows.slice(0, 4);
-  }
-  if (/Skilled migration/.test(visaGroup || '') || ['189','190','489','491'].includes(code)) return [
-    ['Selected skilled pathway', 'Primary pathway subject to invitation/nomination and points evidence', 'Skills, English and points evidence', 'EOI, invitation, skills assessment, English and points records'],
-    ['Alternative skilled pathway', 'Consider if nomination, points or regional settings are stronger', 'Alternative nomination or sponsorship options', 'State/territory nomination, regional or family sponsorship evidence']
+function buildPathwayRows(stream) {
+  return [
+    ['186 TRT', stream === 'Temporary Residence Transition' ? 'Primary pathway requiring evidence reconciliation' : 'Fallback pathway if qualifying employment and sponsor continuity are established', 'Employment continuity and sponsor history', 'Visa, payroll, tax and superannuation records'],
+    ['186 Direct Entry', stream === 'Direct Entry' ? 'Primary pathway requiring occupation and skills confirmation' : 'Fallback pathway if skills and occupation evidence are stronger than TRT evidence', 'Occupation alignment and skills evidence', 'Skills assessment, duties, qualifications and references'],
+    ['186 Labour Agreement', stream === 'Labour Agreement' ? 'Primary pathway governed by agreement terms' : 'Available only if the employer is covered by an applicable agreement', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records'],
+    ['482 Employer Sponsored', 'Temporary fallback pathway if permanent residence evidence is not ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
+    ['494 Regional', 'Regional fallback pathway where employer location and occupation settings support it', 'Regional location and employer sponsorship', 'Regional postcode, nomination evidence and occupation eligibility']
   ];
-  if (/Partner and family relationship/.test(visaGroup || '')) return [
-    ['Selected family/partner pathway', 'Primary pathway subject to relationship and sponsor evidence', 'Relationship history and sponsor position', 'Sponsor status, relationship, location and public interest records'],
-    ['Alternative family pathway', 'Consider if onshore/offshore or prospective-marriage strategy is more appropriate', 'Timing and location flexibility', 'Location, visa status and relationship-stage evidence']
-  ];
-  if (/Business and investment/.test(visaGroup || '')) return [
-    ['Selected business/investment pathway', 'Primary pathway subject to stream, nomination and financial evidence', 'Business/investment history and nomination', 'Turnover, assets, investment, source-of-funds and nomination records'],
-    ['Alternative business/investment strategy', 'Consider if another stream better matches the facts', 'Stream flexibility', 'State nomination and stream-specific evidence']
-  ];
-  if (/Student, guardian and graduate/.test(visaGroup || '')) return [
-    ['Selected student/guardian/graduate pathway', 'Primary pathway subject to course, qualification, timing and support evidence', 'Study/qualification and support records', 'CoE, qualification, English, OSHC, AFP, funds and timing evidence'],
-    ['Alternative temporary or skilled pathway', 'Consider if study or graduate pathway is not evidence-ready', 'Timing and future pathway flexibility', 'Visa history, purpose and eligibility evidence']
-  ];
-  if (/Visitor, medical/.test(visaGroup || '')) return [
-    ['Selected temporary stay pathway', 'Primary pathway subject to temporary purpose and return-incentive evidence', 'Purpose, funds and home ties', 'Itinerary, funds, employment/business/family ties and prior travel records'],
-    ['Alternative temporary pathway', 'Consider only if the selected temporary stream does not match the purpose', 'Purpose alignment', 'Purpose, sponsorship, medical treatment or working-holiday evidence']
-  ];
-  if (/Protection/.test(visaGroup || '')) return [
-    ['Selected protection/humanitarian pathway', 'Primary pathway subject to detailed claims and legal basis', 'Claims, credibility and country evidence', 'Claims statement, chronology, identity, country information and corroborating evidence'],
-    ['Status-resolution strategy', 'Consider only after claims, bars, exclusions and timing are reviewed', 'Risk management', 'Visa history, adverse records and procedural history']
-  ];
-  return [['Selected subclass pathway', 'Primary pathway subject to subclass-specific legal and evidence review', 'Subclass-specific evidence', 'Identity, visa history and supporting evidence']];
 }
 
 function buildAssessmentPdfBuffer(assessment, adviceBundle) {
@@ -889,17 +826,15 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       if (!advice) return reject(new Error('Advice-grade PDF generation requires adviceBundle.advice.'));
 
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
-      const lockedMatter = resolveLockedMatterForPdf(assessment || {}, adviceBundle || {}, advice || {}, facts || {});
-      const subclass = lockedMatter.subclass || '186';
-      const stream = lockedMatter.stream;
-      const visaGroup = lockedMatter.visaGroup || 'visa assessment';
+      const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], '186'));
+      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const title = `Subclass ${subclass} Employer Nomination Scheme professional advice letter`;
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
       const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
       const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
       const position = professionalPosition(adviceBundle || {}, advice || {});
-      const issue = lockedPrimaryIssue(subclass, stream, visaGroup);
+      const issue = primaryIssue(adviceBundle || {}, advice || {});
       const findings = (advice.criterion_findings || adviceBundle.criterionFindings || adviceBundle.findings || []).map(normaliseCriterionFinding);
       const evidenceItems = collectEvidence(advice || {}, adviceBundle || {});
 
@@ -941,7 +876,7 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
 
       writeTitle(doc, 'Strategic pathway assessment');
       writePara(doc, 'The following pathway analysis is a professional strategy tool. It identifies which routes may be legally and evidentially stronger once the sponsor, nomination, occupation, employment history and applicant records are reconciled. It is not a substitute for final written advice after original documents are reviewed.', { size: 9.8 });
-      for (const row of buildPathwayRows(subclass, stream, visaGroup)) writePathwayBlock(doc, ...row);
+      for (const row of buildPathwayRows(stream)) writePathwayBlock(doc, ...row);
 
       writeTitle(doc, 'Stream analysis');
       writePara(doc, buildStreamNarrative(stream), { after: 1.05 });
@@ -1388,17 +1323,15 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       try { legalPack = assertKnowledgebaseEnforcedAdviceBundle(adviceBundle); } catch (_err) { legalPack = adviceBundle.legalSourcePack || null; }
       const advice = getAdvice(adviceBundle) || {};
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
-      const lockedMatter = resolveLockedMatterForPdf(assessment || {}, adviceBundle || {}, advice || {}, facts || {});
-      const subclass = lockedMatter.subclass || 'Visa';
-      const stream = lockedMatter.stream;
-      const visaGroup = lockedMatter.visaGroup || 'visa assessment';
+      const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], 'Visa'));
+      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const title = `Subclass ${subclass} professional migration advice letter`;
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
       const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
       const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
       const position = professionalPosition(adviceBundle || {}, advice || {});
-      const issue = lockedPrimaryIssue(subclass, stream, visaGroup);
+      const issue = primaryIssue(adviceBundle || {}, advice || {});
       const criteria = v10BuildCriteria(advice, adviceBundle || {}, subclass, stream);
       const evidenceItems = collectEvidence(advice || {}, adviceBundle || {});
       const viability = v10Viability(position, criteria);
@@ -1440,7 +1373,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       writeTitle(doc, 'Pathway strategy', { gold: true });
       writePara(doc, `The selected pathway should be treated as the primary strategy only if the legal framework and evidence base support it. The client should not rely on the pathway label alone. The stronger approach is to test the sponsor, nomination, occupation, employment history, English or concession position, and public interest criteria before a final lodgement recommendation is issued.`, { size: 10 });
-      for (const row of buildPathwayRows(subclass, stream, visaGroup).slice(0, 5)) writePathwayBlock(doc, ...row);
+      for (const row of buildPathwayRows(stream).slice(0, 5)) writePathwayBlock(doc, ...row);
 
       writeTitle(doc, 'Criterion-by-criterion professional assessment', { gold: true });
       writePara(doc, 'I have assessed the key criteria by reference to the information provided, the selected subclass and stream, likely delegate scrutiny and the evidence that should be obtained before lodgement action. The findings below are deliberately expressed as professional advice rather than checklist outcomes.', { size: 9.8 });
@@ -1509,9 +1442,26 @@ This advice is based on the information presently available. Final lodgement adv
 
 function extractUniversalClientFacts(assessment, adviceBundle, facts) {
   const out = [];
-  function add(label, value) {
-    const v = cleanText(value);
-    if (v && v !== '—' && !/^undefined|null$/i.test(v)) out.push([label, v]);
+  function isBooleanLike(v) { return /^(yes|no|true|false)$/i.test(cleanText(v)); }
+  function ageFromDob(value) {
+    const raw = cleanText(value);
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return raw;
+    const dob = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00`);
+    if (isNaN(dob.getTime())) return raw;
+    const now = new Date();
+    let age = now.getFullYear() - dob.getFullYear();
+    const beforeBirthday = (now.getMonth() < dob.getMonth()) || (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate());
+    if (beforeBirthday) age -= 1;
+    return `${age} (date of birth recorded)`;
+  }
+  function add(label, value, opts = {}) {
+    let v = cleanText(value);
+    if (!v || v === '—' || /^undefined|null$/i.test(v)) return;
+    if (opts.noBoolean && isBooleanLike(v)) return;
+    if (opts.dobToAge) v = ageFromDob(v);
+    if (opts.english && /^\d+$/.test(v)) v = `English score reported: ${v}`;
+    out.push([label, v]);
   }
   const payload = (assessment && assessment.form_payload) || {};
   const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
@@ -1534,11 +1484,11 @@ function extractUniversalClientFacts(assessment, adviceBundle, facts) {
   }
   add('Current location', pick(['currentLocation','current location','location']));
   add('Current visa status', pick(['currentVisa','current visa','visaStatus','visa status']));
-  add('Nominated occupation / role', pick(['occupation','nominatedOccupation','nominated occupation','role','position']));
+  add('Nominated occupation / role', pick(['occupation','nominatedOccupation','nominated occupation','jobTitle','job title','anzsco']), { noBoolean: true });
   add('Employer / sponsor', pick(['employerName','employer name','sponsorName','sponsor name','businessName']));
   add('Salary / remuneration', pick(['salary','annualSalary','baseSalary','remuneration']));
-  add('English position', pick(['english','englishTest','english score','ielts','pte']));
-  add('Age', pick(['age','dateOfBirth','date of birth']));
+  add('English position', pick(['english','englishTest','english score','ielts','pte']), { english: true });
+  add('Age', pick(['age','dateOfBirth','date of birth']), { dobToAge: true });
   add('Relationship / family position', pick(['relationship','partner','spouse','de facto','sponsor relationship']));
   add('Course / provider', pick(['course','provider','educationProvider','coe']));
   add('Invitation / nomination position', pick(['invitation','stateNomination','nomination','eoi']));
@@ -1557,16 +1507,15 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
     try {
       const advice = getAdvice(adviceBundle);
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
-      const lockedMatter = resolveLockedMatterForPdf(assessment || {}, adviceBundle || {}, advice || {}, facts || {});
-      const subclass = lockedMatter.subclass || '';
-      const stream = lockedMatter.stream;
+      const subclass = cleanText((advice && advice.subclass) || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], ''));
+      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
       const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
       const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
-      const visaGroup = lockedMatter.visaGroup || 'visa assessment';
+      const visaGroup = cleanText((advice && (advice.visa_group || advice.visaGroup)) || (adviceBundle.universalLegalGraph && adviceBundle.universalLegalGraph.family) || 'visa assessment');
       const position = professionalPosition(adviceBundle || {}, advice || {});
-      const issue = lockedPrimaryIssue(subclass, stream, visaGroup);
+      const issue = primaryIssue(adviceBundle || {}, advice || {});
       const findings = ((advice && advice.criterion_findings) || adviceBundle.criterionFindings || adviceBundle.findings || []).map(normaliseCriterionFinding);
       const evidenceItems = collectEvidence(advice || {}, adviceBundle || {});
       const title = `Subclass ${subclass} professional migration advice letter`;
@@ -1614,11 +1563,11 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       ]);
 
       writeTitle(doc, 'Subclass-specific legal framework', { gold: true });
-      writePara(doc, sanitiseLockedText(issue || (advice && advice.primary_issue) || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`, subclass, stream));
+      writePara(doc, (advice && advice.primary_issue) || issue || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`);
       if (advice && Array.isArray(advice.sections)) {
         advice.sections.slice(0, 4).forEach(s => {
           writeSubheading(doc, s.heading || 'Legal issue');
-          writePara(doc, sanitiseLockedText(s.body || '', subclass, stream));
+          writePara(doc, s.body || '');
         });
       }
 
@@ -1644,11 +1593,11 @@ function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
       });
 
       writeTitle(doc, 'Alternative pathway comparison', { gold: true });
-      const rows = buildPathwayRows(subclass, stream, visaGroup).slice(0, 6);
+      const rows = buildPathwayRows(stream).slice(0, 6);
       rows.forEach(row => writePathwayBlock(doc, ...row));
 
       writeTitle(doc, 'Client action plan', { gold: true });
-      normaliseNextSteps((advice && advice.client_next_steps) || adviceBundle.recommendedNextSteps || evidenceItems, advice || {}, lockedMatter).slice(0, 10).forEach(step => writeBullet(doc, step));
+      normaliseNextSteps((advice && advice.client_next_steps) || adviceBundle.recommendedNextSteps || evidenceItems, advice || {}).slice(0, 10).forEach(step => writeBullet(doc, step));
 
       writeTitle(doc, 'Final professional recommendation', { gold: true });
       writePara(doc, `On the information presently available, I would not treat this matter as lodgement ready until the client facts, original evidence and current legal settings have been reconciled. If the identified evidence can be verified and the subclass-specific criteria are satisfied, the matter may progress to a final lodgement recommendation. If the evidence cannot be verified, the strategy should be paused or redirected before filing.`);
