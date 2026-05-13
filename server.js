@@ -129,7 +129,7 @@ const BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH = 'public-start-never-reuse-paid-asses
 
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
 // Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
-const VERIFY_PAYMENT_WAIT_FOR_PDF = false; // hard production lock: payment return must never wait for PDF generation
+const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -390,7 +390,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Auth-Token', 'X-Bircan-Dashboard', 'X-Dashboard-Access-Token', 'X-Dashboard-Token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Auth-Token', 'X-Bircan-Dashboard', 'X-Dashboard-Access-Token'],
   exposedHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
   optionsSuccessStatus: 204
 };
@@ -1919,7 +1919,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
-    version: '12.2.6-dashboard-access-token-detail-routes-v2',
+    version: '12.2.3-production-email-lock-admin-route-removed',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -3865,11 +3865,8 @@ async function finaliseCitizenshipPayment(req, res) {
   }
 
   const redirectUrl = `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || '')}&session_id=${encodeURIComponent(sessionId)}`;
-  const dashboardAccessToken = client ? signDashboardAccessToken(client) : null;
   res.json({
     ok: true,
-    dashboardAccessToken,
-    token: dashboardAccessToken,
     status: 'paid',
     paymentLinked: true,
     service: 'citizenship',
@@ -4412,10 +4409,7 @@ async function attachPaidSession(session, options = {}) {
     }
   });
 
-  // Payment audit is non-essential for the payment-return response.
-  // Run it in the background so /api/payments/finalise cannot hang on a ledger/schema/index issue.
-  const paymentAudit = { queued: true };
-  setImmediate(() => recordPaymentAuditSafe(assessmentId, email, session).catch(err => console.error('Background payment audit failed:', err.message)));
+  const paymentAudit = await recordPaymentAuditSafe(assessmentId, email, session);
 
   let pdfResult = null;
   const paidPlanForGeneration = safePlan((session.metadata || {}).plan || 'instant');
@@ -4435,7 +4429,7 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4467,7 +4461,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4970,7 +4964,7 @@ async function finaliseStripePayment(req, res) {
 
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
   // This restores the client session from the paid Stripe session email, so the dashboard opens cleanly.
@@ -5657,246 +5651,53 @@ function buildSourceBackedRequirement(label, subclass, stream, legalPack) {
   return base;
 }
 
-
-const SUPPORTED_ASSESSMENT_SUBCLASSES_10_GRADE = [
-  '100','101','103','115','116','173','186','187','188','189','190','300','309','407','408','417','461','462','482','485','489','491','494','500','590','600','602','785','790','801','820','836','866','888'
-];
-
-function visaGroupForSubclass10Grade(subclass) {
-  const code = String(subclass || '').replace(/[^0-9]/g, '');
-  if (['100','300','309','461','801','820'].includes(code)) return 'Partner and family relationship visas';
-  if (['101','103','115','116','173','836'].includes(code)) return 'Child, parent, remaining relative and carer visas';
-  if (['186','187','407','408','482','494'].includes(code)) return 'Employer-sponsored, training and temporary activity visas';
-  if (['189','190','489','491'].includes(code)) return 'Skilled migration visas';
-  if (['188','888'].includes(code)) return 'Business and investment visas';
-  if (['500','590','485'].includes(code)) return 'Student, guardian and graduate visas';
-  if (['417','462','600','602'].includes(code)) return 'Visitor, medical treatment and working holiday visas';
-  if (['785','790','866'].includes(code)) return 'Protection and humanitarian visas';
-  return 'Subclass-specific migration pathway';
-}
-
-function clientNextStepsForVisaGroup10Grade(group) {
-  const base = [
-    'Provide identity, passport, current location and current visa-status documents.',
-    'Provide prior visa, refusal, cancellation, condition and Departmental correspondence records.',
-    'Provide health, character and integrity documents relevant to the assessment answers.',
-    'Allow Bircan Migration to reconcile each criterion against original documents before any lodgement recommendation is made.'
-  ];
-  if (/Employer-sponsored/.test(group)) return [
-    'Provide sponsor, nomination, position description, organisation chart and employer business evidence.',
-    'Provide contract, payslips, tax, superannuation, duties, qualification, English and licensing evidence where relevant.',
-    ...base
-  ];
-  if (/Skilled migration/.test(group)) return [
-    'Provide EOI, invitation, state/territory nomination or family sponsorship records where relevant.',
-    'Provide skills assessment, English test, points-claim evidence, employment references, qualifications and partner/study/NAATI/professional-year evidence where claimed.',
-    ...base
-  ];
-  if (/Partner and family relationship/.test(group)) return [
-    'Provide sponsor identity/status evidence and any prior sponsorship or relationship-history records.',
-    'Provide relationship evidence addressing financial, household, social and commitment aspects, plus location and Schedule 3 material if relevant.',
-    ...base
-  ];
-  if (/Child, parent/.test(group)) return [
-    'Provide family relationship, dependency, custody, sponsor eligibility and residence evidence.',
-    'Provide balance-of-family, carer medical-need, remaining-relative, Assurance of Support or queue/timing material where relevant.',
-    ...base
-  ];
-  if (/Business and investment/.test(group)) return [
-    'Provide state nomination, invitation, business ownership, turnover, asset, investment and source-of-funds evidence.',
-    'Provide residence, business activity and compliance evidence for any provisional-to-permanent transition issue.',
-    ...base
-  ];
-  if (/Student, guardian and graduate/.test(group)) return [
-    'Provide CoE/course, genuine student, financial capacity, OSHC, English, AFP, qualification and Australian-study documents where relevant.',
-    'Provide study gaps, home ties, welfare/guardian, previous 485 and visa-timing evidence where relevant.',
-    ...base
-  ];
-  if (/Visitor, medical/.test(group)) return [
-    'Provide visit purpose, itinerary, invitation, funds, employment/business, home ties and prior travel evidence.',
-    'Provide medical treatment, specified work, passport-country, age or second/third working holiday evidence where relevant.',
-    ...base
-  ];
-  if (/Protection/.test(group)) return [
-    'Provide a detailed protection claims statement, chronology, identity/nationality evidence and country-information material.',
-    'Provide evidence addressing credibility, delay, state protection, internal relocation, exclusion, character and security issues where relevant.',
-    ...base
-  ];
-  return base;
-}
-
 function criterionProfilesForSubclass(subclass, stream) {
   const code = String(subclass || '').replace(/[^0-9]/g, '');
   const s = String(stream || '').toLowerCase();
   const common = [
-    { key:'validity', criterion:'Application validity, identity and location', answerKeys:['passport-available','passport available','identity-docs-consistent','identity docs consistent','current location','currently-in-australia','visa status'], evidence:'Passport, identity documents, name-change records, current location, current visa status and any validity prerequisite evidence.', recommendation:'Confirm identity, current location, current visa status and application validity before lodgement action.' },
-    { key:'health', criterion:'Health requirements', answerKeys:['serious-medical','serious medical','health issues','health','medical condition'], evidence:'Health declarations, medical reports and any health undertaking or further assessment material.', recommendation:'Review health disclosures and obtain relevant health documents before final advice.' },
-    { key:'character', criterion:'Character and integrity requirements', answerKeys:['criminal-history','criminal history','character issues','pic4020','false information','police','conviction'], evidence:'Police clearances, court records, Department correspondence and document-consistency review.', recommendation:'Confirm character and integrity position and resolve any disclosure issue before lodgement.' },
-    { key:'migration_history', criterion:'Migration history, refusals, cancellations and compliance', answerKeys:['visa-refused','visa refused','visa-cancelled','visa cancelled','unlawful-status','section48-mentioned','8503','overstay','previous refusal'], evidence:'VEVO, grant letters, refusal/cancellation decisions, bridging visa records, prior applications, condition records and Department correspondence.', recommendation:'Reconcile all migration history before treating the matter as low risk.' }
+    { key:'validity', criterion:'Application validity and identity', answerKeys:['passport-available','passport available','identity-docs-consistent','identity docs consistent'], evidence:'Passport, identity documents, name-change records, location and visa-status evidence.', recommendation:'Confirm identity, current location and validity requirements before any lodgement action.' },
+    { key:'health', criterion:'Health requirements', answerKeys:['serious-medical','serious medical','health issues','health'], evidence:'Health declarations, medical reports and any health undertaking or further assessment material.', recommendation:'Review health disclosures and obtain relevant health documents before final advice.' },
+    { key:'character', criterion:'Character and integrity requirements', answerKeys:['criminal-history','criminal history','character issues','pic4020','false information'], evidence:'Police clearances, court records, Department correspondence and document-consistency review.', recommendation:'Confirm character and integrity position and resolve any disclosure issue before lodgement.' },
+    { key:'migration_history', criterion:'Migration history and compliance', answerKeys:['visa-refused','visa refused','visa-cancelled','visa cancelled','unlawful-status','section48-mentioned','8503'], evidence:'VEVO, grant letters, refusal/cancellation decisions, bridging visa records and prior applications.', recommendation:'Reconcile all migration history before treating the matter as low risk.' }
   ];
-
-  if (code === '186') {
-    const common186 = [
-      { key:'validity', criterion:'Application validity, identity and location', answerKeys:['passport-available','passport available','identity-docs-consistent','identity docs consistent','current location','currently-in-australia','visa status'], evidence:'Passport, identity documents, name-change records, current location, current visa status and any validity prerequisite evidence.', recommendation:'Confirm identity, current location, current visa status and application validity before lodgement action.' },
-      { key:'health', criterion:'Standard requirement - health requirements', answerKeys:['serious-medical','serious medical','health issues','health','medical condition','health-disclosure','health disclosure'], evidence:'Health declarations, Departmental health examination requests and family-member health information if applicable.', recommendation:'Complete standard health declarations and review any Departmental health request if issued.' },
-      { key:'character', criterion:'Standard requirement - character and immigration history', answerKeys:['criminal-history','criminal history','character issues','pic4020','false information','police','conviction','visa-refused','visa refused','visa-cancelled','visa cancelled','overstayed','overstay'], evidence:'Police clearances, court records, VEVO/grant records, prior application records and Department correspondence if applicable.', recommendation:'Obtain standard police and immigration-history records and check them for consistency before final advice.' }
-    ];
-    const sponsor = { key:'sponsor', criterion:'Sponsoring employer and nomination position', answerKeys:['employer-name','employer name','current-employer','current employer','business-need','business need'], evidence:'Nomination approval or draft nomination, organisation chart, business activity records, position description and business need statement.', recommendation:'Build a coherent nomination file connecting the employer, position, duties and business need.' };
-    const genuine = { key:'genuine_position', criterion:'Genuine position and operational need', answerKeys:['role-ongoing','role ongoing','role-full-time','role full time','business-need','business need','employee-count'], evidence:'Position description, organisational chart, contracts, client/work pipeline, payroll capacity and evidence of ongoing operational need.', recommendation:'Demonstrate that the role is genuine, ongoing and commercially supported by objective employer records.' };
-    const occupation = { key:'occupation', criterion:'Occupation, duties and ANZSCO alignment', answerKeys:['occupation-title','occupation title','occupation','job-title','job title','daily-duties','daily duties','duties','anzsco'], evidence:'Detailed duties statement, ANZSCO comparison, CV, references, qualifications, registration/licensing and skills evidence.', recommendation:'Prepare a duties matrix showing why the nominated occupation accurately reflects the actual role.' };
-    const salary = { key:'salary', criterion:'Salary, market position and employment conditions', answerKeys:['salary-offered','salary offered','salary','weekly-hours','weekly hours','amsr','tsmit'], evidence:'Nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award/enterprise agreement material and any concession evidence.', recommendation:'Reconcile the nomination salary, contract, payroll, tax, superannuation and market salary or concession evidence before relying on the salary position.' };
-    const english = { key:'english', criterion:'English language requirement', answerKeys:['english-test-type','english test type','english-reading','english reading','english-writing','english writing','english-speaking','english speaking','english-listening','english listening','english'], evidence:'Original English test report, eligible passport evidence or exemption material if claimed.', recommendation:'Verify the original English evidence, test type, score/grade, validity date and required legal threshold before final advice.' };
-    const age = { key:'age', criterion:'Age requirement or exemption', answerKeys:['age-at-application','age at application','date-of-birth','date of birth','age-exemption','age exemption'], evidence:'Date of birth evidence, passport, age at application calculation and any exemption or concession evidence.', recommendation:'Confirm age at lodgement and obtain exemption evidence if the age threshold is not clearly met.' };
-    if (s.includes('direct')) {
-      return [
-        { key:'stream_direct_entry', criterion:'Direct Entry stream eligibility, occupation and skills pathway', answerKeys:['selectedStream','selected stream','stream','skills-assessment-status','skills assessment status','skills-assessment','skills assessment','qualification','experience','occupation-title','occupation'], evidence:'Stream selection record, skills assessment, qualifications, employment references, CV, licensing or registration evidence and nominated occupation material.', recommendation:'Assess the matter as Direct Entry only; verify skills assessment, occupation eligibility, qualifications, experience and registration/licensing before lodgement.' },
-        sponsor,
-        { key:'skills_direct_entry', criterion:'Direct Entry skills assessment, qualifications and employment evidence', answerKeys:['skills-assessment-status','skills assessment status','skills-assessment-successful','skills assessment successful','qualification','qualification-field','employment references','experience'], evidence:'Skills assessment outcome, qualifications, transcripts, employment references, CV, registration/licensing and occupation evidence.', recommendation:'Confirm the skills assessment, qualification and employment evidence are valid and aligned with the nominated occupation.' },
-        genuine, occupation, salary, english, age, ...common186
-      ];
-    }
-    if (s.includes('temporary') || s.includes('trt')) {
-      return [
-        { key:'stream_trt', criterion:'TRT stream eligibility and qualifying employment pathway', answerKeys:['selectedStream','selected stream','stream','trt-start-date','trt start date','continuous-work','continuous work','previous-sponsored-visas'], evidence:'Subclass 457/482/SID visa records, sponsor continuity records, qualifying employment history, nominated occupation history, payroll, tax and superannuation evidence.', recommendation:'Confirm qualifying employment, sponsor continuity and occupation continuity before relying on TRT.' },
-        sponsor,
-        { key:'trt_employment', criterion:'Qualifying employment, sponsor continuity and work history', answerKeys:['trt-start-date','trt start date','continuous-work','continuous work','weekly-hours','weekly hours','previous-sponsored-visas'], evidence:'Employment chronology, contract, payslips, PAYG/tax records, superannuation, leave records, visa/work-rights history and employer confirmation letters.', recommendation:'Reconstruct the qualifying employment chronology from objective records before treating the TRT pathway as strategically safe.' },
-        genuine, salary, english, age, ...common186
-      ];
-    }
-    if (s.includes('labour') || s.includes('agreement')) {
-      return [
-        { key:'stream_labour_agreement', criterion:'Labour Agreement coverage, occupation terms and selected pathway', answerKeys:['selectedStream','selected stream','stream','using-labour-agreement','using labour agreement','labour-agreement','labour agreement','agreement'], evidence:'Executed Labour Agreement, occupation coverage, nomination limits, concession schedules, sponsor obligations and compliance records.', recommendation:'Assess the matter against the actual agreement terms, not standard Direct Entry or TRT assumptions.' },
-        sponsor,
-        { key:'agreement_concessions', criterion:'Agreement concessions and conditions', answerKeys:['concession','labour-agreement-english-concession','age-exemption-category','salary concession'], evidence:'Agreement concession clauses, English/age/salary concession evidence, occupation list and employer compliance material.', recommendation:'Confirm every concession relied upon is expressly available under the agreement and supported by evidence.' },
-        genuine, salary, english, age, ...common186
-      ];
-    }
-    return [
-      { key:'stream', criterion:'Subclass 186 stream selection', answerKeys:['selectedStream','selected stream','stream'], evidence:'Stream selection record and employer nomination pathway material.', recommendation:'Confirm whether the matter is Direct Entry, TRT or Labour Agreement before issuing lodgement-ready advice.' },
-      sponsor, genuine, occupation, salary, english, age, ...common186
-    ];
-  }
-
-  if (['187','482','494'].includes(code)) {
+  if (['186','187','482','494'].includes(code)) {
     const employer = [
       { key:'stream', criterion:'Subclass and stream selection', answerKeys:['selectedStream','selected stream','stream'], evidence:'Visa history, stream selection record, nomination pathway material and any transitional or concession evidence.', recommendation:'Confirm the selected stream is legally available and strategically strongest before lodgement.' },
       { key:'sponsor', criterion:'Sponsoring employer and nomination position', answerKeys:['employer-name','employer name','current-employer','current employer','business-need','business need'], evidence:'Nomination approval or draft nomination, organisation chart, business activity records, position description and business need statement.', recommendation:'Build a coherent nomination file connecting the employer, position, duties and business need.' },
       { key:'genuine_position', criterion:'Genuine position and operational need', answerKeys:['role-ongoing','role ongoing','role-full-time','role full time','business-need','business need','employee-count'], evidence:'Position description, organisational chart, contracts, client/work pipeline, payroll capacity and evidence of ongoing operational need.', recommendation:'Demonstrate that the role is genuine, ongoing and commercially supported by objective employer records.' },
-      { key:'occupation', criterion:'Occupation, duties and ANZSCO alignment', answerKeys:['occupation','job-title','job title','daily-duties','daily duties','duties','anzsco'], evidence:'Detailed duties statement, ANZSCO comparison, CV, references, qualifications, registration/licensing and skills evidence.', recommendation:'Prepare a duties matrix showing why the nominated occupation accurately reflects the actual role.' },
-      { key:'employment', criterion:'Employment continuity, skills and work history', answerKeys:['continuous-work','continuous work','trt-start-date','trt start date','weekly-hours','weekly hours','experience','skills'], evidence:'Employment contract, payslips, PAYG/tax records, superannuation, leave records, references and visa/work-rights history.', recommendation:'Reconstruct the employment chronology and reconcile it against payroll, tax, superannuation and visa records.' },
-      { key:'salary', criterion:'Salary, market position and employment conditions', answerKeys:['salary-offered','salary offered','salary','weekly-hours','weekly hours','amsr','tsmit'], evidence:'Contract, payslips, superannuation, market salary evidence, award/enterprise agreement material and nomination salary records.', recommendation:'Confirm the salary position is internally consistent and defensible against market salary, threshold or concession settings.' },
+      { key:'occupation', criterion:'Occupation and ANZSCO alignment', answerKeys:['occupation','job-title','job title','daily-duties','daily duties','duties'], evidence:'Detailed duties statement, ANZSCO comparison, CV, references, qualifications, registration/licensing and skills evidence.', recommendation:'Prepare a duties matrix showing why the nominated occupation accurately reflects the actual role.' },
+      { key:'employment', criterion:'Employment continuity and work history', answerKeys:['continuous-work','continuous work','trt-start-date','trt start date','weekly-hours','weekly hours'], evidence:'Employment contract, payslips, PAYG/tax records, superannuation, leave records and visa/work-rights history.', recommendation:'Reconstruct the employment chronology and reconcile it against payroll, tax and visa records.' },
+      { key:'salary', criterion:'Salary and market position', answerKeys:['salary-offered','salary offered','annual-salary','annual salary','remuneration','salary'], evidence:'Contract, payslips, superannuation, market salary evidence, award/enterprise agreement material and nomination salary records.', recommendation:'Confirm the salary position is internally consistent and defensible against market salary or concession settings.' },
       { key:'english', criterion:'English language requirement or concession', answerKeys:['english-reading','english reading','english-writing','english writing','english-speaking','english speaking','english-listening','english listening','english'], evidence:'Original English test report, passport evidence, exemption material or Labour Agreement concession evidence.', recommendation:'Verify the English threshold, exemption or concession before final lodgement advice.' }
     ];
-    if (code === '494') employer.splice(2, 0, { key:'regional', criterion:'Regional position and designated regional area requirement', answerKeys:['regional','postcode','location','regional area'], evidence:'Regional postcode evidence, employer location records and nomination material confirming regional eligibility.', recommendation:'Confirm that the employer location, nominated position and applicant strategy satisfy the regional framework.' });
-    if (s.includes('labour') || s.includes('agreement')) employer.splice(2, 0, { key:'labour_agreement', criterion:'Labour Agreement terms and concessions', answerKeys:['labour-agreement','labour agreement','agreement','concession','selectedStream'], evidence:'Executed Labour Agreement, occupation coverage, concessions, salary/English/age settings, nomination limits and sponsor compliance records.', recommendation:'Assess the matter against the actual agreement terms, not standard stream assumptions.' });
-    if (s.includes('temporary') || s.includes('trt')) employer.splice(2, 0, { key:'trt', criterion:'Temporary Residence Transition employment pathway', answerKeys:['trt-start-date','trt start date','continuous-work','continuous work','previous-sponsored-visas'], evidence:'Subclass 457/482/SID visa records, sponsor continuity records, nominated occupation history, payroll, tax and superannuation evidence.', recommendation:'Confirm qualifying employment, sponsor continuity and occupation continuity before relying on TRT.' });
-    if (s.includes('direct')) employer.splice(2, 0, { key:'direct_entry', criterion:'Direct Entry skills and occupation pathway', answerKeys:['skills-assessment','skills assessment','qualification','experience','occupation'], evidence:'Skills assessment, qualifications, employment references, CV, licensing and occupation evidence.', recommendation:'Confirm skills and occupation evidence is stronger than any TRT-based alternative before relying on Direct Entry.' });
+    if (s.includes('labour') || s.includes('agreement')) {
+      employer.splice(2, 0, { key:'labour_agreement', criterion:'Labour Agreement terms and concessions', answerKeys:['labour-agreement','labour agreement','agreement','concession','selectedStream'], evidence:'Executed Labour Agreement, occupation coverage, concessions, salary/English/age settings, nomination limits and sponsor compliance records.', recommendation:'Assess the matter against the actual agreement terms, not the standard TRT or Direct Entry assumptions.' });
+    }
+    if (s.includes('temporary') || s.includes('trt')) {
+      employer.splice(2, 0, { key:'trt', criterion:'Temporary Residence Transition employment pathway', answerKeys:['trt-start-date','trt start date','continuous-work','continuous work','previous-sponsored-visas'], evidence:'Subclass 457/482/SID visa records, sponsor continuity records, nominated occupation history, payroll, tax and superannuation evidence.', recommendation:'Confirm the qualifying employment period, sponsor continuity and occupation continuity before relying on the TRT pathway.' });
+    }
+    if (s.includes('direct')) {
+      employer.splice(2, 0, { key:'direct_entry', criterion:'Direct Entry skills and occupation pathway', answerKeys:['skills-assessment','skills assessment','qualification','experience','occupation'], evidence:'Skills assessment, qualifications, employment references, CV, licensing and occupation evidence.', recommendation:'Confirm skills and occupation evidence is stronger than any TRT-based alternative before relying on Direct Entry.' });
+    }
     return [...employer, ...common];
   }
-
-  if (['407','408'].includes(code)) {
+  if (['189','190','491'].includes(code)) {
     return [
-      { key:'sponsor_support', criterion: code === '407' ? 'Training sponsor, nomination and occupational training plan' : 'Temporary activity sponsor/support and event/activity basis', answerKeys:['sponsor','nomination','training plan','activity','event','supporter'], evidence: code === '407' ? 'Sponsorship/nomination material, structured training plan, supervision arrangements and occupational training evidence.' : 'Sponsorship/support documents, event/activity invitation, role details, dates and organisational evidence.', recommendation:'Confirm the sponsor/support framework and activity basis before lodgement.' },
-      { key:'purpose', criterion:'Genuine temporary activity purpose', answerKeys:['purpose','activity','training','event','intention','genuine'], evidence:'Purpose statement, activity/training documents, itinerary, role details and temporary stay evidence.', recommendation:'Document why the proposed stay is genuine, temporary and consistent with the selected stream.' },
-      { key:'skills', criterion:'Skills, experience and role alignment', answerKeys:['occupation','skills','experience','qualification','training'], evidence:'CV, qualifications, employment references, training/activity requirements and licensing if relevant.', recommendation:'Reconcile the applicant’s background with the proposed activity or training role.' },
+      { key:'invitation', criterion:'SkillSelect invitation and points-tested validity', answerKeys:['invitation','eoi','points'], evidence:'Invitation, EOI records, points claims and supporting documents.', recommendation:'Verify every points claim against evidence before lodgement.' },
+      { key:'nomination', criterion:'State or regional nomination requirements', answerKeys:['nomination','state nomination','regional'], evidence:'Nomination approval, state conditions and commitment evidence.', recommendation:'Check nomination conditions and any residence/work commitment before lodgement.' },
+      { key:'skills', criterion:'Skills assessment and nominated occupation', answerKeys:['skills assessment','occupation','anzsco'], evidence:'Skills assessment, qualifications, employment references and occupation evidence.', recommendation:'Confirm the skills assessment is valid and aligned with the nominated occupation.' },
+      { key:'english', criterion:'English language and points evidence', answerKeys:['english','ielts','pte'], evidence:'English test report or exemption evidence.', recommendation:'Verify English evidence validity and points level.' },
       ...common
     ];
   }
-
-  if (['189','190','489','491'].includes(code)) {
-    const skilled = [
-      { key:'invitation', criterion:'SkillSelect invitation, EOI and timing', answerKeys:['invitation','eoi','date of invitation','points'], evidence:'SkillSelect EOI, invitation, invitation date, claimed points summary and supporting records.', recommendation:'Verify the invitation, EOI and timing before relying on the skilled pathway.' },
-      { key:'nomination', criterion:'State, territory, regional or family nomination/sponsorship', answerKeys:['nomination','state nomination','regional','family sponsor','sponsor'], evidence:'Nomination approval, regional declaration, eligible family sponsor evidence and any state/territory conditions.', recommendation:'Check nomination/sponsorship conditions and ongoing compliance requirements before lodgement.' },
-      { key:'skills', criterion:'Skills assessment and nominated occupation', answerKeys:['skills assessment','occupation','anzsco','qualification'], evidence:'Valid skills assessment, qualifications, employment references and occupation-list evidence.', recommendation:'Confirm the skills assessment is valid at the relevant time and aligned with the nominated occupation.' },
-      { key:'points', criterion:'Points claims and supporting evidence', answerKeys:['points','age','employment','study','partner','naati','professional year'], evidence:'Age, English, employment, study, partner, NAATI/community language and professional year evidence where claimed.', recommendation:'Verify every points claim against documents and do not rely on unsupported points.' },
-      { key:'english', criterion:'English language evidence', answerKeys:['english','ielts','pte','toefl','oet'], evidence:'English test report or passport/exemption evidence as applicable.', recommendation:'Verify English evidence validity and points level.' },
-      ...common
-    ];
-    return skilled;
-  }
-
-  if (['100','300','309','461','801','820'].includes(code)) {
-    const partner = [
-      { key:'sponsor', criterion:'Sponsor or eligible family member position', answerKeys:['sponsor','partner','citizen','permanent resident','new zealand','eligible nz'], evidence:'Sponsor identity, citizenship/permanent residence/eligible New Zealand citizen evidence and sponsorship history.', recommendation:'Confirm sponsor or eligible family member status and any limitation before lodgement.' },
-      { key:'relationship', criterion:'Genuine relationship or family-unit relationship', answerKeys:['relationship','married','defacto','living together','met in person','engaged','family member'], evidence:'Relationship statements, marriage/de facto evidence, meeting evidence, financial, household, social and commitment evidence.', recommendation:'Prepare relationship evidence across all legally relevant relationship aspects.' },
-      { key:'location_timing', criterion:'Location, timing and pathway requirements', answerKeys:['currently-in-australia','current country','location','visa status','bridging','schedule 3'], evidence:'Passport, visa status, location evidence, bridging visa records and Schedule 3 material if relevant.', recommendation:'Confirm onshore/offshore requirements, timing and any Schedule 3 issue before lodgement.' },
-      { key:'sponsor_limits', criterion:'Sponsorship limitations and prior relationship history', answerKeys:['previous sponsorship','sponsored before','family violence','prior partner','sponsor history'], evidence:'Prior sponsorship records, relationship history, separation records and any family violence or limitation evidence.', recommendation:'Check sponsorship limitations and sensitive relationship-history issues before final advice.' },
-      ...common
-    ];
-    return partner;
-  }
-
-  if (['101','103','115','116','173','836'].includes(code)) {
+  if (['300','309','820'].includes(code)) {
     return [
-      { key:'family_relationship', criterion:'Qualifying family relationship', answerKeys:['relationship','child','parent','relative','carer','remaining relative','dependent'], evidence:'Birth certificates, family register, relationship documents, dependency records and sponsor identity/status evidence.', recommendation:'Establish the qualifying family relationship with primary documents before lodgement.' },
-      { key:'sponsor', criterion:'Sponsor eligibility and location requirements', answerKeys:['sponsor','citizen','permanent resident','settled','location'], evidence:'Sponsor citizenship/permanent residence evidence, residence history, location evidence and sponsorship documents.', recommendation:'Confirm sponsor eligibility, settled status and location requirements before lodgement.' },
-      { key:'stream_specific_family', criterion:'Visa-specific family criteria', answerKeys:['balance of family','carer','medical need','remaining relative','assurance of support','dependency','custody'], evidence:'Balance of family documents, medical need evidence, carer evidence, dependency proof, custody/parental consent and Assurance of Support material where relevant.', recommendation:'Test the matter against the specific family-visa criterion before treating it as viable.' },
-      { key:'queue_capping', criterion:'Queue, capping and timing risk', answerKeys:['urgency','queue','processing time','aged parent','contributory'], evidence:'Processing strategy, queue-date/timing advice, family circumstances and financial planning evidence where relevant.', recommendation:'Give realistic timing and queue/capping advice before the client relies on the pathway.' },
+      { key:'sponsor', criterion:'Sponsor eligibility', answerKeys:['sponsor','partner','citizen','pr'], evidence:'Sponsor identity, citizenship/permanent residence evidence and sponsorship history.', recommendation:'Confirm sponsor eligibility and any sponsorship limitation.' },
+      { key:'relationship', criterion:'Genuine and continuing relationship', answerKeys:['relationship','married','defacto','living together'], evidence:'Financial, household, social and commitment evidence plus relationship statements.', recommendation:'Prepare evidence across all relationship aspects before lodgement.' },
+      { key:'location', criterion:'Location and timing requirements', answerKeys:['currently-in-australia','current country'], evidence:'Passport, visa status and location evidence.', recommendation:'Confirm onshore/offshore requirements for the selected subclass.' },
       ...common
     ];
   }
-
-  if (['188','888'].includes(code)) {
-    return [
-      { key:'stream', criterion:'Business or investment stream selection', answerKeys:['stream','business innovation','investor','significant investor','entrepreneur'], evidence:'Stream selection record, state nomination, invitation and stream-specific eligibility documents.', recommendation:'Confirm the selected business/investment stream is legally and commercially supportable.' },
-      { key:'business_assets', criterion:'Business ownership, turnover, assets and investment position', answerKeys:['business','turnover','assets','investment','funds','net assets'], evidence:'Business accounts, tax records, ASIC/company material, asset valuations, investment statements and source-of-funds evidence.', recommendation:'Reconcile business, asset and investment claims against objective financial records.' },
-      { key:'nomination', criterion:'State or territory nomination and conditions', answerKeys:['nomination','state','territory','invitation'], evidence:'Nomination approval, invitation, business proposal and any state/territory conditions.', recommendation:'Check nomination conditions and ongoing compliance obligations before lodgement.' },
-      { key:'transition', criterion: code === '888' ? 'Permanent-stage compliance and residence requirements' : 'Provisional-stage intention and future transition strategy', answerKeys:['residence','compliance','business activity','transition','888'], evidence:'Residence evidence, business activity records, investment compliance documents and transition records.', recommendation:'Assess whether the provisional/permanent-stage pathway is supported by evidence and timing.' },
-      ...common
-    ];
-  }
-
-  if (['500','590','485'].includes(code)) {
-    if (code === '500') return [
-      { key:'course', criterion:'Course enrolment and genuine student position', answerKeys:['coe','course','provider','study','genuine student','gs'], evidence:'CoE, course details, provider records, study plan and genuine student statement/evidence.', recommendation:'Confirm the course is genuine, appropriate and supported by the applicant’s circumstances.' },
-      { key:'finance', criterion:'Financial capacity and support', answerKeys:['funds','financial','bank','sponsor support','income'], evidence:'Bank statements, income evidence, sponsor support, living costs, tuition and travel funds.', recommendation:'Reconcile financial capacity and source of funds before lodgement.' },
-      { key:'english_oshc', criterion:'English, OSHC and welfare requirements', answerKeys:['english','oshc','health insurance','welfare','minor'], evidence:'English evidence, OSHC policy, welfare arrangements for minors and school-age dependant records.', recommendation:'Confirm English, health insurance and welfare requirements before final advice.' },
-      { key:'immigration_history', criterion:'Immigration history and genuine temporary/student risk', answerKeys:['refusal','study gap','previous study','home ties','visa history'], evidence:'Prior visa records, study/employment history, home ties and explanation of any gaps/refusals.', recommendation:'Address any non-genuine student or compliance concern before lodgement.' },
-      ...common
-    ];
-    if (code === '590') return [
-      { key:'guardian', criterion:'Student guardian relationship and welfare arrangements', answerKeys:['student','guardian','parent','welfare','custody'], evidence:'Student relationship evidence, custody/parental consent, welfare arrangements and school/student documents.', recommendation:'Confirm the guardian relationship and welfare arrangements before lodgement.' },
-      { key:'temporary_stay', criterion:'Genuine temporary stay and support capacity', answerKeys:['temporary','purpose','funds','support','home ties'], evidence:'Purpose statement, funds, accommodation, home ties and support arrangements.', recommendation:'Document why the guardian stay is genuine, temporary and financially supported.' },
-      { key:'insurance', criterion:'Health insurance and family arrangements', answerKeys:['health insurance','oshc','family','dependants'], evidence:'Health insurance evidence, family composition documents and any dependant arrangements.', recommendation:'Verify insurance and family arrangements before lodgement.' },
-      ...common
-    ];
-    return [
-      { key:'qualification', criterion:'Australian study, qualification and stream eligibility', answerKeys:['qualification','course','completion','australian study','stream'], evidence:'Completion letter, transcript, CRICOS/course evidence and stream-specific qualification documents.', recommendation:'Confirm qualification and Australian study requirement before relying on the 485 pathway.' },
-      { key:'timing', criterion:'Visa timing, age and previous 485 history', answerKeys:['age','visa expiry','previous 485','held 485','lodgement date'], evidence:'Passport, current visa, visa expiry, previous visa history and timing records.', recommendation:'Check timing, age and previous 485 restrictions before lodgement.' },
-      { key:'english_afp_insurance', criterion:'English, AFP check and health insurance', answerKeys:['english','afp','police','health insurance'], evidence:'English test, AFP check, health insurance and identity documents.', recommendation:'Obtain mandatory English, AFP and insurance evidence before lodgement.' },
-      ...common
-    ];
-  }
-
-  if (['417','462','600','602'].includes(code)) {
-    if (code === '600') return [
-      { key:'purpose', criterion:'Genuine temporary stay and visit purpose', answerKeys:['purpose','visit','tourism','business visitor','family visit','itinerary'], evidence:'Itinerary, invitation, purpose statement, travel bookings and supporting visit documents.', recommendation:'Explain the visit purpose clearly and consistently with the selected stream.' },
-      { key:'funds_ties', criterion:'Funds, home ties and incentive to return', answerKeys:['funds','employment','business','family ties','home ties','assets'], evidence:'Bank records, employment/business evidence, family/property ties and prior travel history.', recommendation:'Prepare evidence addressing temporary stay and return incentive.' },
-      { key:'sponsor_stream', criterion:'Stream-specific sponsorship, business visitor or family visitor criteria', answerKeys:['sponsor','invitation','business','conference','family'], evidence:'Sponsorship, invitation, business visitor documents, family relationship evidence and security bond material if relevant.', recommendation:'Check stream-specific criteria before lodging the visitor application.' },
-      ...common
-    ];
-    if (code === '602') return [
-      { key:'medical_treatment', criterion:'Medical treatment purpose and arrangements', answerKeys:['medical','treatment','hospital','doctor','appointment'], evidence:'Medical appointment letters, treatment plan, hospital/doctor confirmation and cost estimates.', recommendation:'Confirm treatment arrangements, costs and temporary stay position before lodgement.' },
-      { key:'support', criterion:'Financial support and stay arrangements', answerKeys:['funds','support','accommodation','carer'], evidence:'Funds, accommodation, support-person evidence and treatment funding records.', recommendation:'Verify financial and practical support arrangements.' },
-      ...common
-    ];
-    return [
-      { key:'passport_age', criterion:'Passport eligibility, age and first/second/third visa position', answerKeys:['passport','country','age','first','second','third'], evidence:'Passport, age evidence, prior working holiday visa history and eligibility records.', recommendation:'Confirm passport country eligibility, age and previous working holiday visa history.' },
-      { key:'specified_work', criterion:'Specified work or stream-specific requirements', answerKeys:['specified work','farm work','regional work','education','english','support funds'], evidence:'Specified work evidence, payslips, employer records, education/English/support funds if relevant.', recommendation:'Verify any second/third visa or subclass 462-specific requirement before lodgement.' },
-      ...common
-    ];
-  }
-
-  if (['785','790','866'].includes(code)) {
-    return [
-      { key:'claims', criterion:'Protection claims and legal basis', answerKeys:['claim','harm','fear','persecution','protection','country','reason'], evidence:'Detailed claims statement, chronology, identity/nationality documents and evidence supporting feared harm.', recommendation:'Obtain a detailed protection claims statement and identify the precise protection basis before advice is finalised.' },
-      { key:'credibility', criterion:'Credibility, consistency and timing of claims', answerKeys:['delay','inconsistency','previous claim','documents','story'], evidence:'Prior visa/application records, entry records, statements, document history and explanation for any delay or inconsistency.', recommendation:'Resolve credibility and timing issues before any claim is advanced.' },
-      { key:'country_info', criterion:'Country information, state protection and relocation', answerKeys:['country information','police','state protection','relocation','region'], evidence:'Country information, incident evidence, police reports, medical/psychological evidence and relocation analysis.', recommendation:'Test the claim against country information, state protection and relocation issues.' },
-      { key:'exclusion', criterion:'Exclusion, character and security concerns', answerKeys:['crime','military','security','exclusion','character'], evidence:'Character records, military/political history, security disclosures and any adverse material.', recommendation:'Identify exclusion, character or security risks before giving any positive pathway advice.' },
-      ...common
-    ];
-  }
-
   return [
     { key:'pathway', criterion:`Subclass ${code || 'visa'} pathway selection`, answerKeys:['selectedStream','stream','visaType','subclass'], evidence:'Subclass-specific eligibility evidence, identity, visa history and supporting documents.', recommendation:'Confirm the correct subclass and stream before giving lodgement-ready advice.' },
     { key:'primary', criterion:'Primary Schedule 2 criteria', answerKeys:['occupation','relationship','purpose','course','sponsor','nomination'], evidence:'Documents supporting each primary criterion claimed in the questionnaire.', recommendation:'Assess each claimed criterion against original documents.' },
@@ -5906,98 +5707,139 @@ function criterionProfilesForSubclass(subclass, stream) {
 
 function buildCriterionFindingFromProfile(profile, context) {
   const { flat, subclass, stream, legalPack } = context;
+
+  const normaliseKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const criterionKey = normaliseKey(profile.key || profile.criterion || '');
+
+  function aliasKeysForProfile(p) {
+    const key = normaliseKey(p.key || '');
+    const base = Array.isArray(p.answerKeys) ? [...p.answerKeys] : [];
+    const aliases = {
+      stream: ['selectedStream','selected_stream','nominationStream','stream','pathway'],
+      directentry: ['skillsAssessment','skills_assessment','skills-assessment','qualification','qualifications','registration','licensing','occupation','nominatedOccupation'],
+      direct_entry: ['skillsAssessment','skills_assessment','skills-assessment','qualification','qualifications','registration','licensing','occupation','nominatedOccupation'],
+      labouragreement: ['labourAgreement','labour_agreement','labour-agreement','agreementConcession','concession','selectedStream','stream'],
+      labour_agreement: ['labourAgreement','labour_agreement','labour-agreement','agreementConcession','concession','selectedStream','stream'],
+      trt: ['trtStartDate','trt_start_date','continuousWork','continuous_work','previousSponsoredVisas','sponsorContinuity'],
+      sponsor: ['employerName','employer_name','employer-name','sponsorName','sponsor_name','businessName','business_name','currentEmployer','current_employer'],
+      genuineposition: ['roleOngoing','role_ongoing','roleFullTime','role_full_time','businessNeed','business_need','employeeCount','employee_count'],
+      genuine_position: ['roleOngoing','role_ongoing','roleFullTime','role_full_time','businessNeed','business_need','employeeCount','employee_count'],
+      occupation: ['nominatedOccupation','nominated_occupation','occupation','anzsco','jobTitle','job_title','dailyDuties','daily_duties','duties'],
+      employment: ['continuousWork','continuous_work','trtStartDate','trt_start_date','employmentStartDate','employment_start_date','weeklyHours','weekly_hours'],
+      salary: ['salaryOffered','salary_offered','annualSalary','annual_salary','salary','remuneration','baseSalary','base_salary'],
+      english: ['englishEvidence','english_evidence','englishTestType','english_test_type','englishScore','english_score','englishGrade','english_grade','englishReading','englishWriting','englishSpeaking','englishListening','pte','ielts','oet','toefl'],
+      validity: ['passportAvailable','passport_available','passport-available','identityDocsConsistent','identity_docs_consistent','currentLocation','current_location','currentVisaStatus','current_visa_status'],
+      health: ['seriousMedical','serious_medical','healthIssues','health_issues','health'],
+      character: ['criminalHistory','criminal_history','characterIssues','character_issues','pic4020','falseInformation','false_information'],
+      migrationhistory: ['visaRefused','visa_refused','visaCancelled','visa_cancelled','unlawfulStatus','unlawful_status','section48Mentioned','section48','8503'],
+      migration_history: ['visaRefused','visa_refused','visaCancelled','visa_cancelled','unlawfulStatus','unlawful_status','section48Mentioned','section48','8503']
+    };
+    return [...(aliases[key] || []), ...base];
+  }
+
   function getAny(keys) {
-    const wanted = (keys || []).map(k => String(k).toLowerCase().replace(/[^a-z0-9]/g, ''));
-    for (const [k, v] of Object.entries(flat || {})) {
-      const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (wanted.some(w => nk === w || nk.endsWith(w) || nk.includes(w))) {
-        const text = String(v || '').replace(/\s+/g, ' ').trim();
-        if (text) return text;
+    const wanted = (keys || []).map(normaliseKey).filter(Boolean);
+    const entries = Object.entries(flat || {}).map(([k, v]) => [k, normaliseKey(k), v]);
+
+    // First pass: exact key match only.
+    for (const w of wanted) {
+      for (const [rawKey, nk, v] of entries) {
+        if (nk === w) {
+          const text = String(v ?? '').replace(/\s+/g, ' ').trim();
+          if (text) return text;
+        }
       }
     }
+
+    // Second pass: safe suffix match for long, specific field names only.
+    for (const w of wanted.filter(x => x.length >= 8)) {
+      for (const [rawKey, nk, v] of entries) {
+        if (nk.endsWith(w) || w.endsWith(nk)) {
+          const text = String(v ?? '').replace(/\s+/g, ' ').trim();
+          if (text) return text;
+        }
+      }
+    }
+
     return '';
   }
-  const answer = getAny(profile.answerKeys || []);
-  const status = criterionStatusFromAnswer(answer, 'The available instructions are presently supportive, subject to verification against original evidence and current legal settings.');
+
+  const answer = getAny(aliasKeysForProfile(profile));
+  const status = criterionStatusFromAnswer(answer, 'The current instructions are supportive, subject to verification of original evidence and current legal settings.');
   const legalRequirement = buildSourceBackedRequirement(profile.criterion, subclass, stream, legalPack);
-  const lowerCriterion = String(profile.criterion || '').toLowerCase();
   const lowerAnswer = String(answer || '').toLowerCase();
-  let finding = '';
-  let legal_consequence = 'The criterion may be capable of being satisfied, but only if the supporting documents confirm the instructions and no inconsistent Departmental, sponsor or third-party records emerge.';
+
+  let finding = answer
+    ? `${status.finding} The relevant instruction currently recorded is: ${answer}.`
+    : 'The available questionnaire material does not finally establish this criterion. It must be assessed against the original evidence before lodgement-ready advice is issued.';
+
+  let legal_consequence = status.tone === 'risk'
+    ? 'If this issue is not resolved, it may create a material validity, nomination, refusal or evidentiary risk depending on the applicable criterion.'
+    : 'The criterion may be capable of being satisfied, but only if the supporting documents confirm the instructions and no inconsistent Departmental or employer records emerge.';
+
   let delegateRisk = status.tone === 'risk' ? 'Elevated Delegate Risk' : 'Moderate Delegate Risk';
 
-  if (/salary|market|remuneration|employment conditions/.test(lowerCriterion)) {
-    finding = 'The salary and employment-conditions position must be reconciled against the nomination, employment contract, payroll, superannuation, tax records, market salary evidence and any applicable Labour Agreement concession.';
-    legal_consequence = 'If salary, market salary or concession evidence cannot be reconciled, the nomination or stream position may become a primary refusal risk.';
-  } else if (/age/.test(lowerCriterion)) {
-    const ageText = String(answer || '').trim();
-    const ageNumber = /^\d{1,2}$/.test(ageText) ? Number(ageText) : null;
-    const dobMatch = ageText.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    let calculatedAge = ageNumber;
-    if (dobMatch) {
-      const dob = new Date(`${dobMatch[1]}-${dobMatch[2]}-${dobMatch[3]}T00:00:00Z`);
-      if (!Number.isNaN(dob.getTime())) {
-        const now = new Date();
-        calculatedAge = now.getUTCFullYear() - dob.getUTCFullYear();
-        const beforeBirthday = (now.getUTCMonth() < dob.getUTCMonth()) || (now.getUTCMonth() === dob.getUTCMonth() && now.getUTCDate() < dob.getUTCDate());
-        if (beforeBirthday) calculatedAge -= 1;
-      }
-    }
-    if (calculatedAge !== null && Number.isFinite(calculatedAge)) {
-      finding = `The applicant is recorded as ${calculatedAge} years old. On the information provided, the age position appears capable of satisfying the ordinary age threshold, subject to passport/date-of-birth verification at lodgement and any stream-specific exemption review if required.`;
-      delegateRisk = calculatedAge < 45 ? 'Managed Delegate Risk' : 'Moderate Delegate Risk';
-      legal_consequence = calculatedAge < 45 ? 'The age position appears presently supportable, subject to original passport/date-of-birth verification at the time relevant to the selected stream.' : 'The age position may require exemption or concession analysis before lodgement-ready advice can be issued.';
-    } else {
-      finding = 'The age position must be confirmed from passport and date-of-birth evidence before lodgement-ready advice is issued.';
+  if (criterionKey === 'english') {
+    if (!answer || /\b(no|none|not available|not yet|missing|unknown|false)\b/i.test(lowerAnswer)) {
+      finding = 'English evidence has not been verified. The file should not proceed on assumed English eligibility unless a valid test result, eligible passport evidence, exemption or lawful concession is identified and checked against the current legal threshold.';
+      legal_consequence = 'If the English requirement, exemption or concession cannot be established with valid evidence at the relevant time, the visa pathway may become unsuitable or exposed to refusal risk.';
       delegateRisk = 'Moderate Delegate Risk';
-      legal_consequence = 'If the age threshold is not clearly met, an exemption or concession basis must be identified before the pathway is treated as viable.';
-    }
-  } else if (/validity|identity|location/.test(lowerCriterion)) {
-    finding = 'The identity, current location, current visa status and application-validity position appear capable of being assessed, but must be confirmed against passport, VEVO, grant notices, location evidence and any stream-specific validity prerequisites.';
-    delegateRisk = 'Managed Delegate Risk';
-  } else if (/health/.test(lowerCriterion)) {
-    if (/^(no|false|none|nil)$/i.test(lowerAnswer)) {
-      finding = 'No health issue has been disclosed in the assessment response. This is presently a standard requirement rather than an elevated risk issue, subject to routine Departmental health examinations and any family-member health considerations.';
-      legal_consequence = 'The health position appears presently supportable on the instructions, subject to standard health declarations, examination requests and family-member health checks if applicable.';
-      delegateRisk = 'Standard Requirement';
-    } else if (answer) {
-      finding = 'A health-related disclosure or health information has been recorded. The issue should be reviewed early because it may affect timing, evidence strategy and final advice.';
-      delegateRisk = 'Elevated Delegate Risk';
     } else {
-      finding = 'The health position cannot be finally confirmed from the available instructions and should be checked through standard health declarations and any required medical evidence.';
+      finding = `English evidence has been disclosed as "${answer}", but the original test report, test type, component scores or grade, validity date, eligible passport evidence, exemption basis or lawful concession must be verified before lodgement-ready advice is issued.`;
+      legal_consequence = 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession for the selected stream.';
+      delegateRisk = 'Moderate Delegate Risk';
     }
-  } else if (/character|integrity|4020|false|misleading|migration history|refusals|cancellations|compliance/.test(lowerCriterion)) {
-    if (/^(no|false|none|nil)$/i.test(lowerAnswer)) {
-      finding = 'No character, integrity or adverse immigration-history issue has been disclosed in the assessment response. This is presently a standard verification requirement, subject to police clearances, Departmental records and document-consistency checks.';
-      legal_consequence = 'The character and immigration-history position appears presently supportable on the instructions, subject to routine police, VEVO, Departmental and document-consistency checks.';
-      delegateRisk = 'Standard Requirement';
-    } else if (answer) {
-      finding = 'A character, integrity or immigration-history disclosure has been recorded. The issue should be reviewed against police, court, Departmental and prior-application records before any lodgement-ready advice is issued.';
-      delegateRisk = 'Elevated Delegate Risk';
-    } else {
-      finding = 'The character, integrity and immigration-history position cannot yet be finally confirmed and should be checked through standard records before final advice.';
-      delegateRisk = 'Standard Requirement';
-    }
-  } else if (answer) {
-    finding = `${status.finding} The answer has been treated as client instructions only and must be tested against original documents and any inconsistent Departmental, sponsor or third-party records before lodgement-ready advice is issued.`;
-  } else {
-    finding = 'The available questionnaire material does not finally establish this criterion. It must be assessed against the original evidence before lodgement-ready advice is issued.';
+  } else if (criterionKey === 'salary') {
+    finding = answer
+      ? `The salary/remuneration figure recorded is ${answer}. It must be reconciled against the nomination, employment contract, payroll, superannuation, tax records, market salary evidence and any applicable concession.`
+      : 'The salary/remuneration position has not been sufficiently identified and must be reconciled against nomination and employment records before lodgement-ready advice is issued.';
+    legal_consequence = 'If salary, market salary or concession evidence cannot be reconciled, the nomination or stream position may become a primary refusal risk.';
+    delegateRisk = 'Moderate Delegate Risk';
+  } else if (criterionKey === 'labouragreement' || criterionKey === 'labour_agreement') {
+    finding = 'The Labour Agreement pathway must be assessed against the executed agreement itself. The critical issue is whether the agreement covers the employer, nominated occupation, nomination limits, salary settings, English or age concessions, and any conditions attached to the agreement.';
+    legal_consequence = 'If the executed agreement does not expressly support the nominated occupation, employer, concessions or nomination settings, the selected pathway may not be viable and an alternative pathway should be considered.';
+    delegateRisk = 'Elevated Delegate Risk';
+  } else if (criterionKey === 'directentry' || criterionKey === 'direct_entry') {
+    finding = 'For the Direct Entry stream, the assessment should focus on skills assessment, occupation eligibility, qualifications, employment history, registration or licensing requirements and the fit between the applicant’s background and the nominated position. It should not be treated as a TRT qualifying-employment analysis unless the selected stream changes.';
+    legal_consequence = 'If the skills assessment, occupation eligibility, registration/licensing or qualification evidence cannot be verified, the Direct Entry pathway may not be lodgement ready.';
+    delegateRisk = 'Moderate Delegate Risk';
+  } else if (criterionKey === 'trt') {
+    finding = 'For the Temporary Residence Transition stream, the qualifying employment period, sponsor continuity, nominated occupation continuity and visa/work-rights history must be reconstructed from objective records.';
+    legal_consequence = 'If qualifying employment, sponsor continuity or occupation continuity cannot be verified, the TRT pathway may become unsuitable or exposed to refusal risk.';
+    delegateRisk = 'Moderate Delegate Risk';
+  } else if (criterionKey === 'sponsor' || criterionKey === 'genuineposition' || criterionKey === 'genuine_position') {
+    finding = 'The nomination and employer material must show a coherent connection between the business operations, the nominated position, the applicant’s actual duties and the ongoing need for the role. A delegate is likely to test the employer’s structure, payroll capacity, trading activity and organisational chart rather than relying only on broad employer assertions.';
+    legal_consequence = 'If the nomination, genuine-position or employer-capacity evidence is inconsistent or incomplete, the nomination may become a primary refusal risk.';
+    delegateRisk = 'Moderate Delegate Risk';
+  } else if (criterionKey === 'occupation') {
+    finding = 'The occupation analysis should not be limited to the job title. The actual duties, seniority level, technical responsibilities, qualifications and employment history must support the nominated occupation.';
+    legal_consequence = 'If the duties and evidence do not align with the nominated occupation, the occupation or nomination position may become a primary refusal risk.';
+    delegateRisk = 'Moderate Delegate Risk';
+  } else if (criterionKey === 'health') {
+    finding = /yes|issue|condition|medical/i.test(lowerAnswer)
+      ? 'A health issue has been disclosed or may require clarification. The matter should be reviewed against Departmental health requirements and any family-member health considerations.'
+      : 'No health issue has been disclosed in the questionnaire. The applicant must still satisfy standard health requirements, and the position remains subject to Departmental health examinations and any family-member health considerations.';
+    legal_consequence = 'The health position appears presently supportable on the instructions, subject to standard health declarations, examination requests and family-member health checks if applicable.';
+    delegateRisk = /yes|issue|condition|medical/i.test(lowerAnswer) ? 'Moderate Delegate Risk' : 'Standard Requirement';
+  } else if (criterionKey === 'character' || criterionKey === 'migrationhistory' || criterionKey === 'migration_history') {
+    finding = /yes|refus|cancel|criminal|court|false|misleading|unlawful|section|8503/i.test(lowerAnswer)
+      ? 'An adverse character, integrity or immigration-history issue has been disclosed or may require clarification. The issue should be reviewed against Departmental records before lodgement strategy is finalised.'
+      : 'No character, integrity or adverse immigration-history issue has been disclosed in the assessment response. This remains subject to police clearances, Departmental records and document-consistency checks.';
+    legal_consequence = 'If character, integrity or immigration-history records are inconsistent with the instructions, the matter may require strategy before lodgement.';
+    delegateRisk = /yes|refus|cancel|criminal|court|false|misleading|unlawful|section|8503/i.test(lowerAnswer) ? 'Elevated Delegate Risk' : 'Standard Requirement';
   }
 
-  const clientFact = answer
-    ? `Client instruction recorded: ${answer}. This is not treated as verified evidence until original documents are reviewed.`
-    : 'No final supporting fact was identified in the questionnaire for this criterion. The issue must be verified from original documents before final lodgement advice.';
-
   return {
+    key: profile.key,
     criterion: profile.criterion,
+    answer,
     finding,
+    summaryFinding: finding,
     legal_consequence,
     evidence_gap: profile.evidence,
     recommendation: profile.recommendation,
     legislativeRequirement: legalRequirement,
     legalRequirement,
-    clientFact,
-    knownFact: clientFact,
     delegateRisk,
     body: finding,
     strategy: profile.recommendation,
@@ -6006,148 +5848,8 @@ function buildCriterionFindingFromProfile(profile, context) {
   };
 }
 
-
-function normaliseAssessmentStream(value) {
-  const raw = String(value || '').trim();
-  const t = raw.toLowerCase().replace(/[\s_-]+/g, ' ');
-  if (/labou?r agreement|agreement stream|labour agreement stream|labor agreement stream/.test(t)) return 'Labour Agreement';
-  if (/temporary residence transition|\btrt\b|transition stream/.test(t)) return 'Temporary Residence Transition';
-  if (/direct entry|\bde\b|direct entry stream/.test(t)) return 'Direct Entry';
-  if (/training plan|occupational training/.test(t)) return 'Occupational Training';
-  if (/temporary activity|activity stream|event stream/.test(t)) return 'Temporary Activity';
-  if (/student guardian/.test(t)) return 'Student Guardian';
-  if (/visitor|tourist|business visitor|sponsored family/.test(t)) return titleCaseWords(raw);
-  if (!t || /^(yes|no|true|false|a|b|c|0|1|-|—|to be confirmed|unknown|unsure|not sure)$/.test(t)) return '';
-  return raw;
-}
-
-function titleCaseWords(value) {
-  return String(value || '').trim().toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
-}
-
-function streamDependentSubclass10Grade(subclass) {
-  const code = String(subclass || '').replace(/[^0-9]/g, '');
-  return ['186','187','188','407','408','482','485','500','590','600','602','785','790','820','888'].includes(code);
-}
-
-function resolveExplicitStreamFromAssessment10Grade(assessment, answers, flat) {
-  const directSources = [
-    assessment && assessment.selected_stream,
-    assessment && assessment.stream,
-    assessment && assessment.visa_stream,
-    assessment && assessment.pathway,
-    assessment && assessment.selected_pathway,
-    answers && answers.selectedStream,
-    answers && answers.selected_stream,
-    answers && answers.stream,
-    answers && answers.visaStream,
-    answers && answers.visa_stream,
-    answers && answers.pathway,
-    answers && answers.selectedPathway,
-    answers && answers.selected_pathway
-  ];
-  for (const value of directSources) {
-    const normalised = normaliseAssessmentStream(value);
-    if (normalised) return normalised;
-  }
-  const allowedKeys = /(^|\.)(selectedstream|selected_stream|stream|visastream|visa_stream|selectedpathway|selected_pathway|nominationstream|nomination_stream)$/i;
-  for (const [key, value] of Object.entries(flat || {})) {
-    const compact = String(key || '').replace(/[^a-z0-9_.]/gi, '').toLowerCase();
-    if (!allowedKeys.test(compact)) continue;
-    const normalised = normaliseAssessmentStream(value);
-    if (normalised) return normalised;
-  }
-  return '';
-}
-
-
-function riskBandFromDelegateRisk(value) {
-  const t = String(value || '').toLowerCase();
-  if (/elevated|critical|high|block/.test(t)) return 'High';
-  if (/moderate|review|required/.test(t)) return 'Medium';
-  if (/managed|standard|low|supportable/.test(t)) return 'Low';
-  return 'Medium';
-}
-
-function buildPremiumCommercialAdviceLayer({ subclass, stream, findings, flat, primaryIssue, riskLevel }) {
-  const text = JSON.stringify({ flat, findings }).toLowerCase();
-  const hasEnglishDetail = /pte|ielts|oet|toefl|cambridge|cae|component|reading|writing|speaking|listening/.test(text);
-  const hasEmployer = /employer|sponsor|business|nomination/.test(text);
-  const hasSalary = /salary|remuneration|payroll|payslip|superannuation|payg|amsr/.test(text);
-  const highFindings = (findings || []).filter(f => /elevated|critical|high/i.test(f.delegateRisk || '')).map(f => f.criterion);
-  const mediumFindings = (findings || []).filter(f => /moderate/i.test(f.delegateRisk || '')).map(f => f.criterion);
-  const blockingIssues = [];
-  if (!stream && ['186','187','188','407','408','482','485','500','590','600','602','785','790','820','888'].includes(String(subclass))) blockingIssues.push('Selected stream/pathway must be confirmed before lodgement-ready advice.');
-  if (!hasEnglishDetail) blockingIssues.push('English test type, component scores, validity date or exemption basis not fully verified.');
-  if (String(subclass) === '186' && /temporary residence transition|trt/i.test(stream || '') && !/457|482|sid|qualifying|continuous/.test(text)) blockingIssues.push('TRT qualifying employment and sponsor continuity are not yet objectively reconstructed.');
-  if (String(subclass) === '186' && /direct entry/i.test(stream || '') && !/skills assessment|qualification|registration|licen/.test(text)) blockingIssues.push('Direct Entry skills assessment, registration/licensing and occupation evidence are not yet fully verified.');
-  if (['186','187','482','494'].includes(String(subclass)) && !hasEmployer) blockingIssues.push('Employer nomination, genuine position and business-need evidence must be verified.');
-  if (['186','187','482','494'].includes(String(subclass)) && !hasSalary) blockingIssues.push('Salary, payroll, superannuation, tax and market salary evidence must be reconciled.');
-
-  const legalOutcomeSummary = (findings || []).slice(0, 12).map(f => ({
-    area: f.criterion,
-    currentPosition: f.finding || 'Requires professional verification against original evidence.',
-    risk: riskBandFromDelegateRisk(f.delegateRisk),
-    blocksLodgement: /elevated|critical|block|cannot|not satisfied|missing|refus|cancel/i.test(`${f.delegateRisk} ${f.finding} ${f.legal_consequence}`) ? 'Potentially, until resolved' : 'No, subject to verification'
-  }));
-
-  const knownFactsMatrix = (findings || []).slice(0, 12).map(f => ({
-    knownFact: f.clientFact || f.knownFact || 'Questionnaire instruction received but not verified.',
-    missingInformation: f.evidence_gap || f.evidence || 'Original supporting evidence and Departmental/source records.',
-    legalEffect: f.legal_consequence || 'The criterion cannot be treated as finally satisfied until verified.'
-  }));
-
-  const readinessLabel = blockingIssues.length || highFindings.length
-    ? 'Potentially supportable, but not lodgement-ready'
-    : 'Appears supportable subject to final document verification';
-  const recommendedAction = blockingIssues.length
-    ? 'Do not lodge yet. Resolve the listed evidence and legal verification issues first.'
-    : 'Proceed to final evidence verification before any lodgement action.';
-
-  const premiumExecutiveOpinion = `On the information presently provided, the Subclass ${subclass}${stream ? ' ' + stream : ''} pathway appears ${blockingIssues.length || highFindings.length ? 'potentially supportable but not lodgement-ready' : 'capable of progression subject to final verification'}. The presently manageable issues should be separated from the unresolved matters. The main legal and evidentiary work is to verify the client instructions against original documents, current law, sponsor or nomination material where relevant, and Departmental records. I would not recommend lodgement until each criterion below is reconciled and any blocking issue is resolved.`;
-
-  const finalProfessionalRecommendation = blockingIssues.length
-    ? `I do not recommend treating this matter as lodgement-ready on the current information. The pathway may be supportable, but only if the identified issues are resolved and the original evidence confirms the client instructions. In particular, the following matters require attention before filing: ${blockingIssues.slice(0, 6).join(' ')} If those records are consistent, the matter may proceed to final lodgement preparation. If they are inconsistent or incomplete, lodgement should be deferred or an alternative pathway considered.`
-    : `On the information presently available, the pathway appears capable of progression subject to final verification. The file should still not be lodged until original documents, current legal settings, sponsor or nomination material where relevant, and Departmental records confirm the client instructions. If verification remains consistent, the matter may progress to final lodgement preparation.`;
-
-  const commercialNextSteps = [
-    'Recommended service: evidence review and lodgement-readiness assessment before filing.',
-    'Purpose: convert the questionnaire position into a verified evidence brief mapped to each legal criterion.',
-    recommendedAction,
-    'After verification, issue a final written lodgement recommendation or redirect the strategy before filing.'
-  ];
-
-  return {
-    premiumExecutiveOpinion,
-    legalOutcomeSummary,
-    knownFactsMatrix,
-    lodgementReadiness: {
-      label: readinessLabel,
-      riskLevel: highFindings.length ? 'HIGH' : (mediumFindings.length ? riskLevel || 'MEDIUM' : 'LOW'),
-      recommendedAction,
-      blockingIssues
-    },
-    blockingIssues,
-    commercialNextSteps,
-    finalProfessionalRecommendation,
-    agentReview: {
-      releaseDecision: 'release_preliminary_only',
-      lodgementReady: false,
-      riskRating: highFindings.length ? 'high' : 'medium',
-      blockingIssues,
-      highRiskCriteria: highFindings,
-      mediumRiskCriteria: mediumFindings,
-      agentReviewRequired: true,
-      note: 'Client-facing PDF is preliminary. Final lodgement advice requires original evidence review and current legal verification.'
-    }
-  };
-}
-
 async function buildFastLegalAdviceBundle(assessment) {
   const subclass = String(assessment && assessment.visa_type || '186').replace(/[^0-9A-Za-z]/g, '') || '186';
-  if (!SUPPORTED_ASSESSMENT_SUBCLASSES_10_GRADE.includes(String(subclass).replace(/[^0-9]/g, ''))) {
-    throw new Error('Unsupported subclass for advice-grade PDF generation. Add a subclass legal profile before issuing a client advice letter.');
-  }
   const payload = (assessment && assessment.form_payload) || {};
   const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
   const flat = flattenObject(answers || {});
@@ -6163,13 +5865,7 @@ async function buildFastLegalAdviceBundle(assessment) {
     return fallback;
   }
 
-  const stream = resolveExplicitStreamFromAssessment10Grade(assessment || {}, answers || {}, flat || {});
-  if (streamDependentSubclass10Grade(subclass) && !stream) {
-    const err = new Error(`Advice-grade PDF generation blocked: Subclass ${subclass} requires an explicitly selected stream/pathway before a professional advice letter can be issued.`);
-    err.statusCode = 422;
-    err.code = 'STREAM_REQUIRED_FOR_ADVICE_GRADE_PDF';
-    throw err;
-  }
+  const stream = pickValue(['selectedStream', 'selected stream', 'stream', 'nominationStream'], assessment.selected_stream || 'To be confirmed');
   const employer = pickValue(['employerName', 'employer name', 'currentEmployer', 'current employer'], 'the sponsoring employer');
 
   const legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
@@ -6201,15 +5897,7 @@ async function buildFastLegalAdviceBundle(assessment) {
   const riskSignals = JSON.stringify(findings).toLowerCase();
   const riskLevel = /refused|cancelled|criminal|false|misleading|unlawful|section 48|8503|not resolved|not available/.test(riskSignals) ? 'HIGH' : 'MEDIUM';
   const position = riskLevel === 'HIGH' ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'PROCEED_AFTER_EVIDENCE_REVIEW';
-  const visaGroup = visaGroupForSubclass10Grade(subclass);
-  const streamLabel = stream ? ` ${stream}` : '';
-  const primaryIssue = stream === 'Direct Entry' && subclass === '186'
-    ? 'Whether the Subclass 186 Direct Entry pathway can be supported through skills assessment, occupation eligibility, nomination evidence, genuine position, salary, English, age and public interest criteria.'
-    : stream === 'Temporary Residence Transition' && subclass === '186'
-      ? 'Whether the Subclass 186 TRT pathway can be supported through qualifying employment, sponsor continuity, nomination evidence, salary, English, age and public interest criteria.'
-      : stream === 'Labour Agreement' && subclass === '186'
-        ? 'Whether the Subclass 186 Labour Agreement pathway can be supported by the executed agreement terms, occupation coverage, available concessions, nomination evidence and public interest criteria.'
-        : `Whether the Subclass ${subclass}${streamLabel} pathway can be supported by subclass-specific legal criteria and criterion-by-criterion evidence within the ${visaGroup} framework. The assessment must reconcile the client facts, uploaded material, visa history and evidence relevant to this subclass${stream ? ' and stream' : ''}.`;
+  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by criterion-by-criterion evidence for ${employer}, including nomination, occupation, employment, salary, English, health, character and migration-history requirements.`;
   const sourceHash = crypto.createHash('sha256').update(JSON.stringify((legalSourcePack.sources || []).map(s => [s.authority, s.path, s.sha256]))).digest('hex');
 
   const evidenceRows = findings.map(f => ({
@@ -6218,8 +5906,6 @@ async function buildFastLegalAdviceBundle(assessment) {
     requiredAction: f.recommendation,
     evidenceGap: f.evidence_gap
   }));
-
-  const premiumLayer = buildPremiumCommercialAdviceLayer({ subclass, stream, findings, flat, primaryIssue, riskLevel });
 
   const sections = [
     { heading: 'Scope of advice', body: `This advice has been prepared as a senior migration agent assessment of the proposed Subclass ${subclass}${stream ? ' ' + stream : ''} pathway. It is based on the questionnaire information presently available and on the Bircan Migration legal knowledgebase source pack loaded for this subclass.` },
@@ -6235,28 +5921,25 @@ async function buildFastLegalAdviceBundle(assessment) {
     advice: {
       subclass,
       stream,
-      visa_group: visaGroup,
-      risk_level: premiumLayer.lodgementReadiness.riskLevel || riskLevel,
-      lodgement_position: premiumLayer.lodgementReadiness.label || position,
+      risk_level: riskLevel,
+      lodgement_position: position,
       title: `Professional Migration Advice – Subclass ${subclass}`,
-      advice_standard: 'universal-10-grade-all-assessment-subclasses-v1',
-      executive_summary: premiumLayer.premiumExecutiveOpinion,
-      professional_position: premiumLayer.lodgementReadiness.label,
+      executive_summary: `I have considered the information presently available for the proposed Subclass ${subclass}${stream ? ' ' + stream : ''} pathway. The matter should be approached as a criterion-by-criterion evidence exercise. On the current instructions, the pathway may be capable of progression, but final lodgement advice should only be issued after the original documents and legal settings have been verified.`,
+      professional_position: 'Proceed only after criterion-by-criterion evidence reconciliation and registered migration agent review.',
       primary_issue: primaryIssue,
       sections,
       criterion_findings: findings,
       evidence_required: findings.map(f => f.evidence_gap).filter(Boolean),
-      client_next_steps: stream === 'Direct Entry' && subclass === '186'
-        ? ['Provide skills assessment, qualification, CV, employment references, licensing or registration evidence if applicable.', 'Provide employer nomination, position description, organisation chart, business need and genuine-position evidence.', 'Reconcile salary, contract, payroll, tax, superannuation and market salary evidence.', 'Verify English, age, health, character and migration-history evidence before final advice.', 'Prepare a final Direct Entry position only after original evidence has been professionally verified.']
-        : stream === 'Temporary Residence Transition' && subclass === '186'
-          ? ['Provide 457/482/SID visa history and qualifying employment records.', 'Reconcile sponsor continuity, nominated occupation continuity, payroll, tax and superannuation evidence.', 'Provide nomination, genuine-position and salary evidence.', 'Verify English, age, health, character and migration-history evidence before final advice.', 'Prepare a final TRT position only after original evidence has been professionally verified.']
-          : stream === 'Labour Agreement' && subclass === '186'
-            ? ['Provide the executed Labour Agreement, occupation coverage, concession schedules and nomination limits.', 'Reconcile employer compliance, position, duties and salary evidence against the agreement terms.', 'Verify any English, age or salary concession relied upon.', 'Verify health, character and migration-history evidence before final advice.', 'Prepare a final Labour Agreement position only after original evidence has been professionally verified.']
-            : clientNextStepsForVisaGroup10Grade(visaGroup),
+      client_next_steps: [
+        'Provide all identity, passport and current visa-status documents.',
+        'Provide sponsor, nomination, employment contract, position description and business evidence.',
+        'Provide employment continuity records, including payslips, tax, superannuation and leave records where relevant.',
+        'Provide English, health, character and prior migration-history documents for review.',
+        'Allow Bircan Migration to reconcile each criterion against original documents before any final lodgement recommendation is made.'
+      ],
       quality_flags: [],
       disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.'
     },
-    ...premiumLayer,
     criterionFindings: findings,
     findings,
     legalSourcePack,
@@ -6273,18 +5956,17 @@ async function buildFastLegalAdviceBundle(assessment) {
     contradictionFlags: [],
     universalLegalGraph: {
       sourceSnapshotId: legalSourcePack.knowledgebaseSnapshot && legalSourcePack.knowledgebaseSnapshot.snapshotId,
-      family: visaGroup,
+      family: ['186','187','482','494'].includes(String(subclass)) ? 'Employer sponsored migration' : 'Subclass-specific migration pathway',
       lawUpdateMode: 'Dynamic knowledgebase source pack loaded before PDF generation',
       oneFailsAllFail: true
     },
     internalLegalAudit: {
       auditGeneratedAt: new Date().toISOString(),
-      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v2-premium-commercial-advice',
+      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v1',
       subclass,
       selectedStream: stream,
       criteriaAssessed: findings.map(f => f.criterion),
-      sourcesUsed: legalSourcePack.sources,
-      agentReview: premiumLayer.agentReview
+      sourcesUsed: legalSourcePack.sources
     },
     clientSafetyFilter: { enforced: true, removesInternalDebugLanguage: true },
     knowledgebaseEnforced: true,
@@ -6621,11 +6303,9 @@ function dashboardRequestToken(req) {
     (req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
     req.headers['x-auth-token'] ||
     req.headers['x-dashboard-access-token'] ||
-    req.headers['x-dashboard-token'] ||
     req.query.dashboard_token ||
     req.query.dashboardToken ||
     req.query.access_token ||
-    req.query.dashboardAccessToken ||
     ''
   ).trim();
 }
@@ -7048,7 +6728,7 @@ app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req,
 // Full visa assessment history for the client portal. This endpoint is separate
 // from the mixed dashboard feed so previous visa cards are never overwritten by
 // the newest assessment card.
-app.get('/api/account/visa/all', resolveDashboardAccess, asyncRoute(async (req, res) => {
+app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
             selected_plan, active_plan,
@@ -7084,7 +6764,7 @@ app.get('/api/account/visa/all', resolveDashboardAccess, asyncRoute(async (req, 
 // Full citizenship access history for the client portal. This is separate from
 // the mixed dashboard feed so previous paid test packs are never overwritten in
 // the client dashboard when a new pack is purchased.
-app.get('/api/account/citizenship-access', resolveDashboardAccess, asyncRoute(async (req, res) => {
+app.get('/api/account/citizenship-access', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, 'citizenship_test' AS service_type, selected_plan, active_plan, exam_allowance, attempts_used,
             GREATEST(0, exam_allowance - attempts_used) AS attempts_remaining,
@@ -7103,12 +6783,12 @@ app.get('/api/account/citizenship-access', resolveDashboardAccess, asyncRoute(as
 // Full appeals list for the client portal. This endpoint is intentionally
 // separate from the mixed dashboard feed so appeal cards are never lost when
 // service_sessions/payments joins or frontend service-card de-duplication change.
-app.get('/api/account/citizenship', resolveDashboardAccess, asyncRoute(async (req, res) => {
+app.get('/api/account/citizenship', requireAuth, asyncRoute(async (req, res) => {
   req.url = '/api/account/citizenship-access';
   return res.redirect(307, '/api/account/citizenship-access');
 }));
 
-app.get('/api/account/appeals/all', resolveDashboardAccess, asyncRoute(async (req, res) => {
+app.get('/api/account/appeals/all', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `WITH owned AS (
        SELECT DISTINCT a.*,
@@ -7260,7 +6940,6 @@ app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (
   const locked = !isInstantPlan(plan) && releaseAt && releaseAt > Date.now();
   const pdfAvailable = assessment.has_pdf === true || (paid && !locked);
   const token = req.dashboardAccessToken || signDashboardAccessToken(req.client);
-  res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
     assessment: {

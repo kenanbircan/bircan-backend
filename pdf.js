@@ -244,45 +244,13 @@ function extractFactsObject(assessment, adviceBundle) {
   };
 }
 
-function normaliseStreamLabel(value) {
-  const raw = cleanText(value);
-  const t = raw.toLowerCase().replace(/[\s_-]+/g, ' ');
-  if (/labou?r agreement|agreement stream/.test(t)) return 'Labour Agreement';
-  if (/temporary residence transition|\btrt\b|transition stream/.test(t)) return 'Temporary Residence Transition';
-  if (/direct entry|\bde\b|direct entry stream/.test(t)) return 'Direct Entry';
-  if (/^(yes|no|true|false|a|b|c|0|1|-|—|to be confirmed|unknown|unsure|not sure)$/.test(t)) return '';
-  return raw;
-}
-
 function inferStream(assessment, adviceBundle, advice) {
-  const facts = extractFactsObject(assessment || {}, adviceBundle || {});
-  const direct = [
-    assessment && assessment.selected_stream,
-    assessment && assessment.stream,
-    assessment && assessment.visa_stream,
-    assessment && assessment.pathway,
-    assessment && assessment.selected_pathway,
-    advice && advice.stream,
-    advice && advice.selectedStream,
-    advice && advice.selected_stream,
-    adviceBundle && adviceBundle.lockedMatter && adviceBundle.lockedMatter.stream,
-    adviceBundle && adviceBundle.internalLegalAudit && adviceBundle.internalLegalAudit.selectedStream,
-    adviceBundle && adviceBundle.legalSourcePack && adviceBundle.legalSourcePack.selectedStream,
-    facts && facts.selectedStream,
-    facts && facts.selected_stream,
-    facts && facts.stream,
-    facts && facts.visaStream,
-    facts && facts.visa_stream,
-    facts && facts.pathway,
-    deepPick(facts, ['meta.selectedStream','meta.selected_stream','meta.stream'], '')
-  ];
-  for (const value of direct) {
-    const v = normaliseStreamLabel(value);
-    if (v) return v;
-  }
+  const blob = JSON.stringify({ assessment, adviceBundle, advice }).toLowerCase();
+  if (/labour agreement|labor agreement|la stream|agreement concession/.test(blob)) return 'Labour Agreement';
+  if (/direct entry|de stream|skills assessment/.test(blob)) return 'Direct Entry';
+  if (/temporary residence transition|\btrt\b|457|482/.test(blob)) return 'Temporary Residence Transition';
   return 'To be confirmed';
 }
-
 
 function inferApplicantName(assessment, adviceBundle, facts) {
   return cleanText(
@@ -373,29 +341,14 @@ function groupEvidence(items) {
 
 function normaliseNextSteps(items, advice) {
   const raw = uniqueClean(items);
-  const adviceObj = advice || {};
-  const stream = inferStream({}, {}, adviceObj);
-  const streamText = String(stream || adviceObj.stream || '').toLowerCase();
   const joined = raw.join(' ').toLowerCase();
-  const context = joined + ' ' + JSON.stringify(adviceObj || {}).toLowerCase();
   const steps = [];
   const add = s => { if (s && !steps.includes(s)) steps.push(s); };
   add('Obtain complete instructions and original supporting documents.');
-  if (/direct/.test(streamText)) {
-    add('Verify the Direct Entry skills assessment, qualifications, employment references, CV, licensing or registration evidence and occupation alignment.');
-    add('Review the employer nomination, genuine-position evidence, duties, salary and business need as one coherent file.');
-  } else if (/temporary residence|trt/.test(streamText)) {
-    add('Reconstruct the qualifying TRT employment period using visa, payroll, PAYG/tax, superannuation, leave and sponsor-continuity records.');
-    add('Review the nomination, genuine-position evidence, salary and occupation-continuity position before final advice.');
-  } else if (/labou?r agreement/.test(streamText)) {
-    add('Check the executed Labour Agreement, occupation coverage, concessions, nomination limits and employer compliance requirements.');
-    add('Reconcile duties, salary, English or age concessions and sponsor compliance against the actual agreement terms.');
-  } else {
-    if (/sponsor|nomination|employer|position|genuine/.test(context)) add('Review the sponsoring employer’s operational evidence, nomination structure and business need for the role.');
-    if (/occupation|anzsco|skill|experience|duties|salary|payroll/.test(context)) add('Reconcile the occupation, duties, salary and employment evidence against the nominated pathway.');
-    if (/labour agreement|agreement|concession/.test(context)) add('Check the applicable Labour Agreement terms, concessions and employer compliance requirements.');
-  }
-  add('Review English, age, health, character and immigration-history evidence before any final advice.');
+  if (/sponsor|nomination|employer|position|genuine/.test(joined + JSON.stringify(advice || {}))) add('Review the sponsoring employer’s operational evidence, nomination structure and business need for the role.');
+  if (/occupation|anzsco|skill|experience|duties|salary|payroll/.test(joined + JSON.stringify(advice || {}))) add('Reconcile the occupation, duties, salary and employment evidence against the nominated pathway.');
+  if (/labour agreement|agreement|concession|stream/.test(joined + JSON.stringify(advice || {}))) add('Check the applicable Labour Agreement terms, concessions and employer compliance requirements.');
+  add('Review English, health, character and immigration-history evidence before any final advice.');
   add('Prepare a final written position only after the evidence package has been professionally verified.');
   return steps.slice(0, 6);
 }
@@ -416,39 +369,26 @@ function positionLabel(tone) {
 
 function normaliseCriterionFinding(item) {
   return {
-    ...(item || {}),
     criterion: item.criterion || item.heading || item.title || 'Criterion',
     finding: item.finding || item.status || item.evidenceStatus || item.body || '',
-    legal_consequence: item.legal_consequence || item.legalConsequence || item.legalEffect || item.strategy || '',
-    recommendation: item.recommendation || item.missingEvidence || item.evidence_gap || item.evidence || '',
-    delegateRisk: item.delegateRisk || item.delegate_risk || item.riskLevel || item.risk_level || ''
+    legal_consequence: item.legal_consequence || item.legalConsequence || item.legalEffect || '',
+    recommendation: item.recommendation || item.missingEvidence || ''
   };
 }
 
 function niceCriterionName(name) {
-  let text = titleCaseWords(name || 'Criterion')
-    .replace(/^Standard Requirement\s*[-–—:]?\s*/i, '')
-    .replace(/^Managed Standard Requirement\s*[-–—:]?\s*/i, '')
-    .replace(/^Managed Delegate Risk\s*[-–—:]?\s*/i, '')
-    .replace(/^Moderate Delegate Risk\s*[-–—:]?\s*/i, '')
-    .replace(/^Elevated Delegate Risk\s*[-–—:]?\s*/i, '')
+  return titleCaseWords(name || 'Criterion')
     .replace(/Approved Sponsor \/ Sponsoring Employer/gi, 'Sponsoring Employer Position')
     .replace(/Approved Nomination \/ Nominated Position/gi, 'Nomination and Position Review')
     .replace(/Occupation Eligibility and Alignment/gi, 'Occupation and ANZSCO Alignment')
     .replace(/Pic 4020/g, 'PIC 4020')
     .replace(/Anzsco/g, 'ANZSCO')
     .replace(/Trt/g, 'TRT')
-    .replace(/Ens/g, 'ENS')
-    .replace(/Standard Requirement\s+Standard Requirement/gi, 'Standard Requirement')
-    .trim();
-  return text;
+    .replace(/Ens/g, 'ENS');
 }
 
 function riskLevelForFinding(item) {
-  const provided = cleanText(item && (item.delegateRisk || item.delegate_risk || item.riskLevel || item.risk_level));
-  if (provided) return provided;
   const combined = JSON.stringify(item || {}).toLowerCase();
-  if (/no health issue has been disclosed|no character, integrity|standard health requirements|standard police/.test(combined)) return 'Managed Standard Requirement';
   if (/refus|cancel|bar|pic 4020|false|misleading|character concern|health undertaking|invalid|not satisfied|critical|high risk/.test(combined)) return 'Elevated Delegate Risk';
   if (/missing|unable|inconsistent|concern|limited|moderate|review|required|adverse|gap/.test(combined)) return 'Moderate Delegate Risk';
   return 'Low Delegate Risk';
@@ -471,30 +411,12 @@ function buildMatterFinding(item) {
   const criterion = niceCriterionName(item.criterion);
   const lower = criterion.toLowerCase();
   const tone = criterionTone(item);
-  let pos = positionLabel(tone);
-  let delegateRisk = riskLevelForFinding(item);
+  const pos = positionLabel(tone);
+  const delegateRisk = riskLevelForFinding(item);
   let body;
   let evidence;
   let strategy;
-  if (/labou?r agreement|agreement coverage|agreement concessions|agreement terms/.test(lower)) {
-    body = 'The Labour Agreement pathway must be assessed against the executed agreement itself. The critical issue is whether the agreement expressly covers the nominated occupation, the employer, nomination limits, salary settings, English and age concessions, and any conditions attached to the agreement. The matter should not be treated as lodgement-ready merely because Labour Agreement was selected in the questionnaire.';
-    strategy = 'Obtain and review the executed Labour Agreement, occupation schedule, concession clauses, nomination limits and sponsor compliance material before confirming the pathway.';
-    evidence = 'Executed Labour Agreement, occupation coverage schedule, concession clauses, nomination limits, sponsor obligations, compliance records and nomination material.';
-    delegateRisk = 'Elevated Delegate Risk';
-    pos = 'Potentially supportable only if agreement terms and concessions are verified';
-  } else if (/direct entry.*stream|direct entry.*skills|skills assessment.*qualification|occupation and skills pathway/.test(lower)) {
-    body = 'For the Direct Entry stream, the assessment should focus on skills assessment, occupation eligibility, qualifications, employment history, registration or licensing requirements and the fit between the applicant’s background and the nominated position. It should not be treated as a TRT qualifying-employment analysis unless the selected stream changes.';
-    strategy = 'Verify the skills assessment, qualifications, CV, employment references, registration/licensing position and nominated-occupation alignment before relying on Direct Entry.';
-    evidence = 'Skills assessment outcome, qualifications, transcripts, CV, employment references, registration/licensing evidence, duties statement and nominated occupation material.';
-  } else if (/trt|temporary residence|qualifying employment|sponsor continuity/.test(lower)) {
-    body = 'For the TRT stream, the critical analysis is whether qualifying employment, sponsor continuity, nominated occupation continuity and visa history can be demonstrated through objective records.';
-    strategy = 'Reconstruct the qualifying employment period from visa, payroll, PAYG/tax, superannuation, leave and employer confirmation records.';
-    evidence = '457/482/SID visa records, employment chronology, payslips, PAYG/tax records, superannuation, leave records and employer confirmation letters.';
-  } else if (/salary|market|income|remuneration|employment conditions/.test(lower)) {
-    body = 'The salary position must be reconciled against the nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award or enterprise agreement material and any applicable concession. A delegate may compare the nominated salary against actual payments and employer records.';
-    strategy = 'Reconcile the nomination salary, contract, payroll, tax, superannuation and market salary or concession evidence before relying on the salary position.';
-    evidence = 'Nomination salary, employment contract, payslips, payroll records, PAYG/tax records, superannuation, market salary evidence, award/enterprise agreement material and any concession evidence.';
-  } else if (/sponsor|employer|nomination|position|genuine/.test(lower)) {
+  if (/sponsor|employer|nomination|position|genuine/.test(lower)) {
     body = 'The nomination and employer material must show a coherent connection between the business operations, the nominated position, the applicant’s actual duties and the ongoing need for the role. A delegate is likely to test whether the position is supported by the employer’s structure, payroll capacity, trading activity and organisational chart, rather than relying only on broad employer assertions.';
     strategy = 'Before a lodgement-ready opinion is issued, the employer file should be organised so that the nomination, position description, duties, reporting lines, salary records and business need all tell one consistent story.';
     evidence = 'Nomination approval, organisational chart, position description, business need explanation, payroll capacity material, employment contract, payslips, tax and superannuation records.';
@@ -507,58 +429,17 @@ function buildMatterFinding(item) {
     strategy = 'Any payroll irregularity, unpaid period, salary change or allowance structure should be explained in a short evidence note before final advice is issued.';
     evidence = 'Employment contract, payslips, PAYG/tax records, superannuation records, salary increase letters and market salary evidence.';
   } else if (/english/.test(lower)) {
-    body = /labou?r agreement|concession/.test(lower) ? 'The English requirement should be assessed by reference to the stream, validity period of any test result, passport evidence, exemptions and any concession contained in a labour agreement or relevant instrument.' : 'The English requirement should be assessed by reference to the selected stream, validity period of any test result, eligible passport evidence and any exemption claimed. Raw test grades or scores must be checked against the original report and current threshold.';
+    body = 'The English requirement should be assessed by reference to the stream, validity period of any test result, passport evidence, exemptions and any concession contained in a labour agreement or relevant instrument.';
     strategy = 'The file should not proceed on assumed English eligibility. The original test report or exemption evidence should be reviewed against the current legal threshold.';
-    evidence = /labou?r agreement|concession/.test(lower) ? 'Original English test result, passport evidence, exemption evidence or labour agreement concession material.' : 'Original English test result, passport evidence, exemption evidence and test validity records.';
-  } else if (/age/.test(lower)) {
-    const txt = JSON.stringify(item || {}).toLowerCase();
-    const ageMatch = txt.match(/(?:recorded as|age[^0-9]{0,20})(\d{1,2})\s*(?:years|year|)/i);
-    if (ageMatch) {
-      const ageNum = Number(ageMatch[1]);
-      if (ageNum >= 45) {
-        body = `The applicant is recorded as ${ageNum} years old. This is a material age issue unless the selected stream, Labour Agreement, legislative instrument, exemption or concession pathway permits the applicant to proceed despite being over the ordinary age threshold. The matter should not be treated as lodgement-ready until the age concession or exemption basis is identified and evidenced.`;
-        strategy = 'Confirm age at the relevant application date and obtain the exact Labour Agreement concession, exemption or legislative basis before any lodgement-ready recommendation is issued.';
-        evidence = 'Passport/date-of-birth evidence, age-at-application calculation, executed Labour Agreement age concession clause, exemption evidence and any supporting employer/occupation material.';
-        delegateRisk = 'Elevated Delegate Risk';
-        pos = 'Potentially blocking issue until concession or exemption is verified';
-      } else {
-        body = `The applicant is recorded as ${ageNum} years old. The age position appears presently supportable, subject to passport/date-of-birth verification and timing of application.`;
-        strategy = 'Confirm the applicant’s date of birth from passport evidence and check the age position at the relevant application date before final advice.';
-        evidence = 'Passport, birth/date-of-birth evidence and age-at-application calculation.';
-        delegateRisk = 'Managed Delegate Risk';
-        pos = 'Presently supportable, subject to standard verification';
-      }
-    } else {
-      body = 'The age position must be confirmed from original passport and date-of-birth evidence before lodgement-ready advice is issued.';
-      strategy = 'Confirm age at the relevant application date and obtain exemption evidence if the ordinary threshold is not clearly met.';
-      evidence = 'Passport, date-of-birth evidence, age-at-application calculation and any exemption or concession evidence.';
-    }
+    evidence = 'Original English test result, passport evidence, exemption evidence or labour agreement concession material.';
   } else if (/health/.test(lower)) {
-    const txt = JSON.stringify(item || {}).toLowerCase();
-    if (/no health issue has been disclosed|standard health requirements/.test(txt)) {
-      delegateRisk = 'Standard Requirement';
-      pos = 'Standard requirement subject to routine verification';
-      body = 'No health issue has been disclosed in the questionnaire. The applicant must still satisfy standard health requirements, and the position remains subject to Departmental health examinations and any family-member health considerations.';
-      strategy = 'Complete standard health declarations and review any Departmental health request if issued.';
-      evidence = 'Health declarations, Departmental health examination requests and family-member health information if applicable.';
-    } else {
-      body = 'The health position must be considered against the applicant’s disclosures, family composition and any medical information already available. A health issue is not necessarily disqualifying, but it must be identified early because it can affect timing, evidence strategy and final advice.';
-      strategy = 'Any disclosed medical issue should be reviewed before lodgement timing is settled.';
-      evidence = 'Health examination records, medical reports, specialist letters and family member health disclosures.';
-    }
+    body = 'The health position must be considered against the applicant’s disclosures, family composition and any medical information already available. A health issue is not necessarily disqualifying, but it must be identified early because it can affect timing, evidence strategy and final advice.';
+    strategy = 'Any disclosed medical issue should be reviewed before lodgement timing is settled.';
+    evidence = 'Health examination records, medical reports, specialist letters and family member health disclosures.';
   } else if (/character|integrity|4020|adverse/.test(lower)) {
-    const txt = JSON.stringify(item || {}).toLowerCase();
-    if (/no character, integrity|standard police|no adverse immigration/.test(txt)) {
-      delegateRisk = 'Standard Requirement';
-      pos = 'Presently supportable, subject to standard verification';
-      body = 'No character, integrity or adverse immigration-history issue has been disclosed in the questionnaire. The position remains subject to police clearances, Departmental records and document-consistency checks.';
-      strategy = 'Obtain standard police and immigration-history records and check them for consistency before final advice.';
-      evidence = 'Police certificates, VEVO/grant records, prior application records and Department correspondence if applicable.';
-    } else {
-      body = 'Character and integrity issues require careful handling because they may affect both eligibility and credibility. The key question is whether the applicant’s police, court, immigration and document history is complete, consistent and capable of being explained if queried by the Department.';
-      strategy = 'Any prior refusal, cancellation, incorrect information, document inconsistency or court matter should be addressed proactively rather than left for a possible procedural fairness stage.';
-      evidence = 'Police certificates, court records, prior visa decisions, prior application forms, Department correspondence and document-history records.';
-    }
+    body = 'Character and integrity issues require careful handling because they may affect both eligibility and credibility. The key question is whether the applicant’s police, court, immigration and document history is complete, consistent and capable of being explained if queried by the Department.';
+    strategy = 'Any prior refusal, cancellation, incorrect information, document inconsistency or court matter should be addressed proactively rather than left for a possible procedural fairness stage.';
+    evidence = 'Police certificates, court records, prior visa decisions, prior application forms, Department correspondence and document-history records.';
   } else if (/trt|temporary residence|457|482|qualifying employment|stream/.test(lower)) {
     body = 'The stream position turns on whether the visa history, employment history, sponsor continuity and nominated occupation history remain aligned throughout the relevant qualifying period. A delegate is likely to examine gaps, unpaid leave, role changes, sponsor changes and any concession reliance.';
     strategy = 'The employment chronology should be reconstructed from objective records before the pathway is treated as strategically safe.';
@@ -760,124 +641,6 @@ function writeCard(doc, title, rows) {
   doc.x = PAGE.L;
 }
 
-
-function writePremiumMatrix(doc, title, columns, rows, opts = {}) {
-  const safeRows = Array.isArray(rows) ? rows.slice(0, opts.limit || 12) : [];
-  if (!safeRows.length) return;
-  writeTitle(doc, title, { gold: true });
-  const colDefs = columns.map(c => ({
-    key: c.key,
-    label: cleanText(c.label || c.key),
-    width: c.width || Math.floor(PAGE.WIDTH / columns.length)
-  }));
-  const headerH = 24;
-  ensureSpace(doc, headerH + 40);
-  let y = doc.y;
-  doc.roundedRect(PAGE.L, y, PAGE.WIDTH, headerH, 8).fillAndStroke(BRAND.navy, BRAND.navy);
-  let x = PAGE.L + 8;
-  colDefs.forEach(c => {
-    doc.font('Helvetica-Bold').fontSize(7.8).fillColor('#ffffff').text(c.label.toUpperCase(), x, y + 8, { width: c.width - 10, lineBreak: false });
-    x += c.width;
-  });
-  doc.y = y + headerH;
-  for (const row of safeRows) {
-    const values = colDefs.map(c => cleanText(row && (row[c.key] !== undefined ? row[c.key] : row[c.label])) || '—');
-    const heights = values.map((v, idx) => doc.font('Helvetica').fontSize(8.2).heightOfString(v, { width: colDefs[idx].width - 10, lineGap: 1.5 }));
-    const rowH = Math.max(30, ...heights) + 12;
-    if (doc.y + rowH > PAGE.BOTTOM) {
-      addPage(doc);
-      y = doc.y;
-      doc.roundedRect(PAGE.L, y, PAGE.WIDTH, headerH, 8).fillAndStroke(BRAND.navy, BRAND.navy);
-      x = PAGE.L + 8;
-      colDefs.forEach(c => {
-        doc.font('Helvetica-Bold').fontSize(7.8).fillColor('#ffffff').text(c.label.toUpperCase(), x, y + 8, { width: c.width - 10, lineBreak: false });
-        x += c.width;
-      });
-      doc.y = y + headerH;
-    }
-    y = doc.y;
-    doc.rect(PAGE.L, y, PAGE.WIDTH, rowH).fillAndStroke('#ffffff', BRAND.line);
-    x = PAGE.L + 8;
-    values.forEach((v, idx) => {
-      doc.font('Helvetica').fontSize(8.2).fillColor(BRAND.ink).text(v, x, y + 8, { width: colDefs[idx].width - 10, lineGap: 1.5 });
-      x += colDefs[idx].width;
-    });
-    doc.y = y + rowH;
-  }
-  doc.moveDown(0.8);
-  doc.x = PAGE.L;
-}
-
-function writePremiumFindingCard(doc, raw) {
-  const item = buildMatterFinding(raw);
-  const legalReq = cleanText(raw.legalRequirement || raw.legislativeRequirement || buildLegislativeRequirementForCriterion(item.criterion));
-  const clientFact = cleanText(raw.clientFact || raw.knownFact || raw.fact || raw.relevantFact || 'The questionnaire answer is treated as client instruction and must be verified against original evidence.');
-  const finding = cleanText(item.body || raw.finding || item.position);
-  const consequence = cleanText(raw.legal_consequence || raw.legalConsequence || item.body);
-  writeRiskCard(doc, item.criterion, item.delegateRisk, [
-    ['Legal requirement', legalReq],
-    ['Client-specific fact', clientFact],
-    ['Professional finding', finding],
-    ['Legal consequence', consequence],
-    ['Evidence required', item.evidence],
-    ['Action before lodgement', item.strategy]
-  ]);
-}
-
-
-function writeFactsCard(doc, title, rows) {
-  const cleanedRows = (rows || [])
-    .map(([l, v]) => [cleanText(l), cleanText(v)])
-    .filter(([l, v]) => l || v);
-
-  const labelX = PAGE.L + 14;
-  const valueX = PAGE.L + 182;
-  const labelW = 150;
-  const valueW = PAGE.WIDTH - 204;
-  const rowGap = 7;
-  const titleH = title ? 30 : 0;
-
-  function drawTitleBand(continued = false) {
-    ensureSpace(doc, titleH + 28);
-    const y0 = doc.y;
-    doc.roundedRect(PAGE.L, y0, PAGE.WIDTH, titleH || 1, 10).fillAndStroke(BRAND.soft, BRAND.line);
-    if (title) {
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(BRAND.navy)
-        .text(cleanText(title) + (continued ? ' continued' : ''), PAGE.L + 14, y0 + 10, { width: PAGE.WIDTH - 28 });
-    }
-    doc.y = y0 + titleH + 8;
-    doc.x = PAGE.L;
-  }
-
-  drawTitleBand(false);
-
-  for (const [label, value] of cleanedRows) {
-    const lab = label.toUpperCase();
-    const val = value || '—';
-    const labelH = doc.font('Helvetica-Bold').fontSize(8.1).heightOfString(lab, { width: labelW, lineGap: 1.2 });
-    const valueH = doc.font('Helvetica').fontSize(9.2).heightOfString(val, { width: valueW, lineGap: 2.4 });
-    const rowH = Math.max(18, labelH, valueH) + rowGap + 6;
-
-    if (doc.y + rowH > PAGE.BOTTOM) {
-      addPage(doc);
-      drawTitleBand(true);
-    }
-
-    const y = doc.y;
-    doc.font('Helvetica-Bold').fontSize(8.1).fillColor(BRAND.muted)
-      .text(lab, labelX, y + 2, { width: labelW, lineGap: 1.2 });
-    doc.font('Helvetica').fontSize(9.2).fillColor(BRAND.ink)
-      .text(val, valueX, y, { width: valueW, lineGap: 2.4 });
-    doc.moveTo(PAGE.L + 12, y + rowH - 3).lineTo(PAGE.R - 12, y + rowH - 3)
-      .strokeColor(BRAND.line).lineWidth(0.5).stroke();
-    doc.y = y + rowH;
-    doc.x = PAGE.L;
-  }
-
-  doc.moveDown(0.9);
-  doc.x = PAGE.L;
-}
-
 function riskColour(level) {
   const text = String(level || '').toLowerCase();
   if (text.includes('critical') || text.includes('elevated')) return { bg: '#fff4f3', border: '#f1b5b0', text: '#8a1f17' };
@@ -885,22 +648,8 @@ function riskColour(level) {
   return { bg: '#edf8f2', border: '#a8d8bd', text: '#125c36' };
 }
 
-function cleanRiskHeading(title, level) {
-  let t = cleanText(title || 'Criterion');
-  const l = cleanText(level || '');
-  if (l) {
-    const escaped = l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    t = t.replace(new RegExp('^' + escaped + '\\s*[-–—:]?\\s*', 'i'), '');
-  }
-  t = t.replace(/^(Standard Requirement|Managed Standard Requirement|Managed Delegate Risk|Moderate Delegate Risk|Elevated Delegate Risk)\s*[-–—:]?\s*/i, '');
-  t = t.replace(/\bStandard Requirement\s+Standard Requirement\b/gi, 'Standard Requirement').trim();
-  return t || 'Criterion';
-}
-
 function writeRiskCard(doc, title, level, rows) {
-  const cleanLevel = cleanText(level || '');
-  const displayTitle = cleanRiskHeading(title, cleanLevel);
-  const colour = riskColour(cleanLevel);
+  const colour = riskColour(level);
   const cleanedRows = rows.map(([l, v]) => [cleanText(l), cleanText(v)]);
   let totalH = 58;
   for (const [l, v] of cleanedRows) {
@@ -913,8 +662,8 @@ function writeRiskCard(doc, title, level, rows) {
   const startY = doc.y;
   doc.roundedRect(PAGE.L, startY, PAGE.WIDTH, totalH, 12).fillAndStroke('#ffffff', BRAND.line);
   doc.roundedRect(PAGE.L + 14, startY + 14, 135, 22, 10).fillAndStroke(colour.bg, colour.border);
-  doc.font('Helvetica-Bold').fontSize(8.2).fillColor(colour.text).text(cleanLevel, PAGE.L + 24, startY + 20, { width: 116, lineBreak: false });
-  doc.font('Helvetica-Bold').fontSize(11.2).fillColor(BRAND.navy).text(displayTitle, PAGE.L + 166, startY + 17, { width: 360 });
+  doc.font('Helvetica-Bold').fontSize(8.2).fillColor(colour.text).text(cleanText(level), PAGE.L + 24, startY + 20, { width: 116, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(11.2).fillColor(BRAND.navy).text(cleanText(title), PAGE.L + 166, startY + 17, { width: 360 });
   let y = startY + 50;
   for (const [l, v] of cleanedRows) {
     doc.font('Helvetica-Bold').fontSize(8.1).fillColor(BRAND.muted).text(l.toUpperCase(), PAGE.L + 16, y + 2, { width: 130 });
@@ -1003,14 +752,12 @@ function buildStreamNarrative(stream) {
 }
 
 function buildPathwayRows(stream) {
-  const s = String(stream || '').toLowerCase();
-  const selected = label => `Selected pathway: ${label}`;
   return [
-    ['186 TRT', /temporary residence|trt/.test(s) ? selected('186 TRT') : 'Alternative only if qualifying employment and sponsor continuity are established', 'Employment continuity and sponsor history', 'Visa, payroll, tax and superannuation records'],
-    ['186 Direct Entry', /direct/.test(s) ? selected('186 Direct Entry') : 'Alternative only if skills and occupation evidence are stronger than TRT evidence', 'Occupation alignment and skills evidence', 'Skills assessment, duties, qualifications and references'],
-    ['186 Labour Agreement', /labou?r agreement/.test(s) ? selected('186 Labour Agreement') : 'Alternative only if the employer is covered by an applicable agreement', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records'],
-    ['482 Employer Sponsored', 'Fallback only if permanent residence evidence is not ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
-    ['494 Regional', 'Fallback only where employer location and occupation settings support it', 'Regional location and employer sponsorship', 'Regional postcode, nomination evidence and occupation eligibility']
+    ['186 TRT', stream === 'Temporary Residence Transition' ? 'Primary pathway requiring evidence reconciliation' : 'Fallback pathway if qualifying employment and sponsor continuity are established', 'Employment continuity and sponsor history', 'Visa, payroll, tax and superannuation records'],
+    ['186 Direct Entry', stream === 'Direct Entry' ? 'Primary pathway requiring occupation and skills confirmation' : 'Fallback pathway if skills and occupation evidence are stronger than TRT evidence', 'Occupation alignment and skills evidence', 'Skills assessment, duties, qualifications and references'],
+    ['186 Labour Agreement', stream === 'Labour Agreement' ? 'Primary pathway governed by agreement terms' : 'Available only if the employer is covered by an applicable agreement', 'Concession and agreement coverage', 'Agreement terms, occupation list, concessions and compliance records'],
+    ['482 Employer Sponsored', 'Temporary fallback pathway if permanent residence evidence is not ready', 'Sponsorship structure and occupation eligibility', 'Sponsor status, nomination settings and occupation evidence'],
+    ['494 Regional', 'Regional fallback pathway where employer location and occupation settings support it', 'Regional location and employer sponsorship', 'Regional postcode, nomination evidence and occupation eligibility']
   ];
 }
 
@@ -1263,10 +1010,8 @@ function v10StatusFromText(value) {
 function v10RiskLevel(criterion, item) {
   const c = String(criterion || '').toLowerCase();
   const combined = `${criterion || ''} ${item && (item.risk || item.risk_level || item.delegateRisk || item.position || item.finding || item.recommendation || '')}`.toLowerCase();
-  if (/standard requirement|no health issue has been disclosed|no character, integrity|standard health requirements|standard police/.test(combined)) return 'Standard requirement';
-  if (/4020|false|misrep|cancel|refus|bar|8503|section 48|health waiver|critical/.test(combined)) return 'Critical / threshold risk';
-  if (/concession|labour agreement|agreement terms|salary|market|elevated/.test(c + ' ' + combined)) return 'Elevated delegate risk';
-  if (/english|health|character|integrity/.test(c + ' ' + combined)) return 'Managed standard requirement';
+  if (/4020|character|false|misrep|cancel|refus|bar|8503|section 48|health waiver|critical/.test(combined)) return 'Critical / threshold risk';
+  if (/english|concession|labour agreement|agreement terms|health|character|integrity|salary|market|elevated/.test(c + ' ' + combined)) return 'Elevated delegate risk';
   if (/nomination|genuine|occupation|anzsco|employment|work history|sponsor|business|stream|moderate/.test(c + ' ' + combined)) return 'Moderate delegate risk';
   return 'Managed delegate risk';
 }
@@ -1274,46 +1019,6 @@ function v10RiskLevel(criterion, item) {
 function v10DefaultCriteria(subclass, stream) {
   const s = String(subclass || '').trim();
   const st = String(stream || '').toLowerCase();
-  if (s === '186' && /direct/.test(st)) {
-    return [
-      { criterion: 'Direct Entry stream eligibility, occupation and skills pathway', finding: 'The matter is being assessed as Direct Entry, not TRT or Labour Agreement. The primary analysis is skills assessment, occupation eligibility, qualifications, employment history and any registration or licensing requirement.' },
-      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must establish a genuine position, business need and capacity to employ the applicant in the nominated role.' },
-      { criterion: 'Direct Entry skills assessment, qualifications and employment evidence', finding: 'The skills assessment, qualifications, references, CV and licensing or registration material must support the nominated occupation.' },
-      { criterion: 'Genuine position and operational need', finding: 'The role should be supported by objective business records rather than general statements from the employer.' },
-      { criterion: 'Occupation, duties and ANZSCO alignment', finding: 'The nominated occupation should be supported by actual duties, qualifications, references and role evidence.' },
-      { criterion: 'Salary, market position and employment conditions', finding: 'Salary and employment terms should be internally consistent and defensible under the nomination and market salary framework.' },
-      { criterion: 'English language requirement', finding: 'The English requirement or exemption should be verified from original evidence before final advice.' },
-      { criterion: 'Age requirement or exemption', finding: 'Age at lodgement and any claimed exemption should be verified from original evidence.' },
-      { criterion: 'Standard requirement - health requirements', finding: 'No health issue should be treated as elevated unless disclosed or otherwise indicated. Standard health requirements still apply.' },
-      { criterion: 'Standard requirement - character and immigration history', finding: 'No character or adverse immigration-history issue should be treated as elevated unless disclosed or otherwise indicated. Standard checks still apply.' }
-    ];
-  }
-  if (s === '186' && /temporary residence|trt/.test(st)) {
-    return [
-      { criterion: 'TRT stream eligibility and qualifying employment pathway', finding: 'The TRT pathway depends on qualifying employment, visa history, sponsor continuity and occupation continuity.' },
-      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must establish a genuine position, business need and capacity to employ the applicant.' },
-      { criterion: 'Qualifying employment, sponsor continuity and work history', finding: 'Employment continuity should be reconciled against visa, payroll, tax, superannuation and leave records.' },
-      { criterion: 'Genuine position and operational need', finding: 'The role should be supported by objective business records.' },
-      { criterion: 'Salary, market position and employment conditions', finding: 'Salary and employment terms should be internally consistent and defensible.' },
-      { criterion: 'English language requirement or exemption', finding: 'English requirements or exemptions should be verified.' },
-      { criterion: 'Age requirement or exemption', finding: 'Age and any exemption must be verified.' },
-      { criterion: 'Standard requirement - health requirements', finding: 'Standard health requirements apply unless a health issue is disclosed.' },
-      { criterion: 'Standard requirement - character and immigration history', finding: 'Standard character and immigration-history checks apply unless an adverse issue is disclosed.' }
-    ];
-  }
-  if (s === '186' && /labou?r agreement/.test(st)) {
-    return [
-      { criterion: 'Labour Agreement coverage, occupation terms and selected pathway', finding: 'The pathway depends on the executed agreement, occupation coverage, nomination limits and any available concessions.' },
-      { criterion: 'Sponsoring employer and nomination position', finding: 'The employer and nomination material must align with the agreement and show a genuine position.' },
-      { criterion: 'Agreement concessions and conditions', finding: 'Any English, age, salary or occupation concession must be expressly available under the agreement and supported by evidence.' },
-      { criterion: 'Genuine position and operational need', finding: 'The role must be genuine, available and supported by employer records.' },
-      { criterion: 'Salary and employment conditions under the agreement', finding: 'Salary and employment terms must be consistent with the agreement and supporting payroll records.' },
-      { criterion: 'English requirement or agreement concession', finding: 'English eligibility or concession must be verified under the agreement terms.' },
-      { criterion: 'Age requirement or agreement concession', finding: 'Age eligibility or concession must be verified under the agreement terms.' },
-      { criterion: 'Standard requirement - health requirements', finding: 'Standard health requirements apply unless a health issue is disclosed.' },
-      { criterion: 'Standard requirement - character and immigration history', finding: 'Standard character and immigration-history checks apply unless an adverse issue is disclosed.' }
-    ];
-  }
   const base = [];
   if (['186','187','482','494'].includes(s)) {
     base.push(
@@ -1370,7 +1075,13 @@ function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
 
 function v10ProfessionalFinding(criterion, item, built) {
   const c = String(criterion || '').toLowerCase();
-  if (/labour agreement|agreement terms|concession/.test(c)) {
+  if (/english/.test(c)) {
+    return 'The application should not proceed on assumed English eligibility. The original test result, test type, score or grade, validity date, eligible passport evidence, exemption basis or lawful concession should be checked against the current threshold before final advice.';
+  }
+  if (/age/.test(c)) {
+    return cleanText(item.finding || built.body || 'The age position must be calculated at the relevant application time and verified against passport/date-of-birth evidence and any applicable exemption or concession.');
+  }
+  if (/labour agreement|agreement terms/.test(c)) {
     return 'This pathway should remain the primary strategy only if the executed Labour Agreement confirms occupation coverage, any concession relied upon, salary settings, English or age settings, nomination limits and the employer’s compliance position.';
   }
   if (/sponsor|nomination|employer/.test(c)) {
@@ -1388,15 +1099,6 @@ function v10ProfessionalFinding(criterion, item, built) {
   if (/salary|market/.test(c)) {
     return 'The salary position should be verified against employment contracts, payroll records, market salary or agreement settings and any applicable concession terms.';
   }
-  if (/english/.test(c)) {
-    return 'The application should not proceed on assumed English eligibility. If English evidence is recorded as unavailable or not provided, the file requires an original test result, eligible passport evidence, exemption basis or Labour Agreement concession before lodgement-ready advice can be issued.';
-  }
-  if (/age/.test(c)) {
-    const txt = JSON.stringify(item || {}).toLowerCase();
-    const m = txt.match(/(?:recorded as|age[^0-9]{0,20})(\d{1,2})/i);
-    if (m && Number(m[1]) >= 45) return `The applicant is recorded as ${Number(m[1])} years old. This is a potentially blocking age issue unless a Labour Agreement concession, exemption or other lawful basis is expressly available and evidenced.`;
-    return 'The age position must be confirmed from passport/date-of-birth evidence and assessed at the relevant application date.';
-  }
   if (/health/.test(c)) {
     return 'Any health disclosure should be considered early because it may affect timing, evidence strategy and whether further medical material is required before final advice.';
   }
@@ -1411,23 +1113,23 @@ function v10ProfessionalFinding(criterion, item, built) {
 
 function v10DelegateIssue(criterion, item, built) {
   const c = String(criterion || '').toLowerCase();
-  if (/labour agreement|concession/.test(c)) return 'A delegate is likely to test the exact agreement terms, occupation coverage, concession availability and sponsor compliance records.';
+  if (/english/.test(c)) return 'A delegate will require clear evidence that the English threshold, exemption or concession applies at the relevant time.';
+  if (/labour agreement|agreement terms/.test(c)) return 'A delegate is likely to test the exact agreement terms, occupation coverage, concession availability and sponsor compliance records.';
   if (/sponsor|nomination|genuine|operational/.test(c)) return 'A delegate is likely to test whether the role is genuine, ongoing, supported by business records and properly connected to the employer’s operations.';
   if (/occupation|anzsco/.test(c)) return 'A delegate is likely to look beyond the job title and compare actual duties, seniority, technical functions, qualifications and employment history.';
   if (/employment|work history|salary|market/.test(c)) return 'A delegate may compare claimed employment and salary against payroll, PAYG/tax, superannuation, visa and employer records.';
-  if (/english/.test(c)) return 'A delegate will require clear evidence that the English threshold, exemption or concession applies at the relevant time.';
   if (/health|character|integrity|migration history/.test(c)) return 'A delegate may scrutinise public interest, credibility, prior visa history and document consistency issues.';
   return cleanText(item.delegate_scrutiny || item.delegateScrutiny || built.body || 'The Department is likely to examine whether the instructions are supported by independent evidence.');
 }
 
 function v10ActionRequired(criterion, item, built) {
   const c = String(criterion || '').toLowerCase();
-  if (/labour agreement|concession/.test(c)) return 'Obtain and review the executed Labour Agreement and confirm occupation coverage, concessions, nomination limits and compliance settings.';
+  if (/english/.test(c)) return 'Verify the original English test result, passport exemption or agreement concession before final lodgement advice.';
+  if (/labour agreement|agreement terms/.test(c)) return 'Obtain and review the executed Labour Agreement and confirm occupation coverage, concessions, nomination limits and compliance settings.';
   if (/sponsor|nomination|genuine|operational/.test(c)) return 'Prepare a nomination evidence brief linking the employer’s business need, organisation chart, role duties, payroll capacity and position availability.';
   if (/occupation|anzsco/.test(c)) return 'Prepare a duties and ANZSCO matrix with references, qualifications, CV and licensing or registration material where relevant.';
   if (/employment|work history/.test(c)) return 'Build a chronology supported by contracts, payslips, tax records, superannuation and visa/work-rights records.';
   if (/salary|market/.test(c)) return 'Reconcile contract, payroll, market salary or agreement concession evidence before relying on the salary position.';
-  if (/english/.test(c)) return 'Verify the original English test result, passport exemption or agreement concession before final lodgement advice.';
   if (/health/.test(c)) return 'Obtain relevant health disclosures and supporting medical material if any issue is indicated.';
   if (/character|integrity|migration history|compliance/.test(c)) return 'Review police certificates, court records, prior decisions, Department correspondence and prior application records.';
   return cleanText(item.recommendation || built.strategy || 'Verify original documents and resolve any inconsistency before final advice is issued.');
@@ -1656,7 +1358,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       writeTitle(doc, 'Final professional recommendation', { gold: true, size: 17 });
       writePara(doc, `${v10Recommendation(subclass, stream, position, issue, criteria)}
 
-My recommendation is to proceed by evidence preparation, not immediate lodgement. If the Labour Agreement or stream-specific requirements, nomination evidence, occupation alignment, age concession or exemption, English/concession position and public interest records are confirmed, the matter may be capable of progressing with a properly prepared submission and evidence brief. If any of those matters cannot be confirmed, the strategy should be paused or redirected before filing.
+My recommendation is to proceed by evidence preparation, not immediate lodgement. If the Labour Agreement or stream-specific requirements, nomination evidence, occupation alignment, English/concession position and public interest records are confirmed, the matter may be capable of progressing with a properly prepared submission and evidence brief. If any of those matters cannot be confirmed, the strategy should be paused or redirected before filing.
 
 This advice is based on the information presently available. Final lodgement advice should be issued only after original documents, employer material, migration history records and current legal settings are reviewed.`);
 
@@ -1686,211 +1388,5 @@ This advice is based on the information presently available. Final lodgement adv
 }
 
 
-function extractUniversalClientFacts(assessment, adviceBundle, facts) {
-  const out = [];
-  function isBooleanLike(v) { return /^(yes|no|true|false)$/i.test(cleanText(v)); }
-  function ageFromDob(value) {
-    const raw = cleanText(value);
-    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (!m) return raw;
-    const dob = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00`);
-    if (isNaN(dob.getTime())) return raw;
-    const now = new Date();
-    let age = now.getFullYear() - dob.getFullYear();
-    const beforeBirthday = (now.getMonth() < dob.getMonth()) || (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate());
-    if (beforeBirthday) age -= 1;
-    return `${age} (date of birth recorded)`;
-  }
-  function add(label, value, opts = {}) {
-    let v = cleanText(value);
-    if (!v || v === '—' || /^undefined|null$/i.test(v)) return;
-    if (opts.noBoolean && isBooleanLike(v)) return;
-    if (opts.dobToAge) v = ageFromDob(v);
-    if (opts.english && /^\d+$/.test(v)) v = `English score reported: ${v} — original test report and validity to be verified`;
-    if (opts.english && /^[A-E]$/i.test(v)) v = `English grade recorded as ${v.toUpperCase()} — test type, original report and validity to be verified`;
-    out.push([label, v]);
-  }
-  const payload = (assessment && assessment.form_payload) || {};
-  const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
-  const flat = {};
-  (function walk(obj, prefix='') {
-    if (!obj || typeof obj !== 'object') return;
-    for (const [k,v] of Object.entries(obj)) {
-      const key = prefix ? `${prefix}.${k}` : k;
-      if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, key);
-      else flat[key] = Array.isArray(v) ? v.join(', ') : v;
-    }
-  })(answers);
-  function pick(labels) {
-    const wanted = labels.map(s => String(s).toLowerCase().replace(/[^a-z0-9]/g,''));
-    for (const [k,v] of Object.entries(flat)) {
-      const nk = String(k).toLowerCase().replace(/[^a-z0-9]/g,'');
-      if (wanted.some(w => nk === w || nk.includes(w) || w.includes(nk))) return v;
-    }
-    return '';
-  }
-  add('Current location', pick(['currentLocation','current location','location']));
-  add('Current visa status', pick(['currentVisa','current visa','visaStatus','visa status']));
-  add('Nominated occupation / role', pick(['occupation','nominatedOccupation','nominated occupation','jobTitle','job title','anzsco']), { noBoolean: true });
-  add('Employer / sponsor', pick(['employerName','employer name','sponsorName','sponsor name','businessName']));
-  add('Salary / remuneration', pick(['salary','annualSalary','baseSalary','remuneration']));
-  add('English evidence', pick(['english-test-type','english test type','english','englishTest','english score','ielts','pte','oet','toefl']), { english: true });
-  add('Age', pick(['age','dateOfBirth','date of birth']), { dobToAge: true });
-  add('Relationship / family position', pick(['relationship','partner','spouse','de facto','sponsor relationship']));
-  add('Course / provider', pick(['course','provider','educationProvider','coe']));
-  add('Invitation / nomination position', pick(['invitation','stateNomination','nomination','eoi']));
-  add('Health disclosure', pick(['health','medical','health issue']));
-  add('Character / immigration history', pick(['character','police','refusal','cancellation','overstay','immigration history']));
-  if (!out.length) {
-    add('Information basis', 'Assessment questionnaire answers were received, but the PDF renderer could not safely extract detailed fact labels from the submitted payload. Original answers must be reviewed before final lodgement advice.');
-  }
-  return out.slice(0, 14);
-}
+module.exports = { buildAssessmentPdfBuffer: buildAssessmentPdfBufferV10, buildAppealAdvicePdfBuffer, sha256 };
 
-function buildAssessmentPdfBufferUniversal(assessment, adviceBundle) {
-  if (!adviceBundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');
-  assertKnowledgebaseEnforcedAdviceBundle(adviceBundle);
-  return new Promise((resolve, reject) => {
-    try {
-      const advice = getAdvice(adviceBundle);
-      const facts = extractFactsObject(assessment || {}, adviceBundle || {});
-      const subclass = cleanText((advice && advice.subclass) || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], ''));
-      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
-      const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
-      const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
-      const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
-      const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
-      const visaGroup = cleanText((advice && (advice.visa_group || advice.visaGroup)) || (adviceBundle.universalLegalGraph && adviceBundle.universalLegalGraph.family) || 'visa assessment');
-      const position = professionalPosition(adviceBundle || {}, advice || {});
-      const issue = primaryIssue(adviceBundle || {}, advice || {});
-      const findings = ((advice && advice.criterion_findings) || adviceBundle.criterionFindings || adviceBundle.findings || []).map(normaliseCriterionFinding);
-      const evidenceItems = collectEvidence(advice || {}, adviceBundle || {});
-      const title = `Subclass ${subclass} professional migration advice letter`;
-      const doc = createDoc({ Title: `Bircan Migration - ${title}`, Author: 'Bircan Migration & Education', Subject: `Professional migration advice ${assessment.id || ''}` });
-      const chunks = [];
-      doc.on('data', c => chunks.push(c));
-      doc.on('error', reject);
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-
-      drawCover(doc, { title, reference: assessment.id || '—', applicantName, applicantEmail, clientEmail, subclass, stream, generatedAt });
-      addPage(doc);
-
-      writeTitle(doc, 'Scope and limitations', { gold: true, size: 16 });
-      writePara(doc, `This is a preliminary professional migration advice letter for the Subclass ${subclass}${stream ? ' ' + stream : ''} assessment. It is based on the client-provided assessment information and any material available to the system at generation. It is not a final lodgement instruction unless original documents, conflict checks, current legislation, instruments, policy and Departmental settings are reviewed.`);
-
-      writeTitle(doc, 'Client facts relied upon', { gold: true });
-      writeFactsCard(doc, 'Matter and extracted facts', [
-        ['Reference', assessment.id || '—'],
-        ["Applicant's name", applicantName],
-        ['Applicant email', applicantEmail],
-        ['Client account email', clientEmail],
-        ['Subclass', subclass],
-        ['Stream / pathway', stream],
-        ['Visa group', visaGroup],
-        ['Generated', generatedAt],
-        ...extractUniversalClientFacts(assessment, adviceBundle, facts)
-      ]);
-
-      // Keep the documents heading visually separate from the facts table.
-      // This prevents long client-fact rows from colliding with the next section.
-      ensureSpace(doc, 110);
-      writeTitle(doc, 'Documents reviewed, not reviewed and required', { gold: true });
-      writeSubheading(doc, 'Documents sighted');
-      const sighted = uniqueClean([...(adviceBundle.documents && adviceBundle.documents.sighted || []), 'Assessment questionnaire responses']);
-      sighted.slice(0, 8).forEach(item => writeBullet(doc, item));
-      writeSubheading(doc, 'Documents not yet sighted / not verified');
-      uniqueClean([...(adviceBundle.documents && adviceBundle.documents.notSighted || []), 'Original identity documents', 'Original visa records', 'Original evidence supporting the selected subclass criteria', 'Current Departmental records and third-party records']).slice(0, 10).forEach(item => writeBullet(doc, item));
-      writeSubheading(doc, 'Documents required before lodgement-ready advice');
-      const requiredDocs = uniqueClean([...(adviceBundle.documents && adviceBundle.documents.requiredBeforeLodgement || []), ...evidenceItems]).slice(0, 40);
-      const requiredGroups = groupEvidence(requiredDocs);
-      if (requiredGroups.length) {
-        for (const [group, items] of requiredGroups.slice(0, 5)) {
-          writeSubheading(doc, group);
-          items.slice(0, 4).forEach(item => writeBullet(doc, item));
-        }
-      } else {
-        requiredDocs.slice(0, 14).forEach(item => writeBullet(doc, item));
-      }
-
-      writeTitle(doc, 'Executive legal opinion', { gold: true });
-      writePara(doc, (adviceBundle.premiumExecutiveOpinion || (advice && advice.executive_summary)) || buildExecutiveNarrative({ subclass, stream, position, issue }));
-      writeCard(doc, 'Professional recommendation', [
-        ['Present position', (adviceBundle.lodgementReadiness && adviceBundle.lodgementReadiness.label) || position],
-        ['Risk rating', (advice && advice.risk_level) || adviceBundle.riskLevel || 'Evidence review required'],
-        ['Primary issue', issue],
-        ['Recommended action', (adviceBundle.lodgementReadiness && adviceBundle.lodgementReadiness.recommendedAction) || 'Proceed by evidence preparation and legal verification before any lodgement action.']
-      ]);
-
-      writePremiumMatrix(doc, 'Legal outcome summary', [
-        { key:'area', label:'Area', width:120 },
-        { key:'currentPosition', label:'Current position', width:185 },
-        { key:'risk', label:'Risk', width:80 },
-        { key:'blocksLodgement', label:'Blocks lodgement now?', width:110 }
-      ], adviceBundle.legalOutcomeSummary || [], { limit: 12 });
-
-      writePremiumMatrix(doc, 'Known facts, missing facts and legal effect', [
-        { key:'knownFact', label:'Known fact', width:155 },
-        { key:'missingInformation', label:'Missing information', width:165 },
-        { key:'legalEffect', label:'Legal effect', width:175 }
-      ], adviceBundle.knownFactsMatrix || [], { limit: 12 });
-
-      writeTitle(doc, 'Subclass-specific legal framework', { gold: true });
-      writePara(doc, (advice && advice.primary_issue) || issue || `The Subclass ${subclass} pathway must be assessed against the criteria and evidentiary requirements applicable to the selected stream or pathway.`);
-      if (advice && Array.isArray(advice.sections)) {
-        advice.sections.slice(0, 4).forEach(s => {
-          writeSubheading(doc, s.heading || 'Legal issue');
-          writePara(doc, s.body || '');
-        });
-      }
-
-      writeTitle(doc, 'Criteria-by-criteria legal assessment', { gold: true });
-      if (findings.length) {
-        findings.slice(0, 10).forEach(raw => {
-          writePremiumFindingCard(doc, raw);
-        });
-      } else {
-        writePara(doc, 'No criterion findings were available in the advice bundle. Advice-grade generation should be blocked until subclass criteria are loaded.');
-      }
-
-      writeTitle(doc, 'Evidence gap and delegate risk matrix', { gold: true });
-      (findings.length ? findings : []).slice(0, 10).forEach(raw => {
-        const item = buildMatterFinding(raw);
-        writeBullet(doc, `${cleanRiskHeading(item.criterion, item.delegateRisk)}: ${item.delegateRisk}. Required action: ${item.strategy || item.evidence}`);
-      });
-
-      writeTitle(doc, 'Alternative pathway comparison', { gold: true });
-      const rows = buildPathwayRows(stream).slice(0, 6);
-      rows.forEach(row => writePathwayBlock(doc, ...row));
-
-      writeTitle(doc, 'Client action plan', { gold: true });
-      normaliseNextSteps((advice && advice.client_next_steps) || adviceBundle.recommendedNextSteps || evidenceItems, advice || {}).slice(0, 10).forEach(step => writeBullet(doc, step));
-
-      if (Array.isArray(adviceBundle.commercialNextSteps) && adviceBundle.commercialNextSteps.length) {
-        writeTitle(doc, 'Recommended professional next step', { gold: true });
-        adviceBundle.commercialNextSteps.slice(0, 6).forEach(step => writeBullet(doc, step));
-      }
-
-      writeTitle(doc, 'Final professional recommendation', { gold: true });
-      writePara(doc, adviceBundle.finalProfessionalRecommendation || `On the information presently available, I would not treat this matter as lodgement ready until the client facts, original evidence and current legal settings have been reconciled. If the identified evidence can be verified and the subclass-specific criteria are satisfied, the matter may progress to a final lodgement recommendation. If the evidence cannot be verified, the strategy should be paused or redirected before filing.`);
-
-      writeTitle(doc, 'Legal and professional basis');
-      writePara(doc, 'This advice has been prepared by reference to the information supplied, the selected visa pathway, the Migration Act 1958, the Migration Regulations 1994, relevant legislative instruments and current Departmental policy guidance as applicable to the selected subclass and stream. Internal source-control and knowledgebase checks are retained by Bircan Migration for quality assurance and are not reproduced in this client-facing letter.');
-
-      writeTitle(doc, 'Important notice');
-      writePara(doc, (advice && advice.disclaimer) || 'This professional advice is preliminary and subject to review of original documents, current law, policy and final instructions before lodgement action. It is not a guarantee of visa grant.');
-
-      ensureSpace(doc, 80);
-      doc.font('Helvetica').fontSize(10).fillColor(BRAND.ink).text('Yours faithfully,', PAGE.L, doc.y, { width: PAGE.WIDTH });
-      doc.moveDown(0.55);
-      doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.navy).text('Kenan Bircan JP', PAGE.L, doc.y, { width: PAGE.WIDTH });
-      doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.ink).text('Registered Migration Agent | MARN: 1463685', PAGE.L, doc.y, { width: PAGE.WIDTH });
-      doc.text('Bircan Migration & Education', PAGE.L, doc.y, { width: PAGE.WIDTH });
-      doc.end();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-
-module.exports = { buildAssessmentPdfBuffer: buildAssessmentPdfBufferUniversal, buildAppealAdvicePdfBuffer, sha256 };
