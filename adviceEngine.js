@@ -3,6 +3,8 @@ const matrices = require('./advice-matrices.json');
 const coverage = require('./knowledgebase_coverage.json');
 const { evaluateDecisionEngine } = require('./decisionEngines');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream } = require('./knowledgebaseLoader');
+const { loadCriteriaRegistry, listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
+const { validateCriteriaCoverage } = require('./validators/criteriaCoverageValidator');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
@@ -70,7 +72,7 @@ function runDeterministicRules(subclass, flat){
   const risk_level=hard_fails.length?'CRITICAL':review_flags.length>=3?'HIGH':review_flags.length?'MEDIUM':'LOW'; const lodgement_position=hard_fails.length?'DO_NOT_LODGE_NOW':review_flags.length?'PROCEED_AFTER_EVIDENCE_REVIEW':'MANUAL_LEGAL_REVIEW_REQUIRED'; return {subclass:m.subclass, risk_level, lodgement_position, deterministic_findings:findings, hard_fails, review_flags};
 }
 function structuredFacts(assessment){ const flat=payloadOf(assessment); const subclass=normSubclass(assessment.visa_type || pick(flat,['visaType','subclass','visaSubclass'])); const m=matrixFor(subclass); return {reference:assessment.id, visa_subclass:subclass, matrix_title:m.title, matrix_source:m.source, client_email:cleanText(assessment.client_email), applicant:{name:cleanText(assessment.applicant_name)||pick(flat,['full-name','fullName','applicantName','name']), email:cleanText(assessment.applicant_email)||pick(flat,['email-address','email','applicantEmail']), citizenship:pick(flat,['country-of-citizenship','citizenship','nationality','passportCountry']), date_of_birth:pick(flat,['date-of-birth','dob','dateOfBirth'])}, matter:{selected_plan:cleanText(assessment.active_plan||assessment.selected_plan), current_location:pick(flat,['current-location','currentLocation','grant-location','location']), current_visa_status:pick(flat,['current-visa-status','currentVisaStatus','qualifying-visa-held']), family_included:pick(flat,['family-included','familyIncluded','secondaryApplicants']), stream:pick(flat,['stream','selected-stream','visa-stream','application-stream'])}, subclass_factors:{occupation:pick(flat,['occupation','nominated-occupation','anzsco','course','business','investment']), nomination:pick(flat,['nomination','state-nomination-held','nomination-current','sponsor-nomination','nomination-status']), invitation:pick(flat,['invitation-held','invitation','skillselect']), sponsor:pick(flat,['sponsor','employer','partner','proposer','sponsorship']), relationship:pick(flat,['relationship','marriage','defacto','spouse','partner-evidence']), skills:pick(flat,['skills','skills-assessment-held','qualification','work-experience','experience']), english:pick(flat,['english','competent-english','english-test-type']), points:pick(flat,['points','points-breakdown','pass-mark-met']), funds:pick(flat,['funds','financial-capacity','means-of-support']), health:pick(flat,['health','health-issues','health-insurance','oshc']), character:pick(flat,['character-security-issues','character','criminal']), integrity:pick(flat,['pic4020-integrity','pic4020','bogus','false']), visa_conditions:pick(flat,['section48-bar','8503','nfa-condition','no-further-stay','current-visa-status'])}, cleaned_answers:Object.fromEntries(Object.entries(flat).slice(0,160))}; }
-function schema(){ return {type:'object',additionalProperties:false,required:['subclass','risk_level','lodgement_position','title','sections','criterion_findings','evidence_required','client_next_steps','quality_flags','disclaimer'],properties:{subclass:{type:'string',enum:supportedSubclassCodes()},risk_level:{type:'string',enum:['LOW','MEDIUM','HIGH','CRITICAL']},lodgement_position:{type:'string',enum:['SUITABLE_TO_PROCEED','PROCEED_AFTER_EVIDENCE_REVIEW','DO_NOT_LODGE_NOW','INVALID_OR_NOT_AVAILABLE','MANUAL_LEGAL_REVIEW_REQUIRED']},title:{type:'string'},sections:{type:'array',minItems:7,maxItems:10,items:{type:'object',additionalProperties:false,required:['heading','body'],properties:{heading:{type:'string'},body:{type:'string'}}}},criterion_findings:{type:'array',minItems:6,maxItems:22,items:{type:'object',additionalProperties:false,required:['criterion','finding','legal_consequence','evidence_gap','recommendation'],properties:{criterion:{type:'string'},finding:{type:'string'},legal_consequence:{type:'string'},evidence_gap:{type:'string'},recommendation:{type:'string'}}}},evidence_required:{type:'array',minItems:4,maxItems:30,items:{type:'string'}},client_next_steps:{type:'array',minItems:3,maxItems:15,items:{type:'string'}},quality_flags:{type:'array',maxItems:15,items:{type:'string'}},disclaimer:{type:'string'}}}; }
+function schema(){ return {type:'object',additionalProperties:false,required:['subclass','risk_level','lodgement_position','title','sections','criterion_findings','evidence_required','client_next_steps','quality_flags','disclaimer'],properties:{subclass:{type:'string',enum:supportedSubclassCodes()},risk_level:{type:'string',enum:['LOW','MEDIUM','HIGH','CRITICAL']},lodgement_position:{type:'string',enum:['SUITABLE_TO_PROCEED','PROCEED_AFTER_EVIDENCE_REVIEW','DO_NOT_LODGE_NOW','INVALID_OR_NOT_AVAILABLE','MANUAL_LEGAL_REVIEW_REQUIRED']},title:{type:'string'},sections:{type:'array',minItems:7,maxItems:10,items:{type:'object',additionalProperties:false,required:['heading','body'],properties:{heading:{type:'string'},body:{type:'string'}}}},criterion_findings:{type:'array',minItems:6,maxItems:40,items:{type:'object',additionalProperties:false,required:['criterion_id','criterion','finding','legal_consequence','evidence_gap','recommendation'],properties:{criterion_id:{type:'string'},criterion:{type:'string'},finding:{type:'string'},legal_consequence:{type:'string'},evidence_gap:{type:'string'},recommendation:{type:'string'}}}},evidence_required:{type:'array',minItems:4,maxItems:30,items:{type:'string'}},client_next_steps:{type:'array',minItems:3,maxItems:15,items:{type:'string'}},quality_flags:{type:'array',maxItems:15,items:{type:'string'}},disclaimer:{type:'string'}}}; }
 function framework(m){ return [`Subclass matrix: ${m.title}`,`Knowledge source: ${m.source}`,`Streams/pathways: ${(m.streams||[]).join('; ')}`,`Validity/Schedule 1: ${(m.validity||[]).join('; ')}`,`Primary grant criteria: ${(m.primary||[]).join('; ')}`,`Secondary criteria: ${(m.secondary||[]).join('; ') || 'Not applicable'}`,`Hard fail / do not lodge triggers: ${(m.hard||[]).join('; ')}`,`Evidence required: ${(m.evidence||[]).join('; ')}`].join('\n'); }
 
 function clientSafeAdviceText(v){
@@ -272,6 +274,7 @@ function assertFinalProductionControls(bundle){
   if(!bundle.evidenceSufficiencyMatrix || !Array.isArray(bundle.evidenceSufficiencyMatrix.rows) || bundle.evidenceSufficiencyMatrix.rows.length < 6) throw new Error('Final control gate failed: evidence sufficiency matrix missing. PDF generation blocked.');
   if(!bundle.internalLegalAudit || !bundle.internalLegalAudit.auditGeneratedAt) throw new Error('Final control gate failed: internal legal audit missing. PDF generation blocked.');
   if(!bundle.clientSafetyFilter || bundle.clientSafetyFilter.enforced !== true) throw new Error('Final control gate failed: client-safety filter missing. PDF generation blocked.');
+  if(!bundle.criteriaRegistry || !bundle.criteriaCoverage || Number(bundle.criteriaCoverage.coverageRate) < 100) throw new Error('Final control gate failed: criteria registry coverage incomplete. PDF generation blocked.');
   return true;
 }
 
@@ -449,7 +452,7 @@ function assertResearchGradeControls(bundle){
   return true;
 }
 
-async function callOpenAIForAdvice(facts, rules, legalPack){
+async function callOpenAIForAdvice(facts, rules, legalPack, criteriaRegistry){
   assertKnowledgebasePack(legalPack);
   if(!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required for migration-agent level GPT advice generation. Refusing to issue weak template PDF.');
   const subclass=normSubclass(facts.visa_subclass);
@@ -481,7 +484,7 @@ async function callOpenAIForAdvice(facts, rules, legalPack){
     'The PDF is preliminary advice subject to document review and current law/policy verification.'
   ].join('\n');
   const requiredReasoning=[
-    'For each primary criterion in the subclass matrix, create one criterion_findings item unless clearly irrelevant.',
+    'For each mandatory criterion in the supplied criteria registry, create one criterion_findings item. Use the exact registry id in criterion_id and the registry label in criterion.',
     'Each criterion_findings item must expressly state whether the criterion appears satisfied, not satisfied, or cannot be confirmed.',
     'Each legal_consequence must explain the practical visa consequence of the finding.',
     'Each evidence_gap must name the missing or required evidence, not merely say more evidence is needed.',
@@ -496,6 +499,9 @@ MANDATORY LEGAL-REASONING METHOD:
 - ${requiredReasoning}
 
 ${framework(m)}
+
+MANDATORY CRITERIA REGISTRY. You must assess every mandatory criterion listed here. Do not omit, merge, rename, or replace registry criteria. Use the exact registry id in criterion_id.
+${JSON.stringify(criteriaRegistry,null,2)}
 
 MANDATORY KNOWLEDGEBASE LEGAL-SOURCE PACK. You must read and apply these sources before drafting. If the sources do not support a conclusion, say the issue requires manual legal review.
 The sources are already ordered by authority. Apply them sequentially: Act -> Regulations -> Instruments -> PAMs. Do not reverse this hierarchy.
@@ -527,7 +533,8 @@ async function generateMigrationAdvice(assessment){
   const legalPack=await buildKnowledgebaseLegalPack(assessmentForAdvice);
   assertKnowledgebasePack(legalPack);
   if(String(legalPack.subclass) !== String(subclass)) throw new Error('Knowledgebase subclass does not match extracted assessment subclass. Advice generation blocked.');
-  const advice=await callOpenAIForAdvice(facts,rules,legalPack);
+  const criteriaRegistry = loadCriteriaRegistry(subclass, selectedStream || legalPack.selectedStream || '');
+  const advice=await callOpenAIForAdvice(facts,rules,legalPack,criteriaRegistry);
   const legalSourcePack={
     loadedAt:legalPack.loadedAt,
     root:legalPack.root,
@@ -549,6 +556,7 @@ async function generateMigrationAdvice(assessment){
   const legalVersionLock = buildLegalVersionLock(legalSourcePack);
   const contradictionFlags = detectContradictions(facts, validatedAdvice, rules);
   const evidenceSufficiencyMatrix = buildEvidenceSufficiencyMatrix(validatedAdvice, matrix);
+  const criteriaCoverage = validateCriteriaCoverage(criteriaRegistry, { advice: validatedAdvice }, legalSourcePack, { minimumCoverageRate: 100 });
   const clientSafetyFilter = buildClientSafetyFilter(validatedAdvice, contradictionFlags);
   const universalLegalGraph = buildUniversalLegalGraph({facts,matrix,legalSourcePack,evidenceSufficiencyMatrix,contradictionFlags});
   const researchGradeStrategicLayer = buildResearchGradeStrategicLayer({facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph});
@@ -556,10 +564,12 @@ async function generateMigrationAdvice(assessment){
   internalLegalAudit.researchGradeStrategicLayer = researchGradeStrategicLayer;
   internalLegalAudit.universalLegalGraph = universalLegalGraph;
   internalLegalAudit.knowledgebaseSnapshot = legalSourcePack.knowledgebaseSnapshot;
-  const bundle = {facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
+  internalLegalAudit.criteriaRegistry = { registryVersion: criteriaRegistry.registryVersion, subclass: criteriaRegistry.subclass, mandatoryCriteriaCount: criteriaRegistry.mandatoryCriteriaCount, sourceFile: criteriaRegistry.sourceFile };
+  internalLegalAudit.criteriaCoverage = criteriaCoverage;
+  const bundle = {facts,rules,matrix,criteriaRegistry,criteriaCoverage,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
   assertFinalProductionControls(bundle);
   assertDynamicKnowledgebaseControls(bundle);
   assertResearchGradeControls(bundle);
   return bundle;
 }
-module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>supportedSubclassCodes(),detectContradictions,buildEvidenceSufficiencyMatrix,buildLegalVersionLock,assertFinalProductionControls,buildUniversalLegalGraph,assertDynamicKnowledgebaseControls,buildResearchGradeStrategicLayer,assertResearchGradeControls,supportedSubclassCodes};
+module.exports={generateMigrationAdvice,structuredFacts,validateAdvice,matrices,supportedSubclasses:()=>supportedSubclassCodes(),detectContradictions,buildEvidenceSufficiencyMatrix,buildLegalVersionLock,assertFinalProductionControls,buildUniversalLegalGraph,assertDynamicKnowledgebaseControls,buildResearchGradeStrategicLayer,assertResearchGradeControls,supportedSubclassCodes,criteriaRegistrySubclasses:()=>listSupportedCriteriaRegistrySubclasses()};

@@ -30,6 +30,7 @@ const PDFDocument = require('pdfkit');
 const { query, tx } = require('./db');
 const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
+const { listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
@@ -1919,6 +1920,8 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     service: 'bircan-final-postgres-server',
     supportedAdviceSubclasses: supportedSubclasses(),
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
+    criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
+    criteriaRegistryCoverageGate: true,
     version: '12.2.3-production-email-lock-admin-route-removed',
     postgres: true,
     jsonFallback: false,
