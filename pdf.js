@@ -26,7 +26,7 @@ function cleanText(value, fallback = '—') {
   let s = safeText(value, fallback);
   if (!s || s === '—') return s;
   s = String(s)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\uFEFF\uFFFE\uFFFF]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\uFEFF\uFFFC\uFFFD\uFFFE\uFFFF]/g, '')
     .replace(/[\u200B-\u200D\u2060]/g, '')
     .replace(/([A-Za-z])-\s+([A-Za-z])/g, '$1$2')
     .replace(/\bGPT\b|\bAI\b|artificial intelligence|model output|prompt|quality flags?|delegate-simulator|decision engine|internal assessment systems?/gi, '')
@@ -70,6 +70,31 @@ function sentenceCase(text) {
   const s = cleanText(text, '').trim();
   if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+
+function clientAdviceCriterionLabel(value) {
+  let s = sentenceCase(clientFriendlyCriterionLabel(value || 'Grant criterion'));
+  s = s
+    .replace(/^Whether\s+/i, '')
+    .replace(/\scan be met$/i, '')
+    .replace(/\sis available$/i, '')
+    .replace(/\scan be supported$/i, '')
+    .replace(/\sis defensible$/i, '')
+    .replace(/\sare consistent and defensible$/i, ' consistency')
+    .replace(/\sis held or obtainable$/i, '')
+    .replace(/\saffects strategy$/i, ' strategic effect')
+    .replace(/\sapplies$/i, '')
+    .trim();
+  if (!s) return 'Grant criterion';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function clientAdvicePosition(item) {
+  const risk = v12RiskLabel(item);
+  if (risk === 'High') return 'This is a material lodgement-readiness issue. It should be resolved before any positive lodgement recommendation is issued.';
+  if (risk === 'Medium') return 'This issue requires verification before the matter is treated as lodgement ready.';
+  return 'This issue should be checked and reconciled as part of the final evidence review.';
 }
 
 function clientFriendlyCriterionLabel(value) {
@@ -1611,8 +1636,8 @@ function v12WriteCriteriaTable(doc, group, items) {
   // full-width stacked criterion cards. Every text element is wrapped inside PAGE.WIDTH.
   const rows = ensureArray(items).filter(Boolean);
   for (const item of rows) {
-    const criterion = sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion'));
-    const position = v12CompactPosition(item);
+    const criterion = clientAdviceCriterionLabel(item.criterion || 'Grant criterion');
+    const position = clientAdvicePosition(item);
     const action = v12CompactAction(item);
     const risk = v12RiskLabel(item);
     const riskColor = risk === 'High' ? '#8a5b00' : risk === 'Medium' ? '#6d5a00' : BRAND.blue;
@@ -1715,7 +1740,7 @@ function v12WriteFullCriteriaAppendix(doc, criteria) {
 }
 
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
-  writeTitle(doc, 'Grant criteria assessment', { gold: true });
+  writeTitle(doc, 'Lodgement-readiness assessment', { gold: true });
   writePara(doc, 'I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The main advice identifies the material issues requiring attention. The complete registry-backed criteria review is preserved in Appendix A at the end of this letter.', { size: 9.8 });
 
   const list = ensureArray(criteria).filter(Boolean);
@@ -1728,9 +1753,9 @@ function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   ]);
 
   const material = list.slice().sort((a, b) => v12CriteriaScore(b) - v12CriteriaScore(a)).slice(0, Math.min(10, list.length));
-  writeSubheading(doc, 'Material criteria requiring attention');
+  writeSubheading(doc, 'Priority issues requiring attention');
   writePara(doc, 'The following issues should be resolved before the matter is treated as lodgement-ready. They are selected from the full criteria review because they are most likely to affect validity, nomination strength, stream eligibility, public interest requirements or evidence sufficiency.', { size: 9.4 });
-  v12WriteCriteriaTable(doc, 'Key material issues', material);
+  v12WriteCriteriaTable(doc, 'Priority lodgement issues', material);
 }
 
 function v11FinalRecommendation(subclass, stream, family, position, primaryIssue) {
