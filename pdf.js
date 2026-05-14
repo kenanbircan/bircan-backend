@@ -60,6 +60,38 @@ function cleanText(value, fallback = '—') {
   return s || fallback;
 }
 
+
+function sanitizeSubclassStreamText(value, subclass = '', stream = '', criterion = '') {
+  let s = cleanText(value, '');
+  const st = String(stream || '').toLowerCase();
+  const c = String(criterion || '').toLowerCase();
+  if (/labour agreement|labor agreement|dama/.test(st)) {
+    s = s
+      .replace(/confirm applicant'?s employment history and ensure Direct Entry stream is appropriate before lodgement\.?/gi, 'Confirm that the nominated occupation, concessions and employment terms are permitted under the applicable Labour Agreement before lodgement.')
+      .replace(/Direct Entry stream is appropriate/gi, 'Labour Agreement stream is properly supported')
+      .replace(/Direct Entry/gi, 'another 186 stream')
+      .replace(/remains offshore at time of application and grant/gi, 'has lawful status and no visa-condition issue affecting lodgement')
+      .replace(/remain offshore at time of application and grant/gi, 'maintain lawful status and resolve any visa-condition issue before lodgement')
+      .replace(/offshore at time of application and grant/gi, 'lawfully positioned for lodgement and decision')
+      .replace(/partner relationship|protection claim|student CoE/gi, 'pathway-specific evidence');
+  }
+  if (/schedule 1|valid application/.test(c)) s = s.replace(/english evidence or exemption[^.]*\.?/gi, 'form, charge, nomination linkage, lodgement method and validity evidence are confirmed.');
+  if (/employer training|workplace law|employer compliance/.test(c)) s = 'Request employer compliance records, Labour Agreement compliance material and workplace-law evidence before relying on the nomination.';
+  if (/pic 4020|integrity/.test(c)) s = 'Review all forms, declarations and supporting documents for consistency, authenticity and any false or misleading information risk.';
+  if (/salary|amsr|guaranteed/.test(c)) s = 'Reconcile guaranteed earnings, contract salary, payroll, AMSR/market evidence and any Labour Agreement concession before relying on the salary position.';
+  if (/employment terms/.test(c)) s = 'Review the employment contract against the nomination, Labour Agreement, NES, award/enterprise agreement, hours, duties and salary obligations.';
+  s = s.replace(/lodgement is not recommended the application/gi, 'Do not lodge the application');
+  s = s.replace(/lodgement is not recommended until/gi, 'Do not lodge until');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function isBadGeneratedAction(text, stream = '') {
+  const s = String(text || '').toLowerCase();
+  if (/labour agreement|dama/.test(String(stream || '').toLowerCase()) && (/direct entry stream is appropriate|offshore at time of application and grant/.test(s))) return true;
+  if (/lodgement is not recommended the application/.test(s)) return true;
+  return false;
+}
+
 function ensureArray(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.flatMap(ensureArray);
@@ -374,7 +406,7 @@ function normaliseCriterionFinding(item) {
     criterion: item.criterion || item.heading || item.title || 'Criterion',
     finding: item.finding || item.status || item.evidenceStatus || item.body || '',
     legal_consequence: item.legal_consequence || item.legalConsequence || item.legalEffect || '',
-    recommendation: item.recommendation || item.missingEvidence || ''
+    recommendation: item.actionRequired || item.recommendation || item.requiredAction || item.missingEvidence || ''
   };
 }
 
@@ -1086,9 +1118,9 @@ function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
       risk,
       currentPosition: v10StatusFromText(item.position || item.outcome || item.finding || built.position),
       legalRequirement: built.legislativeRequirement,
-      professionalFinding: finding,
-      delegateIssue: v10DelegateIssue(name, item, built),
-      actionRequired: v10ActionRequired(name, item, built),
+      professionalFinding: sanitizeSubclassStreamText(finding, subclass, stream, name),
+      delegateIssue: sanitizeSubclassStreamText(v10DelegateIssue(name, item, built), subclass, stream, name),
+      actionRequired: sanitizeSubclassStreamText(v10ActionRequired(name, item, built), subclass, stream, name),
       evidence: built.evidence,
       timing: item.timing || '',
       sourceCategory: item.sourceCategory || item.source_category || '',
@@ -1153,15 +1185,21 @@ function v10DelegateIssue(criterion, item, built) {
 
 function v10ActionRequired(criterion, item, built) {
   const c = String(criterion || '').toLowerCase();
+  const explicit = item.actionRequired || item.recommendation || item.requiredAction || item.clientAction;
+  if (explicit && !isBadGeneratedAction(explicit)) return cleanText(explicit);
+  if (/schedule 1|valid application/.test(c)) return 'Confirm the correct form, visa application charge, application method, nomination linkage, applicant identity and all Schedule 1 validity requirements before lodgement.';
   if (/english/.test(c)) return 'Verify the original English test result, passport exemption or agreement concession before final lodgement advice.';
-  if (/labour agreement|agreement terms/.test(c)) return 'Obtain and review the executed Labour Agreement and confirm occupation coverage, concessions, nomination limits and compliance settings.';
-  if (/sponsor|nomination|genuine|operational/.test(c)) return 'Prepare a nomination evidence brief linking the employer’s business need, organisation chart, role duties, payroll capacity and position availability.';
-  if (/occupation|anzsco/.test(c)) return 'Prepare a duties and ANZSCO matrix with references, qualifications, CV and licensing or registration material where relevant.';
-  if (/employment|work history/.test(c)) return 'Build a chronology supported by contracts, payslips, tax records, superannuation and visa/work-rights records.';
-  if (/salary|market/.test(c)) return 'Reconcile contract, payroll, market salary or agreement concession evidence before relying on the salary position.';
+  if (/labour agreement|agreement terms|concession/.test(c)) return 'Obtain and review the executed Labour Agreement and confirm occupation coverage, concessions, nomination limits and compliance settings.';
+  if (/sponsor|nomination|genuine|operational|employer/.test(c)) return 'Prepare a nomination evidence brief linking the employer’s business need, organisation chart, role duties, payroll capacity and position availability.';
+  if (/occupation|anzsco|duties/.test(c)) return 'Prepare a duties and occupation matrix with references, qualifications, CV and licensing or registration material where relevant.';
+  if (/employment terms|contract|conditions/.test(c)) return 'Review the employment contract against the nomination, Labour Agreement, NES, award/enterprise agreement, hours, duties and salary obligations.';
+  if (/employment|work history|continuity/.test(c)) return 'Build a verified chronology supported by contracts, payslips, tax records, superannuation and visa/work-rights records.';
+  if (/salary|amsr|market|guaranteed/.test(c)) return 'Reconcile guaranteed earnings, contract salary, payroll, AMSR/market evidence and any Labour Agreement concession before relying on the salary position.';
   if (/health/.test(c)) return 'Obtain relevant health disclosures and supporting medical material if any issue is indicated.';
-  if (/character|integrity|migration history|compliance/.test(c)) return 'Review police certificates, court records, prior decisions, Department correspondence and prior application records.';
-  return cleanText(item.recommendation || built.strategy || 'Verify original documents and resolve any inconsistency before final advice is issued.');
+  if (/pic 4020|integrity|document/.test(c)) return 'Review all forms, declarations and supporting documents for consistency, authenticity and any false or misleading information risk.';
+  if (/character|police|court/.test(c)) return 'Review police certificates, court records, prior decisions, Department correspondence and prior application records.';
+  if (/employer training|workplace law|compliance/.test(c)) return 'Request employer compliance records, Labour Agreement compliance material and workplace-law evidence before relying on the nomination.';
+  return cleanText(built.strategy || 'Verify original documents and resolve any inconsistency before final advice is issued.');
 }
 
 function v10OverallRisk(criteria) {
@@ -1514,8 +1552,8 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       const position = v11ProfessionalPosition(effectiveAdvice || {}, bundleForPdf || {}, criteria);
       const primary = v11PrimaryIssue(family, primaryIssue(bundleForPdf || {}, effectiveAdvice || {}), criteria);
       const overallRisk = v10OverallRisk(criteria);
-      const evidenceItems = collectEvidence(effectiveAdvice || {}, bundleForPdf || {});
-      const nextSteps = uniqueClean(ensureArray(effectiveAdvice.client_next_steps || []).concat(criteria.map(c => c.actionRequired))).slice(0, 8);
+      const evidenceItems = collectEvidence(effectiveAdvice || {}, bundleForPdf || {}).map(x => sanitizeSubclassStreamText(x, subclass, stream, '')).filter(x => x && !isBadGeneratedAction(x, stream));
+      const nextSteps = uniqueClean(ensureArray(effectiveAdvice.client_next_steps || []).concat(criteria.map(c => c.actionRequired)).map(x => sanitizeSubclassStreamText(x, subclass, stream, '')).filter(x => x && !isBadGeneratedAction(x, stream))).slice(0, 8);
 
       const doc = createDoc({
         Title: `Bircan Migration - ${title}`,

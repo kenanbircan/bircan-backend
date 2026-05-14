@@ -552,24 +552,26 @@ async function generateMigrationAdvice(assessment){
     sources:legalPack.sources.map(s=>({authority:s.authority,path:s.path,sha256:s.sha256,modified:s.modified,chars:s.chars}))
   };
   if(!legalSourcePack.sources || legalSourcePack.sources.length < 2) throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. Advice generation blocked.');
-  let validatedAdvice = validateAdvice(advice,subclass,matrix);
-// Permanent registry enforcement: normalise the GPT output to one visible finding per
-// mandatory/triggered registry criterion before validation and PDF rendering.
-const registryBacked = buildRegistryBackedFindings({
-  registry: criteriaRegistry,
-  adviceBundle: { advice: validatedAdvice, facts },
-  legalPack,
-  facts: { ...(facts.cleaned_answers || {}), subclass, stream: selectedStream || legalPack.selectedStream || '' }
-});
-validatedAdvice = {
-  ...validatedAdvice,
-  criterion_findings: registryBacked.findings,
-  grantCriteriaFindings: registryBacked.findings
-};
+  const validatedAdvice = validateAdvice(advice,subclass,matrix);
   const legalVersionLock = buildLegalVersionLock(legalSourcePack);
   const contradictionFlags = detectContradictions(facts, validatedAdvice, rules);
   const evidenceSufficiencyMatrix = buildEvidenceSufficiencyMatrix(validatedAdvice, matrix);
-  const criteriaCoverage = validateCriteriaCoverage(criteriaRegistry, { advice: validatedAdvice, facts }, legalSourcePack, { ...(facts.cleaned_answers || {}), subclass, stream: selectedStream || legalPack.selectedStream || '' });
+  const registryBacked = buildRegistryBackedFindings({
+    registry: criteriaRegistry,
+    adviceBundle: { advice: validatedAdvice },
+    legalPack: legalSourcePack,
+    facts
+  });
+  validatedAdvice.criterion_findings = registryBacked.findings;
+  validatedAdvice.grantCriteriaFindings = registryBacked.findings;
+  const criteriaCoverage = validateCriteriaCoverage(criteriaRegistry, {
+    advice: validatedAdvice,
+    grantCriteriaFindings: registryBacked.findings,
+    criteriaRegistryFindings: registryBacked.findings
+  }, legalSourcePack, facts);
+  criteriaCoverage.totalRegistryCriteria = registryBacked.audit.totalRegistryCriteria;
+  criteriaCoverage.mandatoryOrTriggeredRequired = registryBacked.audit.mandatoryOrTriggeredRequired;
+  criteriaCoverage.mandatoryOrTriggeredAssessed = registryBacked.audit.mandatoryOrTriggeredAssessed;
   const clientSafetyFilter = buildClientSafetyFilter(validatedAdvice, contradictionFlags);
   const universalLegalGraph = buildUniversalLegalGraph({facts,matrix,legalSourcePack,evidenceSufficiencyMatrix,contradictionFlags});
   const researchGradeStrategicLayer = buildResearchGradeStrategicLayer({facts,rules,matrix,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,universalLegalGraph});
@@ -579,7 +581,7 @@ validatedAdvice = {
   internalLegalAudit.knowledgebaseSnapshot = legalSourcePack.knowledgebaseSnapshot;
   internalLegalAudit.criteriaRegistry = { registryVersion: criteriaRegistry.registryVersion, subclass: criteriaRegistry.subclass, mandatoryCriteriaCount: criteriaRegistry.mandatoryCriteriaCount, sourceFile: criteriaRegistry.sourceFile };
   internalLegalAudit.criteriaCoverage = criteriaCoverage;
-  const bundle = {facts,rules,matrix,criteriaRegistry,criteriaCoverage,grantCriteriaFindings: registryBacked.findings, criteriaRegistryFindings: registryBacked.findings, legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
+  const bundle = {facts,rules,matrix,criteriaRegistry,criteriaCoverage,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
   assertFinalProductionControls(bundle);
   assertDynamicKnowledgebaseControls(bundle);
   assertResearchGradeControls(bundle);
