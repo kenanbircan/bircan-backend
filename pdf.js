@@ -1473,32 +1473,58 @@ function v12CompactAction(item) {
 
 function v12WriteCriteriaTable(doc, group, items) {
   writeSubheading(doc, group);
-  const x = PAGE.L;
-  const widths = [138, 158, 158, 52];
-  const headerH = 20;
-  ensureSpace(doc, headerH + 30);
-  let y = doc.y;
-  doc.roundedRect(x, y, PAGE.W, headerH, 8).fill('#eef3f8');
-  doc.font('Helvetica-Bold').fontSize(8.4).fillColor(BRAND.blue);
-  ['Criterion', 'Assessment position', 'Evidence required / action', 'Risk'].forEach((h, i) => {
-    doc.text(h, x + widths.slice(0, i).reduce((a,b)=>a+b,0) + 6, y + 6, { width: widths[i] - 10 });
-  });
-  doc.y = y + headerH + 4;
-  for (const item of items) {
-    const cells = [cleanText(item.criterion || 'Criterion'), v12CompactPosition(item), v12CompactAction(item), v12RiskLabel(item)];
-    doc.font('Helvetica').fontSize(8.25);
-    const heights = cells.map((c, i) => doc.heightOfString(c, { width: widths[i] - 10, lineGap: 1.2 }));
-    const rowH = Math.max(28, Math.max(...heights) + 12);
-    ensureSpace(doc, rowH + 8);
-    y = doc.y;
-    doc.roundedRect(x, y, PAGE.W, rowH, 7).strokeColor('#d8e0ea').lineWidth(0.6).stroke();
-    let cx = x;
-    cells.forEach((c, i) => {
-      doc.font(i === 0 || i === 3 ? 'Helvetica-Bold' : 'Helvetica').fontSize(i === 3 ? 8 : 8.25).fillColor(i === 3 && c === 'High' ? '#8a5b00' : BRAND.ink)
-        .text(c, cx + 6, y + 7, { width: widths[i] - 10, lineGap: 1.2 });
-      cx += widths[i];
-    });
-    doc.y = y + rowH + 5;
+
+  // Permanent layout rule: do not use a wide multi-column table in an A4 portrait PDF.
+  // Earlier versions drew the table using PAGE.W and fixed column widths, which caused
+  // the row boxes and risk column to run past the right margin. This renderer uses
+  // full-width stacked criterion cards. Every text element is wrapped inside PAGE.WIDTH.
+  const rows = ensureArray(items).filter(Boolean);
+  for (const item of rows) {
+    const criterion = cleanText(item.criterion || 'Grant criterion');
+    const position = v12CompactPosition(item);
+    const action = v12CompactAction(item);
+    const risk = v12RiskLabel(item);
+    const riskColor = risk === 'High' ? '#8a5b00' : risk === 'Medium' ? '#6d5a00' : BRAND.blue;
+
+    const pad = 12;
+    const innerW = PAGE.WIDTH - (pad * 2);
+    const riskW = 78;
+    const titleW = innerW - riskW - 10;
+
+    doc.font('Helvetica-Bold').fontSize(9.1);
+    const titleH = Math.max(20, doc.heightOfString(criterion, { width: titleW, lineGap: 1.6 }) + 4);
+    doc.font('Helvetica').fontSize(8.65);
+    const posH = doc.heightOfString(`Assessment position: ${position}`, { width: innerW, lineGap: 1.8 });
+    const actionH = doc.heightOfString(`Evidence required / action: ${action}`, { width: innerW, lineGap: 1.8 });
+    const rowH = Math.max(74, titleH + posH + actionH + 34);
+
+    ensureSpace(doc, rowH + 10);
+    const y = doc.y;
+
+    doc.roundedRect(PAGE.L, y, PAGE.WIDTH, rowH, 8)
+      .fillAndStroke('#ffffff', '#d8e0ea');
+
+    doc.font('Helvetica-Bold').fontSize(9.1).fillColor(BRAND.navy)
+      .text(criterion, PAGE.L + pad, y + 10, { width: titleW, lineGap: 1.6 });
+
+    doc.roundedRect(PAGE.R - riskW - 8, y + 9, riskW, 18, 9)
+      .fillAndStroke(risk === 'High' ? '#fff4e6' : risk === 'Medium' ? '#fff8e8' : '#edf8f2', '#d8e0ea');
+    doc.font('Helvetica-Bold').fontSize(7.8).fillColor(riskColor)
+      .text(risk.toUpperCase(), PAGE.R - riskW - 2, y + 14, { width: riskW - 12, align: 'center', lineBreak: false });
+
+    const textY = y + 12 + titleH;
+    doc.font('Helvetica-Bold').fontSize(8.35).fillColor(BRAND.muted)
+      .text('Assessment position', PAGE.L + pad, textY, { width: 120, lineBreak: false });
+    doc.font('Helvetica').fontSize(8.65).fillColor(BRAND.ink)
+      .text(position, PAGE.L + pad + 128, textY - 1, { width: innerW - 128, lineGap: 1.8 });
+
+    const actionY = textY + Math.max(18, posH + 8);
+    doc.font('Helvetica-Bold').fontSize(8.35).fillColor(BRAND.muted)
+      .text('Required action', PAGE.L + pad, actionY, { width: 120, lineBreak: false });
+    doc.font('Helvetica').fontSize(8.65).fillColor(BRAND.ink)
+      .text(action, PAGE.L + pad + 128, actionY - 1, { width: innerW - 128, lineGap: 1.8 });
+
+    doc.y = y + rowH + 7;
     doc.x = PAGE.L;
   }
 }
@@ -1530,7 +1556,7 @@ function v12BuildActionRows(criteria, evidenceItems) {
 
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   writeTitle(doc, 'Grant criteria assessment', { gold: true });
-  writePara(doc, 'I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The table below keeps the client letter readable while preserving the full registry-backed criteria count used for lodgement-readiness assessment.', { size: 9.8 });
+  writePara(doc, 'I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The assessment schedule below keeps the client letter readable while preserving the full registry-backed criteria count used for lodgement-readiness assessment. It uses a margin-safe wrapped layout so no criterion table can overflow the page.', { size: 9.8 });
 
   const list = ensureArray(criteria).filter(Boolean);
   const grouped = new Map();
