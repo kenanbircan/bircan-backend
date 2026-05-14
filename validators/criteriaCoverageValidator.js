@@ -46,16 +46,35 @@ function streamMatches(streamName, selected) {
 
 function flattenCriteria(registry, stream) {
   const streams = registry && registry.streams;
-  if (!streams || typeof streams !== 'object') return Array.isArray(registry?.criteria) ? registry.criteria : [];
+  if (!streams || typeof streams !== 'object') {
+    const arr = Array.isArray(registry?.criteria) ? registry.criteria : [];
+    return arr.map((c, index) => ({ ...c, id: c.id || norm(c.label || `criterion_${index + 1}`) }));
+  }
+
+  const merged = [];
+  const pushUnique = (items) => {
+    for (const c of Array.isArray(items) ? items : []) {
+      const id = c && (c.id || norm(c.label || ''));
+      if (!id) continue;
+      if (merged.some(x => norm(x.id || x.label) === norm(id))) continue;
+      merged.push({ ...c, id });
+    }
+  };
+
+  // Common criteria always apply unless expressly excluded.
+  pushUnique(streams.default && streams.default.criteria);
+
   let selected = [];
-  if (streams[stream] && Array.isArray(streams[stream].criteria)) selected = streams[stream].criteria;
+  if (stream && streams[stream] && Array.isArray(streams[stream].criteria)) selected = streams[stream].criteria;
   if (!selected.length) {
     for (const [name, cfg] of Object.entries(streams)) {
+      if (name === 'default') continue;
       if (streamMatches(name, stream) && Array.isArray(cfg.criteria)) { selected = cfg.criteria; break; }
     }
   }
-  if (!selected.length && streams.default && Array.isArray(streams.default.criteria)) selected = streams.default.criteria;
-  return selected.map((c, index) => ({ ...c, id: c.id || norm(c.label || `criterion_${index + 1}`) }));
+  pushUnique(selected);
+
+  return merged.map((c, index) => ({ ...c, id: c.id || norm(c.label || `criterion_${index + 1}`) }));
 }
 
 function getByPath(obj, dotted) {
