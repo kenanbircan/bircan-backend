@@ -26,7 +26,7 @@ function cleanText(value, fallback = '—') {
   let s = safeText(value, fallback);
   if (!s || s === '—') return s;
   s = String(s)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\uFEFF\uFFFE\uFFFF]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\uFEFF\uFFFC-\uFFFF]/g, '')
     .replace(/[\u200B-\u200D\u2060]/g, '')
     .replace(/([A-Za-z])-\s+([A-Za-z])/g, '$1$2')
     .replace(/\bGPT\b|\bAI\b|artificial intelligence|model output|prompt|quality flags?|delegate-simulator|decision engine|internal assessment systems?/gi, '')
@@ -1221,6 +1221,52 @@ function inferGrantCriteriaSection(name, subclass, stream) {
   return '7. Evidence sufficiency and lodgement readiness';
 }
 
+function v13PolishCriterionLabel(value) {
+  let s = cleanText(value, '').trim();
+  if (!s) return 'Criterion to be verified';
+  s = s
+    .replace(/^whether\s+/i, '')
+    .replace(/\bTime Of Application And Time Of Decision Requirements Tracked\b/gi, 'Time-of-application and time-of-decision requirements')
+    .replace(/\bPrimary Applicant Identity And Biographical Consistency\b/gi, 'Identity and biographical consistency')
+    .replace(/\bNominated Position Is Genuine\b/gi, 'Genuine nominated position')
+    .replace(/\bRegistration, Licensing Or Professional Membership If Required\b/gi, 'Registration, licensing or professional membership requirements')
+    .replace(/\bEnglish Evidence, Exemption Or Concession Verified\b/gi, 'English evidence, exemption or concession')
+    .replace(/\bPosition Is Full Time And Available For Required Period\b/gi, 'Full-time position available for the required period')
+    .replace(/\bPosition Not Created Primarily To Secure Migration Outcome\b/gi, 'Position not created primarily to secure a migration outcome')
+    .replace(/\bEmployment Contract Reflects Genuine Role And Lawful Conditions\b/gi, 'Employment contract and lawful employment conditions')
+    .replace(/\bAdverse Information About Employer Considered\b/gi, 'Adverse information about the employer')
+    .replace(/\bEmployer Compliance With Labour Agreement Obligations\b/gi, 'Employer compliance with Labour Agreement obligations')
+    .replace(/\bOccupation And Duties Align With Nominated Occupation\b/gi, 'Occupation and duties alignment')
+    .replace(/\bANZSCO Or Agreement Occupation Classification Defensible\b/gi, 'Defensible occupation classification')
+    .replace(/\bQualifications And Employment History Support The Role\b/gi, 'Qualifications and employment history supporting the role')
+    .replace(/\bApplicant Work Rights And Employment Compliance History\b/gi, 'Applicant work-rights and employment compliance history')
+    .replace(/\bSalary, AMSR And Guaranteed Earnings Evidence\b/gi, 'Salary, AMSR and guaranteed earnings evidence')
+    .replace(/\bEmployment Terms And Conditions Are Appropriate\b/gi, 'Employment terms and conditions')
+    .replace(/\bMarket Salary Or Concession Evidence Is Defensible\b/gi, 'Market salary or concession evidence')
+    .replace(/\bSkills, Qualifications And Experience For Nominated Role\b/gi, 'Skills, qualifications and experience for the nominated role')
+    .replace(/\bHealth Criteria \/ Public Interest Health Requirements\b/gi, 'Health and public-interest health requirements')
+    .replace(/\bCharacter Requirements Including Police\/Court History\b/gi, 'Character requirements and police/court history')
+    .replace(/\bPIC 4020 And Information\/Document Integrity\b/gi, 'PIC 4020 and information/document integrity')
+    .replace(/\bSpecial Return Criteria And Exclusion Issues\b/gi, 'Special Return Criteria and exclusion issues')
+    .replace(/\bPrior Refusals, Cancellations And Compliance History\b/gi, 'Prior refusals, cancellations and compliance history')
+    .replace(/\bConsistency Across Forms, Nomination, Contract And Evidence\b/gi, 'Consistency across forms, nomination, contract and evidence')
+    .replace(/\bTranslations, Certification And Document Quality\b/gi, 'Translations, certification and document quality')
+    .replace(/\bFamily Members And Secondary Applicants Identified\b/gi, 'Family members and secondary applicants')
+    .replace(/\bSecondary Applicant Health, Character And Dependency Criteria\b/gi, 'Secondary applicant health, character and dependency criteria')
+    .replace(/\bEvidence Sufficiency And Lodgement Readiness\b/gi, 'Evidence sufficiency and lodgement readiness')
+    .replace(/\bManual Migration Agent Review Before Lodgement Recommendation\b/gi, 'Final migration-agent review before lodgement recommendation')
+    .replace(/\bFull Time\b/g, 'full-time')
+    .replace(/\bAnd\b/g, 'and').replace(/\bOr\b/g, 'or').replace(/\bOf\b/g, 'of').replace(/\bAt\b/g, 'at').replace(/\bFor\b/g, 'for').replace(/\bThe\b/g, 'the');
+  s = s.charAt(0).toUpperCase() + s.slice(1);
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function v13IssuePhrase(value) {
+  const s = clientFriendlyIssueList(value).replace(/^whether\s+/i, '').trim();
+  if (!s) return 'the key legal and evidentiary issues identified in this assessment';
+  return s;
+}
+
 function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
   const raw = ensureArray(
     adviceBundle.grantCriteriaFindings ||
@@ -1236,7 +1282,7 @@ function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
   const out = [];
   for (const item of items) {
     const built = buildMatterFinding(item);
-    const name = niceCriterionName(built.criterion || item.criterion || item.heading || 'Criterion');
+    const name = v13PolishCriterionLabel(niceCriterionName(built.criterion || item.criterion || item.heading || 'Criterion'));
     const key = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -1519,13 +1565,15 @@ function v11PrimaryIssue(family, issue, criteria) {
 function v11ExecutiveAdvice(subclass, stream, family, position, primaryIssue) {
   const pathway = `Subclass ${cleanText(subclass)}${stream ? ' ' + cleanText(stream) : ''}`;
   const professionalPosition = normaliseProfessionalPositionText(position);
-  return `I have considered the information presently available for the proposed ${pathway} pathway. The pathway should not be treated as lodgement-ready merely because it has been identified. The professional question is whether the applicant-side evidence, nomination material, stream requirements, public interest criteria and Departmental records can support a safe lodgement strategy.
+  const issuePhrase = v13IssuePhrase(primaryIssue);
+  return `I have considered the information presently available for the proposed ${pathway} pathway. This advice is directed to lodgement-readiness. It does not assume that the pathway is safe merely because the subclass and stream have been identified.
 
-My present opinion is that ${professionalPosition.charAt(0).toLowerCase() + professionalPosition.slice(1)} ${clientFriendlyIssueSentence(primaryIssue, 'The principal issues requiring attention are')}
+My present opinion is that ${professionalPosition.charAt(0).toLowerCase() + professionalPosition.slice(1)} The principal issues requiring attention are ${issuePhrase}.
 
-This is a preliminary professional advice letter. It gives a clear evidence strategy and risk position, but it is not a final lodgement clearance. No application should be lodged until Bircan Migration has reviewed the original evidence, current law, Departmental records, conflict position and final instructions.`;
+For this matter, the practical question is whether the selected stream, nomination material, employer records, applicant evidence, public-interest criteria and Departmental history can be reconciled into one defensible evidence brief. A positive applicant profile will not overcome a weak nomination, an unsupported Labour Agreement position, inconsistent salary material, or an occupation mismatch.
+
+The correct professional next step is therefore controlled evidence verification. Bircan Migration should review the original documents, confirm the current legal settings, test the nomination and stream requirements, and then issue final lodgement advice before any application is filed.`;
 }
-
 function v11FrameworkText(subclass, stream, family) {
   const pathway = `Subclass ${cleanText(subclass)}${stream ? ' ' + cleanText(stream) : ''}`;
   const map = {
@@ -1754,14 +1802,14 @@ function v12WriteFullCriteriaAppendix(doc, criteria) {
   if (!list.length) return;
   addPage(doc, 'Appendix A — full grant criteria review');
   writeTitle(doc, 'Appendix A — full grant criteria review', { gold: true });
-  writePara(doc, 'This appendix records the full criteria review used for lodgement-readiness control. It preserves the complete registry-backed assessment while keeping the advice letter itself readable and client-facing.', { size: 9.4 });
+  writePara(doc, 'This appendix records the full criteria review used for lodgement-readiness control. It is included for transparency and professional file control, while the main advice above sets out the client-facing recommendation.', { size: 9.4 });
   const grouped = v12GroupCriteria(list);
   for (const [group, items] of grouped.entries()) v12WriteCriteriaTable(doc, group, items);
 }
 
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   writeTitle(doc, 'Lodgement-readiness assessment', { gold: true });
-  writePara(doc, 'I have assessed the matter as a lodgement-readiness question, not as a guarantee of grant. The immediate professional issue is whether the client instructions can be verified against the nomination, stream requirements, public-interest criteria and original evidence before any filing step is taken.', { size: 9.8 });
+  writePara(doc, 'I have assessed the matter as a lodgement-readiness question, not as a guarantee of grant. The immediate professional issue is whether the client instructions can be verified against the nomination, stream requirements, public-interest criteria and original evidence before any filing step is taken. The priority issues below are the matters I would resolve before giving any positive lodgement recommendation.', { size: 9.8 });
 
   const list = ensureArray(criteria).filter(Boolean);
   const total = list.length;
@@ -1783,7 +1831,7 @@ function v11FinalRecommendation(subclass, stream, family, position, primaryIssue
   const isLabourAgreement = /186/i.test(cleanText(subclass)) && /labou?r agreement/i.test(cleanText(stream));
   const materialMap = {
     employer: isLabourAgreement
-      ? 'the executed Labour Agreement, occupation coverage, nomination terms, any concession relied upon, salary/AMSR position, English position, skills/registration evidence, employer compliance records and applicant public-interest documents'
+      ? 'the executed Labour Agreement, occupation coverage, nomination terms, each concession relied upon, salary/AMSR position, English position, skills/registration evidence, employer compliance records and applicant public-interest documents'
       : 'the nomination material, employer records, occupation evidence, salary/concession evidence, English position and applicant eligibility documents',
     skilled: 'the invitation, EOI, points evidence, skills assessment, English evidence, nomination or sponsorship records and public interest documents',
     partner: 'the sponsor documents, relationship evidence, financial/social/household/commitment evidence, applicant history and public interest documents',
@@ -1795,15 +1843,14 @@ function v11FinalRecommendation(subclass, stream, family, position, primaryIssue
     temporary: 'the stream/activity evidence, sponsorship or support material, financial capacity, temporary-stay evidence and public interest documents'
   };
   const materials = materialMap[family] || 'the pathway-specific evidence, legal criteria and public interest documents';
-  const issueText = clientFriendlyIssueList(primaryIssue);
+  const issueText = v13IssuePhrase(primaryIssue);
   const text = `Based on the information presently available, I do not recommend immediate lodgement of the ${pathway} matter.
 
-The matter should move to evidence verification and lodgement-readiness review. The key issue is ${issueText}. Before a final lodgement recommendation is issued, Bircan Migration should review ${materials}, together with current legal settings and Departmental records.
+The matter should move to evidence verification and lodgement-readiness review. The key issues are ${issueText}. Before a final lodgement recommendation is issued, Bircan Migration should review ${materials}, together with current legal settings and Departmental records.
 
-If the evidence remains consistent after review, the matter may progress to final preparation. If the evidence identifies a material weakness, the strategy should be revised before filing.`;
+If the evidence remains consistent after review, the matter may progress to final preparation. If the evidence identifies a material weakness, the strategy should be revised before filing. This is the commercially and professionally appropriate next step because it converts the preliminary assessment into a controlled evidence review before any client is exposed to avoidable lodgement risk.`;
   return fixGeneratedActionGrammar(text).replace(/\n\s+/g, '\n\n');
 }
-
 
 function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
   if (!adviceBundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');

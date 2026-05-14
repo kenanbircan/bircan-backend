@@ -481,7 +481,11 @@ async function callOpenAIForAdvice(facts, rules, legalPack, criteriaRegistry){
     'Do not use placeholders, sample labels, known issue text, AI disclaimers, or broad risk labels without reasons.',
     'Do not dump raw questionnaire answers. Convert them into findings.',
     'Write in firm Registered Migration Agent style: precise, restrained, evidence-linked, and commercially usable.',
-    'The PDF is preliminary advice subject to document review and current law/policy verification.'
+    'The PDF is preliminary advice subject to document review and current law/policy verification.',
+    'Write the main advice as a senior migration agent letter, not as a criteria registry export. The main letter must contain a natural professional opinion, pathway analysis, risk analysis, evidence strategy and next professional step before any appendix-style material.',
+    'Do not start prose sentences with action labels such as Verify, Confirm, Reconcile or Obtain. Convert them into natural legal advice, for example: The key issues are whether the agreement is current, whether the occupation is covered, and whether the nomination can be reconciled with the agreement terms.',
+    'Use client-facing criterion labels. Avoid title-case machine labels such as Time Of Application And Time Of Decision Requirements Tracked. Use natural headings such as time-of-application and time-of-decision requirements.',
+    'Avoid hidden control characters, object replacement characters and registry-backed wording in client-facing text.'
   ].join('\n');
   const requiredReasoning=[
     'For each mandatory criterion in the supplied criteria registry, create one criterion_findings item. Use the exact registry id in criterion_id and the registry label in criterion.',
@@ -491,7 +495,9 @@ async function callOpenAIForAdvice(facts, rules, legalPack, criteriaRegistry){
     'Each recommendation must give the client an action, not generic advice.',
     'Quality flags must identify weaknesses in facts/evidence for internal review only; do not include internal system labels.',
     'Each finding should be fact-linked: refer to the actual questionnaire answer where available, and say when the answer is absent or unverified.',
-    'Use client-safe wording: potentially blocking issue, not hard-fail; may result in refusal if not addressed, not will be refused unless legally certain.'
+    'Use client-safe wording: potentially blocking issue, not hard-fail; may result in refusal if not addressed, not will be refused unless legally certain.',
+    'For executive_summary, recommendation, sections and client_next_steps, write complete professional sentences. Do not output bare labels or command-style fragments.',
+    'If the selected stream is Labour Agreement, expressly address agreement currency, employer coverage, occupation coverage, nomination terms, concessions, salary/AMSR, English/age/skills concessions, and employer compliance as separate professional issues.'
   ].join('\n- ');
   const user=`Prepare structured preliminary advice for subclass ${subclass}.
 
