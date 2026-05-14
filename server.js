@@ -31,7 +31,7 @@ const { query, tx } = require('./db');
 const { buildAssessmentPdfBuffer, buildAppealAdvicePdfBuffer, sha256 } = require('./pdf');
 const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine');
 const { listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
-const { loadCriteriaRegistry, buildRegistryBackedFindings, validateCriteriaCoverage } = require('./validators/criteriaCoverageValidator');
+const { loadCriteriaRegistry, buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
@@ -6015,7 +6015,7 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
 
   return tx(async (client) => {
     let rows = (await client.query(
-      `SELECT * FROM assessments WHERE id=$1 ${accountEmail ? 'AND lower(client_email)=lower($2)' : ''} FOR UPDATE`,
+      `SELECT * FROM assessments WHERE id=$1 ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} FOR UPDATE`,
       accountEmail ? [requestedId, accountEmail] : [requestedId]
     )).rows;
 
@@ -6025,7 +6025,7 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     if (!rows[0] && /^sub_\d+_[a-z0-9]+$/i.test(requestedId)) {
       const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\_%';
       rows = (await client.query(
-        `SELECT * FROM assessments WHERE id LIKE $1 ESCAPE '\\' ${accountEmail ? 'AND lower(client_email)=lower($2)' : ''} ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        `SELECT * FROM assessments WHERE id LIKE $1 ESCAPE '\\' ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
         accountEmail ? [likePattern, accountEmail] : [likePattern]
       )).rows;
     }
@@ -6062,10 +6062,11 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       await client.query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
       assessment.pdf_bytes = null;
     }
-    // Permanent grant-criteria enforcement:
-    // Paid/released matters must no longer bypass the knowledgebase, GPT advice bundle,
-    // criteria registry and coverage validator. A PDF is issued only after the selected
-    // subclass registry has been converted into criterion findings and validated.
+    // Permanent grant-criteria enforcement fix:
+    // paid/released matters must not use the former fast/preliminary PDF shortcut.
+    // Every issued visa assessment PDF must pass through generateMigrationAdvice(),
+    // the knowledgebase legal pack, the criteria registry, and the registry-backed
+    // grant criteria coverage audit before pdf_bytes are saved.
 
     if (!payloadLooksUsable(assessment.form_payload)) {
       const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
@@ -6109,38 +6110,30 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         throw new Error('Internal legal audit missing. PDF generation blocked.');
       }
 
-      const registry = loadCriteriaRegistry(adviceBundle.legalSourcePack.subclass || assessmentForAdvice.visa_type || assessment.visa_type);
-      const coverageResult = buildRegistryBackedFindings({
+      // Registry coverage enforcement: build one visible finding per mandatory or
+      // triggered registry criterion. This is the missing bridge between the 98%+
+      // criteriaRegistry JSON files and the actual client PDF.
+      const registrySubclass = String(adviceBundle.subclass || adviceBundle.advice?.subclass || assessmentForAdvice.visa_type || assessment.visa_type || '').replace(/[^0-9]/g, '');
+      const registry = loadCriteriaRegistry(registrySubclass);
+      const registryResult = buildRegistryBackedFindings({
         registry,
         adviceBundle,
         legalPack: adviceBundle.legalSourcePack,
-        assessment: assessmentForAdvice,
-        facts: {
-          subclass: adviceBundle.legalSourcePack.subclass || assessmentForAdvice.visa_type || assessment.visa_type,
-          stream: adviceBundle.selectedStream || adviceBundle.stream || adviceBundle.advice?.stream || assessmentForAdvice.stream || assessmentForAdvice.selected_stream || assessmentForAdvice.visa_stream || ''
-        }
+        assessment: assessmentForAdvice
       });
-      if (!coverageResult.audit.ok || coverageResult.audit.registryCoverageRate < 100) {
-        const err = new Error('Grant criteria coverage failed. PDF generation blocked before release.');
-        err.code = 'GRANT_CRITERIA_COVERAGE_FAILED';
-        err.audit = coverageResult.audit;
-        throw err;
+      if (!registryResult.audit.ok || registryResult.audit.registryCoverageRate < 100 || registryResult.audit.unsupportedSourceCriteria.length) {
+        const detail = JSON.stringify(registryResult.audit);
+        throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
       }
-      adviceBundle.grantCriteriaFindings = coverageResult.findings;
-      adviceBundle.grantCriteriaCoverageAudit = coverageResult.audit;
-      adviceBundle.advice = {
-        ...(adviceBundle.advice || {}),
-        criterion_findings: coverageResult.findings,
-        grantCriteriaFindings: coverageResult.findings
-      };
-      adviceBundle.internalLegalAudit = {
-        ...(adviceBundle.internalLegalAudit || {}),
-        grantCriteriaCoverage: coverageResult.audit
-      };
-      validateCriteriaCoverage(registry, adviceBundle, adviceBundle.legalSourcePack, {
-        subclass: adviceBundle.legalSourcePack.subclass || assessmentForAdvice.visa_type || assessment.visa_type,
-        stream: coverageResult.audit.stream
-      });
+      adviceBundle.grantCriteriaFindings = registryResult.findings;
+      adviceBundle.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
+      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
+      adviceBundle.advice = adviceBundle.advice || {};
+      adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
+      adviceBundle.advice.criterion_findings = registryResult.findings;
+      adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
@@ -6162,7 +6155,7 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       throw err;
     }
 
-    const filename = `Bircan-${assessment.visa_type}-${assessment.id}.pdf`;
+    const filename = `Bircan-${assessment.visa_type}-${assessment.id}-grant-criteria-advice.pdf`;
     const hash = sha256(pdf);
     const { rows: updatedRows } = await client.query(
       `UPDATE assessments
@@ -6949,7 +6942,7 @@ app.get('/api/appeal-assessments/:id/final-pdf', requireAuth, asyncRoute(async (
 app.get('/api/assessment/:id/payload-status', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, visa_type, status, payment_status, form_payload, pdf_generated_at, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
-     FROM assessments WHERE id=$1 AND lower(client_email)=lower($2)`,
+     FROM assessments WHERE id=$1 AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))`,
     [req.params.id, req.client.email]
   );
   if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
@@ -6960,8 +6953,8 @@ app.get('/api/assessment/:id/payload-status', requireAuth, asyncRoute(async (req
 
 app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows } = await query(
-    `SELECT id, visa_type, selected_plan, active_plan, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status, payment_status, pdf_generated_at, pdf_filename, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
-     FROM assessments WHERE id=$1 AND lower(client_email)=lower($2)`,
+    `SELECT id, visa_type, selected_plan, active_plan, release_at, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status, payment_status, pdf_generated_at, pdf_filename, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
+     FROM assessments WHERE id=$1 AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))`,
     [req.params.id, req.client.email]
   );
   if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
@@ -6987,19 +6980,28 @@ app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (
 
 async function resolveAssessmentForAccount(rawId, accountEmail) {
   const requestedId = String(rawId || '').trim();
+  const email = normaliseEmail(accountEmail);
   let rows = (await query(
-    `SELECT * FROM assessments WHERE id=$1 AND lower(client_email)=lower($2)`,
-    [requestedId, accountEmail]
+    `SELECT * FROM assessments
+     WHERE id=$1
+       AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))
+     LIMIT 1`,
+    [requestedId, email]
   )).rows;
   if (!rows[0] && /^sub_\d+_[a-z0-9]+$/i.test(requestedId)) {
     const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\_%';
     rows = (await query(
-      `SELECT * FROM assessments WHERE id LIKE $1 ESCAPE '\\' AND lower(client_email)=lower($2) ORDER BY created_at DESC LIMIT 1`,
-      [likePattern, accountEmail]
+      `SELECT * FROM assessments
+       WHERE id LIKE $1 ESCAPE '\\'
+         AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [likePattern, email]
     )).rows;
   }
   return rows[0] || null;
 }
+
 
 async function sendAssessmentPdf(req, res, rawId) {
   let assessment = await resolveAssessmentForAccount(rawId, req.client.email);
@@ -7016,9 +7018,11 @@ async function sendAssessmentPdf(req, res, rawId) {
       timerText: formatDurationSeconds(seconds)
     });
   }
-  if (!hasIssuedPdfBytes(assessment.pdf_bytes) && assessment.payment_status === 'paid') {
+  const hasPdf = hasIssuedPdfBytes(assessment.pdf_bytes);
+  const needsGrantCriteriaRegeneration = hasPdf && !/grant-criteria/i.test(String(assessment.pdf_filename || ''));
+  if ((!hasPdf || needsGrantCriteriaRegeneration) && assessment.payment_status === 'paid') {
     try {
-      await generateAssessmentPdfNow(assessment.id, req.client.email);
+      await generateAssessmentPdfNow(assessment.id, req.client.email, { force: needsGrantCriteriaRegeneration });
       assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
     } catch (err) {
       console.error('Visa PDF generation on open failed:', err.message);
