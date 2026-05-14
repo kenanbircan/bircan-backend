@@ -46,35 +46,26 @@ function streamMatches(streamName, selected) {
 
 function flattenCriteria(registry, stream) {
   const streams = registry && registry.streams;
-  if (!streams || typeof streams !== 'object') {
-    const arr = Array.isArray(registry?.criteria) ? registry.criteria : [];
-    return arr.map((c, index) => ({ ...c, id: c.id || norm(c.label || `criterion_${index + 1}`) }));
-  }
-
+  if (!streams || typeof streams !== 'object') return Array.isArray(registry?.criteria) ? registry.criteria : [];
   const merged = [];
-  const pushUnique = (items) => {
-    for (const c of Array.isArray(items) ? items : []) {
-      const id = c && (c.id || norm(c.label || ''));
-      if (!id) continue;
-      if (merged.some(x => norm(x.id || x.label) === norm(id))) continue;
+  const seen = new Set();
+  function pushCriteria(list) {
+    for (const c of Array.isArray(list) ? list : []) {
+      const id = c.id || norm(c.label || `criterion_${merged.length + 1}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
       merged.push({ ...c, id });
     }
-  };
-
-  // Common criteria always apply unless expressly excluded.
-  pushUnique(streams.default && streams.default.criteria);
-
-  let selected = [];
-  if (stream && streams[stream] && Array.isArray(streams[stream].criteria)) selected = streams[stream].criteria;
-  if (!selected.length) {
-    for (const [name, cfg] of Object.entries(streams)) {
-      if (name === 'default') continue;
-      if (streamMatches(name, stream) && Array.isArray(cfg.criteria)) { selected = cfg.criteria; break; }
-    }
   }
-  pushUnique(selected);
-
-  return merged.map((c, index) => ({ ...c, id: c.id || norm(c.label || `criterion_${index + 1}`) }));
+  // Always include common/default criteria first. A stream never replaces common grant criteria.
+  if (streams.default && Array.isArray(streams.default.criteria)) pushCriteria(streams.default.criteria);
+  if (stream && streams[stream] && Array.isArray(streams[stream].criteria)) pushCriteria(streams[stream].criteria);
+  for (const [name, cfg] of Object.entries(streams)) {
+    if (name === 'default') continue;
+    if (streamMatches(name, stream) && Array.isArray(cfg.criteria)) pushCriteria(cfg.criteria);
+  }
+  if (!merged.length && Array.isArray(registry?.criteria)) pushCriteria(registry.criteria);
+  return merged;
 }
 
 function getByPath(obj, dotted) {
@@ -191,13 +182,64 @@ function answerSupportForCriterion(criterion, facts) {
   return matched;
 }
 
+function selectedStreamFromFacts(facts) {
+  const text = JSON.stringify(facts || {}).toLowerCase();
+  if (/labour agreement|labor agreement|dama/.test(text)) return 'Labour Agreement';
+  if (/temporary residence transition|\btrt\b/.test(text)) return 'Temporary Residence Transition';
+  if (/direct entry/.test(text)) return 'Direct Entry';
+  return clean(facts && facts.stream) || '';
+}
+
+function cleanContaminatedText(text, facts, criterion) {
+  let s = clean(text);
+  const stream = selectedStreamFromFacts(facts);
+  const idLabel = `${criterion?.id || ''} ${criterion?.label || ''}`.toLowerCase();
+  if (/labour agreement/i.test(stream)) {
+    s = s
+      .replace(/confirm applicant'?s employment history and ensure Direct Entry stream is appropriate before lodgement\.?/gi, 'Confirm that the nominated occupation, concessions and employment terms are permitted under the applicable Labour Agreement before lodgement.')
+      .replace(/Direct Entry stream is appropriate/gi, 'Labour Agreement stream is properly supported')
+      .replace(/Direct Entry/gi, 'another 186 stream')
+      .replace(/remains offshore at time of application and grant/gi, 'has lawful status and no visa-condition issue affecting lodgement')
+      .replace(/remain offshore at time of application and grant/gi, 'maintain lawful status and resolve any visa-condition issue before lodgement')
+      .replace(/offshore at time of application and grant/gi, 'lawfully positioned for lodgement and decision')
+      .replace(/partner relationship|protection claim|student CoE/gi, 'pathway-specific evidence');
+  }
+  if (/schedule[_ ]?1|valid application/.test(idLabel)) {
+    s = s.replace(/english evidence or exemption[^.]*\.?/gi, 'form, charge, nomination linkage, lodgement method and validity evidence are confirmed.');
+  }
+  if (/employer training|workplace law|employer compliance/.test(idLabel)) {
+    s = 'Request employer compliance records, sponsorship/Labour Agreement compliance material and workplace-law evidence before relying on the nomination.';
+  }
+  if (/pic4020|integrity/.test(idLabel)) {
+    s = 'Review all forms, declarations and supporting documents for consistency, authenticity and any false or misleading information risk.';
+  }
+  if (/salary|amsr|guaranteed/.test(idLabel)) {
+    s = 'Reconcile guaranteed earnings, contract salary, payroll, AMSR/market evidence and any Labour Agreement concession before relying on the salary position.';
+  }
+  if (/employment_terms_conditions/.test(idLabel)) {
+    s = 'Review the employment contract against the nomination, Labour Agreement, NES, award/enterprise agreement, hours, duties and salary obligations.';
+  }
+  s = s.replace(/lodgement is not recommended the application/gi, 'Do not lodge the application');
+  s = s.replace(/lodgement is not recommended until/gi, 'Do not lodge until');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function criterionRequiredAction(criterion, existing, facts) {
+  const preferred = criterion.actionRequired || criterion.requiredAction || criterion.clientAction || criterion.recommendation;
+  if (preferred) return cleanContaminatedText(preferred, facts, criterion);
+  const existingText = existing?.actionRequired || existing?.recommendation || existing?.missingEvidence || existing?.evidence_gap || existing?.evidenceGap || '';
+  if (existingText) return cleanContaminatedText(existingText, facts, criterion);
+  return cleanContaminatedText(`Verify ${criterion.label || criterion.id} against original documents and current legal settings before lodgement.`, facts, criterion);
+}
+
 function buildFindingFromCriterion(criterion, existing, facts) {
   const matchedFacts = answerSupportForCriterion(criterion, facts);
   const label = clean(criterion.label || criterion.id || 'Grant criterion');
-  const presentAssessment = existing ? clean(existing.finding || existing.position || existing.outcome || existing.assessment || existing.professionalFinding || '') : '';
+  const presentAssessment = existing ? cleanContaminatedText(existing.finding || existing.position || existing.outcome || existing.assessment || existing.professionalFinding || '', facts, criterion) : '';
   const finding = presentAssessment || (matchedFacts.length
     ? `This criterion has been assessed against the questionnaire answers. The presently available instructions indicate potentially relevant facts, but original evidence must be verified before lodgement-ready advice is issued.`
     : `This criterion has been assessed as part of the selected pathway. The questionnaire does not, by itself, finally prove this requirement. It must be verified against original evidence before lodgement-ready advice is issued.`);
+  const recommendation = criterionRequiredAction(criterion, existing, facts);
   return {
     criterion_id: criterion.id,
     registryCriterionId: criterion.id,
@@ -212,9 +254,10 @@ function buildFindingFromCriterion(criterion, existing, facts) {
     evidenceRequired: criterion.evidenceRequired || [],
     riskFlags: criterion.riskFlags || [],
     finding,
-    legal_consequence: existing?.legal_consequence || existing?.legalConsequence || 'If this requirement is not met or cannot be evidenced, lodgement should be delayed or the strategy revised before filing.',
-    recommendation: existing?.recommendation || existing?.actionRequired || `Verify ${label.toLowerCase()} against original documents and current legal settings before lodgement.`,
-    evidence_gap: existing?.evidence_gap || existing?.evidenceGap || (criterion.evidenceRequired || []).slice(0, 5).join('; '),
+    legal_consequence: cleanContaminatedText(existing?.legal_consequence || existing?.legalConsequence || 'If this requirement is not met or cannot be evidenced, lodgement should be delayed or the strategy revised before filing.', facts, criterion),
+    recommendation,
+    actionRequired: recommendation,
+    evidence_gap: cleanContaminatedText(existing?.evidence_gap || existing?.evidenceGap || (criterion.evidenceRequired || []).slice(0, 5).join('; '), facts, criterion),
     risk_level: existing?.risk_level || existing?.riskLevel || 'Verification required',
     sourceSupported: true
   };
