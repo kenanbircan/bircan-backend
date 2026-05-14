@@ -1,8 +1,8 @@
 {
   "subclass": "186",
   "title": "Employer Nomination Scheme",
-  "version": "2026-05-14",
-  "coverageTarget": "98plus_grant_criteria",
+  "version": "2026-05-14-v5-stream-triggered",
+  "coverageTarget": "98plus_grant_criteria_stream_triggered",
   "requiredSources": [
     "ACT",
     "REGULATIONS",
@@ -13,1092 +13,1241 @@
     "default": {
       "criteria": [
         {
-          "id": "correct_subclass_stream",
-          "label": "Correct subclass, stream and pathway selected",
+          "id": "186_valid_application_schedule1",
+          "label": "Valid application requirements under Schedule 1",
+          "group": "1. Valid application and pathway",
+          "pdfSection": "1. Valid application and pathway",
           "mandatory": true,
-          "timing": "pre_lodgement_review",
-          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / PAM",
-          "sourceSupport": {
-            "required": [
-              "ACT",
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "correct subclass, stream and pathway selected",
+            "Valid application requirements under Schedule 1",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "completed application form",
+            "visa application charge",
+            "place/manner of application",
+            "required linked nomination details"
+          ]
         },
         {
-          "id": "valid_application_schedule1",
-          "label": "Schedule 1 valid application requirements",
+          "id": "186_correct_subclass_stream",
+          "label": "Correct Subclass 186 stream selected",
+          "group": "1. Valid application and pathway",
+          "pdfSection": "1. Valid application and pathway",
           "mandatory": true,
-          "timing": "time_of_application",
-          "sourceCategory": "Schedule 1 / Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "schedule 1 valid application requirements",
-            "client answer consistency",
-            "relevant dates/status"
+            "selected subclass",
+            "selected stream",
+            "basis for ENS pathway"
           ],
           "evidenceRequired": [
             "primary evidence",
             "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "original documents for verification"
+          ]
         },
         {
-          "id": "identity",
-          "label": "Identity, name and document consistency",
+          "id": "186_primary_applicant_identity",
+          "label": "Primary applicant identity and biographical consistency",
+          "group": "1. Valid application and pathway",
+          "pdfSection": "1. Valid application and pathway",
           "mandatory": true,
-          "timing": "pre_lodgement_review",
-          "sourceCategory": "Act / Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "ACT",
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "identity, name and document consistency",
+            "Primary applicant identity and biographical consistency",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "passport",
+            "birth certificate",
+            "name change documents if any"
+          ]
         },
         {
-          "id": "current_location_status",
-          "label": "Current location, immigration status and jurisdiction",
+          "id": "186_current_location_status",
+          "label": "Current location, lawful status and bridging position",
+          "group": "1. Valid application and pathway",
+          "pdfSection": "1. Valid application and pathway",
           "mandatory": true,
-          "timing": "time_of_application",
-          "sourceCategory": "Act / Regulations / Schedule 1 / PAM",
-          "sourceSupport": {
-            "required": [
-              "ACT",
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "current location, immigration status and jurisdiction",
+            "Current location, lawful status and bridging position",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "current visa grant notice",
+            "VEVO",
+            "bridging visa records if any"
+          ]
         },
         {
-          "id": "visa_history_bars",
-          "label": "Visa history, refusals, cancellations and statutory bars",
+          "id": "186_nomination_exists",
+          "label": "Employer nomination exists or will be lodged for the applicant",
+          "group": "2. Nomination and employer requirements",
+          "pdfSection": "2. Nomination and employer requirements",
           "mandatory": true,
-          "timing": "pre_lodgement_review",
-          "sourceCategory": "Act / Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "ACT",
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "visa history, refusals, cancellations and statutory bars",
+            "Employer nomination exists or will be lodged for the applicant",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "nomination reference",
+            "employer instructions",
+            "nomination draft/approval"
+          ]
         },
         {
-          "id": "health_pic",
-          "label": "Health requirements / public interest criteria",
+          "id": "186_nomination_approval_validity",
+          "label": "Nomination approval and validity at time of decision",
+          "group": "2. Nomination and employer requirements",
+          "pdfSection": "2. Nomination and employer requirements",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "PIC / Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "health requirements / public interest criteria",
+            "Nomination approval and validity at time of decision",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "nomination approval",
+            "nomination conditions",
+            "decision date/timing evidence"
+          ]
         },
         {
-          "id": "character_pic",
-          "label": "Character, security and integrity requirements",
+          "id": "186_employer_lawful_operation",
+          "label": "Nominating employer lawfully and actively operates",
+          "group": "2. Nomination and employer requirements",
+          "pdfSection": "2. Nomination and employer requirements",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Act s501 / PIC / PAM",
-          "sourceSupport": {
-            "required": [
-              "ACT",
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "character, security and integrity requirements",
+            "Nominating employer lawfully and actively operates",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "ABN/ASIC records",
+            "business financials",
+            "organisation chart",
+            "operations evidence"
+          ]
         },
         {
-          "id": "pic4020_integrity",
-          "label": "False, misleading information and bogus document risk",
+          "id": "186_no_adverse_employer_information",
+          "label": "Adverse information about employer considered",
+          "group": "2. Nomination and employer requirements",
+          "pdfSection": "2. Nomination and employer requirements",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "PIC 4020 / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "false, misleading information and bogus document risk",
+            "Adverse information about employer considered",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "sponsor compliance records",
+            "ATO/super records",
+            "workplace compliance evidence"
+          ]
         },
         {
-          "id": "special_return_criteria",
-          "label": "Special Return Criteria if applicable",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "SRC / Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "id": "186_genuine_position",
+          "label": "Nominated position is genuine",
+          "group": "3. Position, occupation and employment requirements",
+          "pdfSection": "3. Position, occupation and employment requirements",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "special return criteria if applicable",
+            "Nominated position is genuine",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "position description",
+            "organisation chart",
+            "business need evidence",
+            "recruitment/workforce evidence"
+          ]
         },
         {
-          "id": "secondary_applicants",
-          "label": "Secondary applicants / members of family unit if included",
-          "mandatory": false,
-          "timing": "secondary_applicant_review",
-          "sourceCategory": "Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "id": "186_full_time_ongoing_position",
+          "label": "Position is full-time and available for required period",
+          "group": "3. Position, occupation and employment requirements",
+          "pdfSection": "3. Position, occupation and employment requirements",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "secondary applicants / members of family unit if included",
+            "Position is full-time and available for required period",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "employment contract",
+            "roster/hours evidence",
+            "business need evidence"
+          ]
         },
         {
-          "id": "evidence_sufficiency",
+          "id": "186_occupation_duties_alignment",
+          "label": "Occupation and duties align with nominated occupation",
+          "group": "3. Position, occupation and employment requirements",
+          "pdfSection": "3. Position, occupation and employment requirements",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Occupation and duties align with nominated occupation",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "ANZSCO/duties mapping",
+            "position description",
+            "employment references"
+          ]
+        },
+        {
+          "id": "186_terms_conditions_no_less_favourable",
+          "label": "Employment terms and conditions are appropriate",
+          "group": "4. Salary, AMSR and employment conditions",
+          "pdfSection": "4. Salary, AMSR and employment conditions",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Employment terms and conditions are appropriate",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "employment contract",
+            "enterprise agreement/award if applicable",
+            "salary package"
+          ]
+        },
+        {
+          "id": "186_salary_amsr",
+          "label": "Salary, AMSR and guaranteed earnings evidence",
+          "group": "4. Salary, AMSR and employment conditions",
+          "pdfSection": "4. Salary, AMSR and employment conditions",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Salary, AMSR and guaranteed earnings evidence",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "AMSR evidence",
+            "salary benchmarking",
+            "contract",
+            "payslips if employed"
+          ]
+        },
+        {
+          "id": "186_skills_qualifications",
+          "label": "Skills, qualifications and experience for the nominated role",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Skills, qualifications and experience for the nominated role",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "qualifications",
+            "CV",
+            "employment references",
+            "skills evidence"
+          ]
+        },
+        {
+          "id": "186_registration_licensing",
+          "label": "Registration, licensing or professional membership if required",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Registration, licensing or professional membership if required",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "registration certificate",
+            "licence",
+            "AHPRA or industry registration if applicable"
+          ]
+        },
+        {
+          "id": "186_english_requirement",
+          "label": "English requirement or valid exemption/concession",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "English requirement or valid exemption/concession",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "English test",
+            "passport exemption evidence",
+            "concession evidence if applicable"
+          ]
+        },
+        {
+          "id": "186_age_requirement",
+          "label": "Age requirement or lawful exemption/concession",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Age requirement or lawful exemption/concession",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "passport",
+            "birth certificate",
+            "age exemption/concession evidence if applicable"
+          ]
+        },
+        {
+          "id": "186_health_pic",
+          "label": "Health criteria / Public Interest health requirements",
+          "group": "6. Public interest, integrity and migration history",
+          "pdfSection": "6. Public interest, integrity and migration history",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Health criteria / Public Interest health requirements",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "health examinations",
+            "medical history disclosure"
+          ]
+        },
+        {
+          "id": "186_character_s501",
+          "label": "Character requirements including police/court history",
+          "group": "6. Public interest, integrity and migration history",
+          "pdfSection": "6. Public interest, integrity and migration history",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Character requirements including police/court history",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "AFP check",
+            "overseas police certificates",
+            "court records if any"
+          ]
+        },
+        {
+          "id": "186_pic4020_integrity",
+          "label": "PIC 4020 and information/document integrity",
+          "group": "6. Public interest, integrity and migration history",
+          "pdfSection": "6. Public interest, integrity and migration history",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "PIC 4020 and information/document integrity",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "consistent forms",
+            "identity documents",
+            "explanation of discrepancies if any"
+          ]
+        },
+        {
+          "id": "186_special_return_criteria",
+          "label": "Special Return Criteria and exclusion issues",
+          "group": "6. Public interest, integrity and migration history",
+          "pdfSection": "6. Public interest, integrity and migration history",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Special Return Criteria and exclusion issues",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "visa history",
+            "departure/removal records if any"
+          ]
+        },
+        {
+          "id": "186_prior_refusal_cancellation",
+          "label": "Prior refusals, cancellations and compliance history",
+          "group": "6. Public interest, integrity and migration history",
+          "pdfSection": "6. Public interest, integrity and migration history",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Prior refusals, cancellations and compliance history",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "Department correspondence",
+            "AAT/court records",
+            "visa history"
+          ]
+        },
+        {
+          "id": "186_family_members",
+          "label": "Family members and secondary applicants identified",
+          "group": "7. Family members and secondary applicants",
+          "pdfSection": "7. Family members and secondary applicants",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Family members and secondary applicants identified",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "family composition",
+            "passports",
+            "relationship documents"
+          ]
+        },
+        {
+          "id": "186_secondary_health_character",
+          "label": "Secondary applicant health, character and dependency criteria",
+          "group": "7. Family members and secondary applicants",
+          "pdfSection": "7. Family members and secondary applicants",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
+          "factsRequired": [
+            "Secondary applicant health, character and dependency criteria",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "police checks",
+            "health checks",
+            "dependency evidence"
+          ]
+        },
+        {
+          "id": "186_evidence_sufficiency",
           "label": "Evidence sufficiency and lodgement readiness",
+          "group": "8. Evidence sufficiency and lodgement readiness",
+          "pdfSection": "8. Evidence sufficiency and lodgement readiness",
           "mandatory": true,
-          "timing": "pre_lodgement_review",
-          "sourceCategory": "PAM / internal evidence matrix",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "evidence sufficiency and lodgement readiness",
+            "Evidence sufficiency and lodgement readiness",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "complete evidence index",
+            "certified translations",
+            "document consistency review"
+          ]
         },
         {
-          "id": "risk_classification",
-          "label": "Overall risk classification and professional recommendation",
+          "id": "186_nomination_training_compliance",
+          "label": "Employer training/compliance and workplace law risk review",
+          "group": "2. Nomination and employer requirements",
+          "pdfSection": "2. Nomination and employer requirements",
           "mandatory": true,
-          "timing": "final_review",
-          "sourceCategory": "RMA professional judgment / internal risk matrix",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "overall risk classification and professional recommendation",
+            "Employer training/compliance and workplace law risk review",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "training records if relevant",
+            "Fair Work/ATO/super compliance evidence"
+          ]
         },
         {
-          "id": "nomination_validity",
-          "label": "Valid employer nomination",
+          "id": "186_position_not_created_for_migration",
+          "label": "Position not created primarily to secure migration outcome",
+          "group": "3. Position, occupation and employment requirements",
+          "pdfSection": "3. Position, occupation and employment requirements",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "valid employer nomination",
+            "Position not created primarily to secure migration outcome",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "business need evidence",
+            "workforce planning",
+            "role history"
+          ]
         },
         {
-          "id": "employer_eligibility",
-          "label": "Sponsoring employer eligibility and lawful operation",
+          "id": "186_contract_genuine_terms",
+          "label": "Employment contract reflects genuine ongoing role and lawful conditions",
+          "group": "4. Salary, AMSR and employment conditions",
+          "pdfSection": "4. Salary, AMSR and employment conditions",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "sponsoring employer eligibility and lawful operation",
+            "Employment contract reflects genuine ongoing role and lawful conditions",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "signed contract",
+            "NES/award comparison",
+            "duties and salary schedule"
+          ]
         },
         {
-          "id": "genuine_position",
-          "label": "Genuine position and business need",
+          "id": "186_work_rights_history",
+          "label": "Applicant work-rights and employment compliance history",
+          "group": "6. Public interest, integrity and migration history",
+          "pdfSection": "6. Public interest, integrity and migration history",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "genuine position and business need",
+            "Applicant work-rights and employment compliance history",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "VEVO history",
+            "employment dates",
+            "visa condition compliance"
+          ]
         },
         {
-          "id": "occupation_alignment",
-          "label": "Occupation eligibility and ANZSCO/duties alignment",
+          "id": "186_document_consistency",
+          "label": "Consistency across forms, nomination, contract and evidence",
+          "group": "8. Evidence sufficiency and lodgement readiness",
+          "pdfSection": "8. Evidence sufficiency and lodgement readiness",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "occupation eligibility and anzsco/duties alignment",
+            "Consistency across forms, nomination, contract and evidence",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "draft application review",
+            "nomination/application comparison",
+            "identity and employment consistency check"
+          ]
         },
         {
-          "id": "skills_assessment",
-          "label": "Skills assessment or equivalent pathway",
+          "id": "186_translations_certification",
+          "label": "Translations, certification and document quality",
+          "group": "8. Evidence sufficiency and lodgement readiness",
+          "pdfSection": "8. Evidence sufficiency and lodgement readiness",
           "mandatory": true,
-          "timing": "time_of_application_or_decision",
-          "sourceCategory": "Regulations / Instruments",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "skills assessment or equivalent pathway",
+            "Translations, certification and document quality",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "NAATI translations",
+            "certified copies where required",
+            "clear colour scans"
+          ]
         },
         {
-          "id": "qualifications_experience",
-          "label": "Qualifications and employment history",
+          "id": "186_decision_ready_timing",
+          "label": "Time-of-application and time-of-decision requirements tracked",
+          "group": "8. Evidence sufficiency and lodgement readiness",
+          "pdfSection": "8. Evidence sufficiency and lodgement readiness",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "qualifications and employment history",
+            "Time-of-application and time-of-decision requirements tracked",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "lodgement plan",
+            "expiry dates",
+            "nomination validity diary"
+          ]
         },
         {
-          "id": "registration_licensing",
-          "label": "Registration, licensing or professional membership",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
-          "factsRequired": [
-            "registration, licensing or professional membership",
-            "client answer consistency",
-            "relevant dates/status"
-          ],
-          "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
-        },
-        {
-          "id": "salary_amsr",
-          "label": "Salary, AMSR and employment conditions",
+          "id": "186_manual_review_lock",
+          "label": "Manual migration-agent review before lodgement recommendation",
+          "group": "8. Evidence sufficiency and lodgement readiness",
+          "pdfSection": "8. Evidence sufficiency and lodgement readiness",
           "mandatory": true,
-          "timing": "time_of_decision",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "salary, amsr and employment conditions",
+            "Manual migration-agent review before lodgement recommendation",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
-        },
+            "agent review notes",
+            "evidence index",
+            "final instructions"
+          ]
+        }
+      ]
+    },
+    "Labour Agreement": {
+      "criteria": [
         {
-          "id": "age_requirement",
-          "label": "Age requirement or exemption",
+          "id": "186_la_executed_agreement",
+          "label": "Executed Labour Agreement exists and applies",
+          "group": "2. Labour Agreement stream requirements",
+          "pdfSection": "2. Labour Agreement stream requirements",
           "mandatory": true,
-          "timing": "time_of_application",
-          "sourceCategory": "Regulations / Instruments",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "age requirement or exemption",
+            "Executed Labour Agreement exists and applies",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "executed Labour Agreement",
+            "agreement schedule",
+            "DAMA/company-specific terms"
+          ]
         },
         {
-          "id": "english_requirement",
-          "label": "English requirement or exemption",
+          "id": "186_la_occupation_covered",
+          "label": "Nominated occupation is covered by the Labour Agreement",
+          "group": "2. Labour Agreement stream requirements",
+          "pdfSection": "2. Labour Agreement stream requirements",
           "mandatory": true,
-          "timing": "time_of_application",
-          "sourceCategory": "Regulations / Instruments",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "english requirement or exemption",
+            "Nominated occupation is covered by the Labour Agreement",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "agreement occupation list",
+            "nomination occupation mapping"
+          ]
         },
         {
-          "id": "stream_specific_rules",
-          "label": "Stream-specific DE/TRT/Labour Agreement rules",
+          "id": "186_la_nomination_within_terms",
+          "label": "Nomination is within Labour Agreement terms, ceilings and location limits",
+          "group": "2. Labour Agreement stream requirements",
+          "pdfSection": "2. Labour Agreement stream requirements",
           "mandatory": true,
-          "timing": "stream_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "stream-specific de/trt/labour agreement rules",
+            "Nomination is within Labour Agreement terms, ceilings and location limits",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "agreement ceilings",
+            "location/region terms",
+            "nomination allocation evidence"
+          ]
         },
         {
-          "id": "labour_agreement",
-          "label": "Labour agreement terms if applicable",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Labour agreement / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "id": "186_la_concessions_identified",
+          "label": "Any Labour Agreement concessions are identified and lawfully available",
+          "group": "2. Labour Agreement stream requirements",
+          "pdfSection": "2. Labour Agreement stream requirements",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "labour agreement terms if applicable",
+            "Any Labour Agreement concessions are identified and lawfully available",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "agreement concession clauses",
+            "employer concession request/approval"
+          ]
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_1",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 1",
+          "id": "186_la_age_concession",
+          "label": "Age concession under Labour Agreement if required",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 1",
+            "Age concession under Labour Agreement if required",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "agreement age concession clause",
+            "age evidence"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Labour Agreement"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_2",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 2",
+          "id": "186_la_english_concession",
+          "label": "English concession under Labour Agreement if relied upon",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 2",
+            "English concession under Labour Agreement if relied upon",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "agreement English concession clause",
+            "English evidence/concession basis"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Labour Agreement"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_3",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 3",
+          "id": "186_la_skills_concession",
+          "label": "Skills or experience concession under Labour Agreement if relied upon",
+          "group": "5. Applicant skills, English, age and licensing",
+          "pdfSection": "5. Applicant skills, English, age and licensing",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 3",
+            "Skills or experience concession under Labour Agreement if relied upon",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "agreement skills concession clause",
+            "qualification/work evidence"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Labour Agreement"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_4",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 4",
+          "id": "186_la_salary_concession",
+          "label": "Salary or AMSR concession under Labour Agreement if relied upon",
+          "group": "4. Salary, AMSR and employment conditions",
+          "pdfSection": "4. Salary, AMSR and employment conditions",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 4",
+            "Salary or AMSR concession under Labour Agreement if relied upon",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "agreement salary concession clause",
+            "AMSR evidence",
+            "guaranteed earnings evidence"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Labour Agreement"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_5",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 5",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "id": "186_la_employer_compliance",
+          "label": "Employer compliance with Labour Agreement obligations",
+          "group": "2. Labour Agreement stream requirements",
+          "pdfSection": "2. Labour Agreement stream requirements",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 5",
+            "Employer compliance with Labour Agreement obligations",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+            "monitoring/compliance evidence",
+            "training/obligation records",
+            "Department correspondence"
+          ]
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_6",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 6",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "id": "186_la_position_matches_agreement",
+          "label": "Position, duties and location match the Labour Agreement approval",
+          "group": "3. Position, occupation and employment requirements",
+          "pdfSection": "3. Position, occupation and employment requirements",
+          "mandatory": true,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 6",
+            "Position, duties and location match the Labour Agreement approval",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "agreement schedule",
+            "position description",
+            "work location evidence"
+          ]
+        }
+      ]
+    },
+    "Direct Entry": {
+      "criteria": [
+        {
+          "id": "186_de_skills_assessment",
+          "label": "Direct Entry skills assessment if required",
+          "group": "9. Direct Entry stream requirements",
+          "pdfSection": "9. Direct Entry stream requirements",
+          "mandatory": false,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
+          "factsRequired": [
+            "Direct Entry skills assessment if required",
+            "client answer consistency",
+            "relevant dates/status"
           ],
-          "pdfSection": "Grant criteria assessment"
+          "evidenceRequired": [
+            "skills assessment"
+          ],
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Direct Entry"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_7",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 7",
+          "id": "186_de_three_years_experience",
+          "label": "Direct Entry skilled employment experience",
+          "group": "9. Direct Entry stream requirements",
+          "pdfSection": "9. Direct Entry stream requirements",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 7",
+            "Direct Entry skilled employment experience",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "employment references",
+            "payslips",
+            "tax/super"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Direct Entry"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_8",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 8",
+          "id": "186_de_occupation_list",
+          "label": "Direct Entry occupation list eligibility",
+          "group": "9. Direct Entry stream requirements",
+          "pdfSection": "9. Direct Entry stream requirements",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 8",
+            "Direct Entry occupation list eligibility",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "occupation list evidence"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Direct Entry"
+          }
+        }
+      ]
+    },
+    "Temporary Residence Transition": {
+      "criteria": [
+        {
+          "id": "186_trt_qualifying_visa",
+          "label": "TRT qualifying visa pathway",
+          "group": "10. Temporary Residence Transition stream requirements",
+          "pdfSection": "10. Temporary Residence Transition stream requirements",
+          "mandatory": false,
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
           ],
-          "pdfSection": "Grant criteria assessment"
+          "factsRequired": [
+            "TRT qualifying visa pathway",
+            "client answer consistency",
+            "relevant dates/status"
+          ],
+          "evidenceRequired": [
+            "482/457 visa grants",
+            "employment records"
+          ],
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Temporary Residence Transition"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_9",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 9",
+          "id": "186_trt_required_employment_period",
+          "label": "TRT required employment period with sponsor",
+          "group": "10. Temporary Residence Transition stream requirements",
+          "pdfSection": "10. Temporary Residence Transition stream requirements",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 9",
+            "TRT required employment period with sponsor",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "employment records",
+            "payslips",
+            "tax/super"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Temporary Residence Transition"
+          }
         },
         {
-          "id": "employer_sponsored_specific_grant_issue_10",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 10",
+          "id": "186_trt_occupation_continuity",
+          "label": "TRT occupation and employer continuity",
+          "group": "10. Temporary Residence Transition stream requirements",
+          "pdfSection": "10. Temporary Residence Transition stream requirements",
           "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
+          "timing": "pre_lodgement_or_decision",
+          "sourceCategory": "ACT / REGULATIONS / SCHEDULES / INSTRUMENTS / PAM",
+          "sourceSupport": [
+            "ACT",
+            "REGULATIONS",
+            "PAMS"
+          ],
           "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 10",
+            "TRT occupation and employer continuity",
             "client answer consistency",
             "relevant dates/status"
           ],
           "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
+            "nomination history",
+            "position records"
           ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
-        },
-        {
-          "id": "employer_sponsored_specific_grant_issue_11",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 11",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
-          "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 11",
-            "client answer consistency",
-            "relevant dates/status"
-          ],
-          "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
-        },
-        {
-          "id": "employer_sponsored_specific_grant_issue_12",
-          "label": "Employer Nomination Scheme subclass-specific grant issue 12",
-          "mandatory": false,
-          "timing": "conditional_review",
-          "sourceCategory": "Regulations / Instruments / PAM",
-          "sourceSupport": {
-            "required": [
-              "REGULATIONS",
-              "PAMS"
-            ],
-            "preferred": []
-          },
-          "factsRequired": [
-            "employer nomination scheme subclass-specific grant issue 12",
-            "client answer consistency",
-            "relevant dates/status"
-          ],
-          "evidenceRequired": [
-            "primary evidence",
-            "supporting evidence",
-            "consistency check"
-          ],
-          "riskFlags": [
-            "missing evidence",
-            "inconsistent answers",
-            "adverse history"
-          ],
-          "pdfSection": "Grant criteria assessment"
+          "whenTriggered": "mandatory",
+          "trigger": {
+            "field": "stream",
+            "equals": "Temporary Residence Transition"
+          }
         }
       ]
     }
   },
-  "contaminationBlocks": []
+  "contaminationBlocks": [
+    "partner relationship criteria",
+    "protection claims criteria",
+    "student genuine student criteria",
+    "visitor genuine temporary stay criteria"
+  ]
 }
