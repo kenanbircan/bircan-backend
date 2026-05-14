@@ -1454,9 +1454,83 @@ function v11AssessmentSummary(criteria) {
   return { required, elevated, managed };
 }
 
+function v12RiskLabel(item) {
+  const raw = cleanText(`${item.risk || ''} ${item.currentPosition || ''} ${item.professionalFinding || ''} ${item.actionRequired || ''}`).toLowerCase();
+  if (/critical|bar|not met|refus|cancel|4020|invalid|missing|cannot be confirmed|threshold/.test(raw)) return 'High';
+  if (/elevated|weak|gap|verify|review|required|unconfirmed/.test(raw)) return 'Medium';
+  return 'Managed';
+}
+
+function v12CompactPosition(item) {
+  const text = cleanText(item.currentPosition || item.professionalFinding || item.risk || 'Verification required.');
+  return text.length > 145 ? text.slice(0, 142).replace(/\s+\S*$/, '') + '…' : text;
+}
+
+function v12CompactAction(item) {
+  const text = cleanText(item.actionRequired || item.professionalFinding || 'Verify this criterion against original documents before lodgement.');
+  return text.length > 170 ? text.slice(0, 167).replace(/\s+\S*$/, '') + '…' : text;
+}
+
+function v12WriteCriteriaTable(doc, group, items) {
+  writeSubheading(doc, group);
+  const x = PAGE.L;
+  const widths = [138, 158, 158, 52];
+  const headerH = 20;
+  ensureSpace(doc, headerH + 30);
+  let y = doc.y;
+  doc.roundedRect(x, y, PAGE.W, headerH, 8).fill('#eef3f8');
+  doc.font('Helvetica-Bold').fontSize(8.4).fillColor(BRAND.blue);
+  ['Criterion', 'Assessment position', 'Evidence required / action', 'Risk'].forEach((h, i) => {
+    doc.text(h, x + widths.slice(0, i).reduce((a,b)=>a+b,0) + 6, y + 6, { width: widths[i] - 10 });
+  });
+  doc.y = y + headerH + 4;
+  for (const item of items) {
+    const cells = [cleanText(item.criterion || 'Criterion'), v12CompactPosition(item), v12CompactAction(item), v12RiskLabel(item)];
+    doc.font('Helvetica').fontSize(8.25);
+    const heights = cells.map((c, i) => doc.heightOfString(c, { width: widths[i] - 10, lineGap: 1.2 }));
+    const rowH = Math.max(28, Math.max(...heights) + 12);
+    ensureSpace(doc, rowH + 8);
+    y = doc.y;
+    doc.roundedRect(x, y, PAGE.W, rowH, 7).strokeColor('#d8e0ea').lineWidth(0.6).stroke();
+    let cx = x;
+    cells.forEach((c, i) => {
+      doc.font(i === 0 || i === 3 ? 'Helvetica-Bold' : 'Helvetica').fontSize(i === 3 ? 8 : 8.25).fillColor(i === 3 && c === 'High' ? '#8a5b00' : BRAND.ink)
+        .text(c, cx + 6, y + 7, { width: widths[i] - 10, lineGap: 1.2 });
+      cx += widths[i];
+    });
+    doc.y = y + rowH + 5;
+    doc.x = PAGE.L;
+  }
+}
+
+function v12EvidenceSections(evidenceItems, family) {
+  const base = {
+    employer: [
+      ['Priority 1 — Nomination and Labour Agreement', ['Executed Labour Agreement / DAMA material where relevant', 'Nomination approval or nomination lodgement record', 'Employer business, compliance and workplace-law records']],
+      ['Priority 2 — Position, occupation and salary', ['Employment contract and guaranteed earnings', 'Position description and duties matrix', 'AMSR / market salary and concession evidence']],
+      ['Priority 3 — Applicant eligibility', ['Qualifications, skills, registration or licensing evidence', 'English evidence or concession basis', 'Employment history where relevant to the stream']],
+      ['Priority 4 — Public interest and immigration history', ['Health examinations if required', 'Police certificates and character disclosures', 'Visa history, refusals/cancellations and PIC/SRC issues']],
+      ['Priority 5 — Family, translations and certification', ['Secondary applicant identity and relationship evidence', 'Certified translations and identity documents', 'Final evidence index before lodgement']]
+    ]
+  };
+  if (base[family]) return base[family];
+  const grouped = groupEvidence(evidenceItems);
+  if (grouped && grouped.length) return grouped.slice(0, 5).map(([g, items]) => [g, ensureArray(items).filter(x => !/required action:/i.test(String(x))).slice(0, 5)]);
+  return [[v11FamilyLabel(family), v11EvidenceFallback(family)]];
+}
+
+function v12BuildActionRows(criteria, evidenceItems) {
+  const priorityTerms = /agreement|nomination|salary|AMSR|english|health|character|4020|refusal|cancellation|licens|registration|PIC|SRC/i;
+  const actions = uniqueClean(ensureArray(criteria).map(c => c.actionRequired).filter(Boolean))
+    .filter(a => !/direct entry stream is appropriate|remains offshore|offshore at time/i.test(a))
+    .slice(0, 8);
+  const rows = actions.length ? actions : uniqueClean(evidenceItems).slice(0, 8);
+  return rows.map((s, i) => [String(i + 1), cleanText(s).replace(/^lodgement is not recommended the application/i, 'Do not lodge the application'), priorityTerms.test(s) ? 'High' : 'Important']);
+}
+
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   writeTitle(doc, 'Grant criteria assessment', { gold: true });
-  writePara(doc, "I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The following section shows the criteria that have been assessed for advice and lodgement-readiness purposes. It is intentionally client-facing, but it is driven by the registry-backed grant-criteria findings rather than a short risk summary.", { size: 9.8 });
+  writePara(doc, 'I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The table below keeps the client letter readable while preserving the full registry-backed criteria count used for lodgement-readiness assessment.', { size: 9.8 });
 
   const list = ensureArray(criteria).filter(Boolean);
   const grouped = new Map();
@@ -1467,7 +1541,7 @@ function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   }
 
   const total = list.length;
-  const elevated = list.filter(c => /critical|elevated|threshold|not met|missing|weak|bar|refus|cancel|4020/i.test(`${c.risk} ${c.professionalFinding} ${c.actionRequired}`)).length;
+  const elevated = list.filter(c => v12RiskLabel(c) === 'High' || v12RiskLabel(c) === 'Medium').length;
   writeCard(doc, 'Grant criteria coverage summary', [
     ['Criteria assessed in this letter', String(total)],
     ['Criteria requiring evidence action', String(elevated)],
@@ -1475,13 +1549,7 @@ function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   ]);
 
   for (const [group, items] of grouped.entries()) {
-    writeSubheading(doc, group);
-    for (const item of items) {
-      const status = cleanText(item.currentPosition || item.risk || 'Verification required');
-      const action = cleanText(item.actionRequired || item.professionalFinding || 'Verify this criterion against original documents before lodgement.');
-      const timing = item.timing ? ` Timing: ${cleanText(item.timing)}.` : '';
-      writeBullet(doc, `${cleanText(item.criterion)} — ${status}.${timing} Required action: ${action}`);
-    }
+    v12WriteCriteriaTable(doc, group, items);
   }
 }
 
@@ -1578,17 +1646,8 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
         ['Recommended next step', 'Proceed to evidence review and lodgement-readiness assessment before filing.']
       ]);
 
-      writeTitle(doc, 'Matter details and facts relied upon', { gold: true });
-      writeCard(doc, 'Matter details', [
-        ['Reference', assessment.id || '—'],
-        ["Applicant's name", applicantName],
-        ['Applicant email', applicantEmail],
-        ['Client account email', clientEmail],
-        ['Subclass', subclass],
-        ['Stream assessed', stream],
-        ['Generated', generatedAt]
-      ]);
-      writePara(doc, 'The factual basis of this advice is the assessment questionnaire and any information presently available at the time of preparation. Questionnaire answers are treated as client instructions until verified against original documents and Departmental records.', { size: 9.8 });
+      writeTitle(doc, 'Facts relied upon', { gold: true });
+      writePara(doc, `This advice relies on the online assessment questionnaire for reference ${assessment.id || '—'}, the selected pathway of Subclass ${subclass}${stream ? ' ' + stream : ''}, and the information presently available at the time of preparation. Questionnaire answers are treated as client instructions until verified against original documents and Departmental records.`, { size: 9.8 });
 
       writeTitle(doc, 'Legal framework applied', { gold: true });
       writePara(doc, v11FrameworkText(subclass, stream, family));
@@ -1601,13 +1660,12 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       v11DelegateBullets(family).forEach(item => writeBullet(doc, item));
 
       writeTitle(doc, 'Documents required before final lodgement advice', { gold: true });
-      for (const [group, items] of v11EvidenceSections(evidenceItems, family)) {
+      for (const [group, items] of v12EvidenceSections(evidenceItems, family)) {
         writeSubheading(doc, group);
-        ensureArray(items).slice(0, 7).forEach(item => writeBullet(doc, item));
+        ensureArray(items).slice(0, 5).forEach(item => writeBullet(doc, item));
       }
 
-      const actionRows = nextSteps.length ? nextSteps.map((s, i) => [String(i + 1), s, /critical|high|english|health|character|nomination|claim|sponsor|relationship|points|financial/i.test(s) ? 'High' : 'Important']) : v10EvidencePriorityRows(criteria, evidenceItems);
-      v10WriteActionPlan(doc, actionRows);
+      v10WriteActionPlan(doc, v12BuildActionRows(criteria, evidenceItems));
 
       writeTitle(doc, 'Final professional recommendation', { gold: true, size: 17 });
       writePara(doc, v11FinalRecommendation(subclass, stream, family, position, primary));
