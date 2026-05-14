@@ -103,25 +103,40 @@ function clientFriendlyCriterionLabel(value) {
     'manual migration agent review before lodgement recommendation': 'whether a registered migration agent has completed final evidence and current-law review'
   };
   if (map[key]) return map[key];
-  return raw
-    .replace(/\bAnd\b/g, 'and')
-    .replace(/\bOr\b/g, 'or')
-    .replace(/\bOf\b/g, 'of')
-    .replace(/\bAt\b/g, 'at')
-    .replace(/\bFor\b/g, 'for')
-    .replace(/\bThe\b/g, 'the');
+
+  // Final client-facing fallback: convert internal registry headings into natural criteria.
+  let out = raw.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  const lower = out.toLowerCase();
+  if (/adverse information.*employer/.test(lower)) return 'whether any adverse information about the employer affects the nomination';
+  if (/nominated position.*genuine/.test(lower)) return 'whether the nominated position is genuine';
+  if (/employer compliance.*labour agreement/.test(lower)) return 'whether the employer has complied with its Labour Agreement obligations';
+  if (/english evidence.*exemption.*concession/.test(lower)) return 'whether English evidence, exemption or concession has been verified';
+  if (/primary applicant identity/.test(lower)) return 'whether the primary applicant identity and biographical details are consistent';
+  if (/position.*full time.*available/.test(lower)) return 'whether the position is full-time and available for the required period';
+  if (/position.*created.*migration outcome/.test(lower)) return 'whether the position was created primarily to secure a migration outcome';
+  if (/employment contract.*genuine role/.test(lower)) return 'whether the employment contract reflects a genuine role and lawful conditions';
+  if (/occupation.*duties.*align/.test(lower)) return 'whether the occupation and duties align with the nominated occupation';
+  if (/anzsco|classification/.test(lower)) return 'whether the occupation classification is defensible';
+  if (/qualifications.*employment history/.test(lower)) return 'whether the qualifications and employment history support the role';
+  if (/work rights.*compliance/.test(lower)) return 'whether the applicant’s work rights and employment compliance history are consistent';
+  if (/translations.*certification/.test(lower)) return 'whether translations, certification and document quality are acceptable';
+  if (/time of application.*time of decision/.test(lower)) return 'whether time-of-application and time-of-decision requirements are tracked';
+
+  out = out.replace(/\bAnd\b/g, 'and').replace(/\bOr\b/g, 'or').replace(/\bOf\b/g, 'of').replace(/\bAt\b/g, 'at').replace(/\bFor\b/g, 'for').replace(/\bThe\b/g, 'the');
+  return /^whether\b/i.test(out) ? out : `whether ${out.charAt(0).toLowerCase()}${out.slice(1)}`;
 }
 
 function clientFriendlyIssueList(value) {
   const parts = cleanText(value, '')
-    .split(/\s*,\s*/)
+    .split(/\s*,\s*|\s*;\s*/)
     .map(x => clientFriendlyCriterionLabel(x))
+    .map(x => cleanText(x, '').replace(/^(and|or)\s+/i, '').trim())
     .filter(Boolean)
-    .slice(0, 4);
+    .filter((x, i, arr) => arr.findIndex(y => y.toLowerCase() === x.toLowerCase()) === i)
+    .slice(0, 3);
   if (!parts.length) return 'the key legal and evidentiary issues identified in this assessment';
-  if (parts.length === 1) return parts[0];
-  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
-  return `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`;
+  let out = parts.length === 1 ? parts[0] : (parts.length === 2 ? `${parts[0]} and ${parts[1]}` : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
+  return out.replace(/\band\s+and\b/gi, 'and').replace(/,\s*and\s+and\s+/gi, ', and ').replace(/\s+/g, ' ').trim();
 }
 
 function normaliseProfessionalPositionText(value) {
@@ -141,6 +156,8 @@ function fixGeneratedActionGrammar(value) {
   s = s
     .replace(/\blodgement is not recommended the application\b/gi, 'Do not lodge the application')
     .replace(/\band lodgement is not recommended until\b/gi, '. Lodgement is not recommended until')
+    .replace(/\band\s+and\b/gi, 'and')
+    .replace(/,\s*and\s+and\s+/gi, ', and ')
     .replace(/\s+\.\s+/g, '. ')
     .replace(/\.\s*\./g, '.')
     .replace(/\s+/g, ' ')
@@ -1646,16 +1663,9 @@ function v12BuildActionRows(criteria, evidenceItems) {
 
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
   writeTitle(doc, 'Grant criteria assessment', { gold: true });
-  writePara(doc, 'I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The assessment schedule below keeps the client letter readable while preserving the full registry-backed criteria count used for lodgement-readiness assessment. It uses a margin-safe wrapped layout so no criterion table can overflow the page.', { size: 9.8 });
+  writePara(doc, 'I have assessed the matter against the relevant grant criteria for the selected subclass and stream. The main body identifies the material issues requiring attention. The complete registry-backed criteria review is preserved in Appendix A so the advice remains readable while maintaining full lodgement-readiness coverage.', { size: 9.8 });
 
   const list = ensureArray(criteria).filter(Boolean);
-  const grouped = new Map();
-  for (const item of list) {
-    const group = cleanText(item.pdfSection || inferGrantCriteriaSection(item.criterion, '', ''), 'Grant criteria assessment');
-    if (!grouped.has(group)) grouped.set(group, []);
-    grouped.get(group).push(item);
-  }
-
   const total = list.length;
   const elevated = list.filter(c => v12RiskLabel(c) === 'High' || v12RiskLabel(c) === 'Medium').length;
   writeCard(doc, 'Grant criteria coverage summary', [
@@ -1664,11 +1674,32 @@ function v11WriteGrantCriteriaSummary(doc, criteria, family) {
     ['Assessment basis', 'Client instructions, legal source pack and original-evidence verification requirement']
   ]);
 
-  for (const [group, items] of grouped.entries()) {
-    v12WriteCriteriaTable(doc, group, items);
+  const score = (item) => {
+    const r = v12RiskLabel(item);
+    const t = cleanText(`${item.criterion || ''} ${item.actionRequired || ''}`).toLowerCase();
+    let n = r === 'High' ? 100 : r === 'Medium' ? 60 : 20;
+    if (/schedule 1|valid application|nomination|labour agreement|occupation|salary|amsr|english|skills|registration|health|character|4020|src|refusal|cancellation|lawfully|actively operates/.test(t)) n += 35;
+    return n;
+  };
+
+  const material = list.slice().sort((a, b) => score(b) - score(a)).slice(0, Math.min(12, list.length));
+  writeSubheading(doc, 'Material criteria requiring attention');
+  writePara(doc, 'The following issues should be resolved before the matter is treated as lodgement ready. They are selected from the full criteria review because they are most likely to affect validity, nomination strength, stream eligibility, public interest requirements or evidence sufficiency.', { size: 9.4 });
+  v12WriteCriteriaTable(doc, 'Key material issues', material);
+
+  if (list.length > material.length) {
+    addPage(doc, 'Appendix A — full grant criteria review');
+    writeTitle(doc, 'Appendix A — full grant criteria review', { gold: true });
+    writePara(doc, 'This appendix records the full criteria review used for the assessment. It is included for transparency and lodgement-readiness control. The main advice should be read together with this appendix.', { size: 9.4 });
+    const grouped = new Map();
+    for (const item of list) {
+      const group = cleanText(item.pdfSection || inferGrantCriteriaSection(item.criterion, '', ''), 'Grant criteria assessment');
+      if (!grouped.has(group)) grouped.set(group, []);
+      grouped.get(group).push(item);
+    }
+    for (const [group, items] of grouped.entries()) v12WriteCriteriaTable(doc, group, items);
   }
 }
-
 
 function v11FinalRecommendation(subclass, stream, family, position, primaryIssue) {
   const pathway = `Subclass ${cleanText(subclass)}${stream ? ' ' + cleanText(stream) : ''}`;
@@ -1688,11 +1719,12 @@ function v11FinalRecommendation(subclass, stream, family, position, primaryIssue
   };
   const materials = materialMap[family] || 'the pathway-specific evidence, legal criteria and public interest documents';
   const issueText = clientFriendlyIssueList(primaryIssue);
-  return `Based on the information presently available, I do not recommend immediate lodgement of the ${pathway} matter.
+  const text = `Based on the information presently available, I do not recommend immediate lodgement of the ${pathway} matter.
 
 The matter should move to evidence verification and lodgement-readiness review. The key issue is ${issueText}. Before a final lodgement recommendation is issued, Bircan Migration should review ${materials}, together with current legal settings and Departmental records.
 
 If the evidence remains consistent after review, the matter may progress to final preparation. If the evidence identifies a material weakness, the strategy should be revised before filing.`;
+  return fixGeneratedActionGrammar(text).replace(/\n\s+/g, '\n\n');
 }
 
 
@@ -1799,8 +1831,6 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.navy).text('Kenan Bircan JP', PAGE.L, doc.y, { width: PAGE.WIDTH });
       doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.ink).text('Registered Migration Agent | MARN: 1463685', PAGE.L, doc.y, { width: PAGE.WIDTH });
       doc.text('Bircan Migration & Education', PAGE.L, doc.y, { width: PAGE.WIDTH });
-      doc.moveDown(0.9);
-      doc.fontSize(8).fillColor(BRAND.muted).text('This advice letter is subject to review of original documents, current law, policy and final instructions before lodgement action.', PAGE.L, doc.y, { width: PAGE.WIDTH, align: 'center' });
 
       doc.end();
     } catch (err) {
