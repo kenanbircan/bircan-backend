@@ -61,6 +61,94 @@ function cleanText(value, fallback = '—') {
 }
 
 
+// Client-facing wording normalisation for advice letters. This prevents internal
+// registry labels and generated action fragments from appearing verbatim in the PDF.
+function sentenceCase(text) {
+  const s = cleanText(text, '').trim();
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function clientFriendlyCriterionLabel(value) {
+  const raw = cleanText(value, '').replace(/_/g, ' ').trim();
+  if (!raw) return '';
+  const key = raw.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const map = {
+    'correct subclass 186 stream selected': 'whether the Subclass 186 Labour Agreement stream is the correct pathway',
+    'executed labour agreement is current and applicable': 'whether the executed Labour Agreement is current and applicable to the employer and nominated role',
+    'occupation covered by labour agreement': 'whether the nominated occupation is expressly covered by the Labour Agreement',
+    'nominating employer lawfully and actively operates': 'whether the nominating employer is lawfully and actively operating',
+    'employer nomination exists or will be lodged for the applicant': 'whether a valid employer nomination exists or will be lodged for this applicant',
+    'valid application requirements under schedule 1': 'whether the Schedule 1 validity requirements can be met',
+    'nomination approval and validity at time of decision': 'whether the nomination is approved, valid and capable of supporting the visa application at decision',
+    'nomination ceiling location and limit conditions under labour agreement': 'whether any Labour Agreement ceiling, location or nomination-limit conditions are satisfied',
+    'nomination complies with labour agreement terms': 'whether the nomination complies with the Labour Agreement terms',
+    'labour agreement concessions identified and evidenced': 'whether each Labour Agreement concession relied upon is permitted and evidenced',
+    'age requirement or labour agreement age concession': 'whether the age requirement or an applicable Labour Agreement age concession is available',
+    'english requirement or labour agreement english concession': 'whether the English requirement or an applicable Labour Agreement English concession is available',
+    'salary or amsr concession under labour agreement': 'whether salary, AMSR and any salary concession can be supported',
+    'salary amsr and guaranteed earnings evidence': 'whether salary, AMSR and guaranteed earnings evidence are consistent and defensible',
+    'employment terms and conditions are appropriate': 'whether the employment terms and conditions are consistent with the nomination, Labour Agreement and workplace obligations',
+    'market salary or concession evidence is defensible': 'whether the market salary or concession evidence is defensible',
+    'skills qualifications and experience for nominated role': 'whether the applicant’s skills, qualifications and experience support the nominated role',
+    'registration licensing or professional membership if required': 'whether any required registration, licence or professional membership is held or obtainable',
+    'health criteria public interest health requirements': 'whether the health/public interest health requirements can be met',
+    'character requirements including police court history': 'whether character requirements can be met after police and court record review',
+    'pic 4020 and information document integrity': 'whether the application is consistent and free from false, misleading or bogus-document issues',
+    'special return criteria and exclusion issues': 'whether any Special Return Criteria or exclusion issue applies',
+    'prior refusals cancellations and compliance history': 'whether any prior refusal, cancellation or compliance issue affects strategy',
+    'family members and secondary applicants identified': 'whether all family members and any secondary applicants have been correctly identified',
+    'secondary applicant health character and dependency criteria': 'whether each secondary applicant can meet health, character, identity and dependency requirements',
+    'evidence sufficiency and lodgement readiness': 'whether the evidence file is sufficient for lodgement-readiness assessment',
+    'manual migration agent review before lodgement recommendation': 'whether a registered migration agent has completed final evidence and current-law review'
+  };
+  if (map[key]) return map[key];
+  return raw
+    .replace(/\bAnd\b/g, 'and')
+    .replace(/\bOr\b/g, 'or')
+    .replace(/\bOf\b/g, 'of')
+    .replace(/\bAt\b/g, 'at')
+    .replace(/\bFor\b/g, 'for')
+    .replace(/\bThe\b/g, 'the');
+}
+
+function clientFriendlyIssueList(value) {
+  const parts = cleanText(value, '')
+    .split(/\s*,\s*/)
+    .map(x => clientFriendlyCriterionLabel(x))
+    .filter(Boolean)
+    .slice(0, 4);
+  if (!parts.length) return 'the key legal and evidentiary issues identified in this assessment';
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`;
+}
+
+function normaliseProfessionalPositionText(value) {
+  const s = cleanText(value, '').trim().replace(/\s+/g, ' ');
+  if (!s) return 'The matter is not lodgement-ready until the identified threshold issues are resolved.';
+  if (/^do not lodge until/i.test(s)) return 'Lodgement is not recommended until the identified threshold issues are resolved.';
+  if (/^lodgement is not recommended/i.test(s)) return sentenceCase(s.replace(/\.$/, '')) + '.';
+  if (/potentially open/i.test(s)) return 'The pathway is potentially open, but the matter is not suitable for lodgement until the threshold risks are resolved.';
+  if (/potentially viable/i.test(s)) return 'The pathway is potentially viable in principle, but the matter is not yet lodgement-ready.';
+  if (/lodgement-ready/i.test(s) && !/^the matter/i.test(s)) return sentenceCase(s.replace(/\.$/, '')) + '.';
+  return sentenceCase(s.replace(/\.$/, '')) + '.';
+}
+
+function fixGeneratedActionGrammar(value) {
+  let s = cleanText(value, '').trim();
+  if (!s) return s;
+  s = s
+    .replace(/\blodgement is not recommended the application\b/gi, 'Do not lodge the application')
+    .replace(/\band lodgement is not recommended until\b/gi, '. Lodgement is not recommended until')
+    .replace(/\s+\.\s+/g, '. ')
+    .replace(/\.\s*\./g, '.')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return sentenceCase(s.replace(/\.$/, '')) + (/[.!?]$/.test(s) ? '' : '.');
+}
+
+
 function sanitizeSubclassStreamText(value, subclass = '', stream = '', criterion = '') {
   let s = cleanText(value, '');
   const st = String(stream || '').toLowerCase();
@@ -1362,17 +1450,17 @@ function v11FamilyLabel(family) {
 
 function v11ProfessionalPosition(advice, adviceBundle, criteria) {
   const raw = cleanText(advice.professional_position || advice.lodgement_position || adviceBundle?.advice?.professional_position || adviceBundle?.advice?.lodgement_position || '');
-  if (/not[_\s-]?lodgeable|invalid|not recommended|do not lodge|critical/i.test(raw)) return 'Do not lodge until the identified threshold issues are resolved.';
+  if (/not[_\s-]?lodgeable|invalid|not recommended|do not lodge|critical/i.test(raw)) return 'Lodgement is not recommended until the identified threshold issues are resolved.';
   if (/ready|lodgement[_\s-]?ready/i.test(raw) && !/not/i.test(raw)) return 'Potentially lodgement-ready, subject to final document and current-law verification.';
-  if (criteria.some(c => /critical/i.test(c.risk))) return 'Potentially open, but not suitable for lodgement until threshold risks are resolved.';
-  return 'Potentially viable in principle, but not yet lodgement-ready.';
+  if (criteria.some(c => /critical/i.test(c.risk))) return 'The pathway is potentially open, but the matter is not suitable for lodgement until the threshold risks are resolved.';
+  return 'The pathway is potentially viable in principle, but the matter is not yet lodgement-ready.';
 }
 
 function v11PrimaryIssue(family, issue, criteria) {
   const explicit = cleanText(issue || '');
-  if (explicit && !/evidence reconciliation and lodgement strategy/i.test(explicit)) return explicit;
+  if (explicit && !/evidence reconciliation and lodgement strategy/i.test(explicit)) return clientFriendlyIssueList(explicit);
   const elevated = criteria.filter(c => /critical|elevated/i.test(c.risk)).map(c => c.criterion).slice(0, 3);
-  if (elevated.length) return elevated.join(', ');
+  if (elevated.length) return clientFriendlyIssueList(elevated.join(', '));
   return {
     employer: 'nomination strength, stream settings, occupation alignment and evidence consistency',
     skilled: 'invitation, points, skills assessment, occupation eligibility and evidence consistency',
@@ -1388,9 +1476,11 @@ function v11PrimaryIssue(family, issue, criteria) {
 
 function v11ExecutiveAdvice(subclass, stream, family, position, primaryIssue) {
   const pathway = `Subclass ${cleanText(subclass)}${stream ? ' ' + cleanText(stream) : ''}`;
+  const professionalPosition = normaliseProfessionalPositionText(position);
+  const issues = clientFriendlyIssueList(primaryIssue);
   return `I have considered the information presently available for the proposed ${pathway} pathway. On the current instructions, the pathway should not be treated as automatically ready for lodgement merely because it has been identified. The correct professional approach is to test the client instructions against the applicable grant criteria, the current legal source pack and the original evidence.
 
-My present opinion is that the matter is ${position.toLowerCase()} The principal areas requiring attention are ${cleanText(primaryIssue)}.
+My present opinion is that ${professionalPosition.charAt(0).toLowerCase() + professionalPosition.slice(1)} The principal areas requiring attention are ${issues}.
 
 This letter is a preliminary professional advice letter. It is intended to give the client a clear professional position and an evidence strategy. It is not a final lodgement clearance and should not be relied on as authority to lodge until Bircan Migration has reviewed the original evidence, current law, Departmental records, conflict position and final instructions.`;
 }
@@ -1462,12 +1552,12 @@ function v12RiskLabel(item) {
 }
 
 function v12CompactPosition(item) {
-  const text = cleanText(item.currentPosition || item.professionalFinding || item.risk || 'Verification required.');
+  const text = fixGeneratedActionGrammar(item.currentPosition || item.professionalFinding || item.risk || 'Verification required.');
   return text.length > 145 ? text.slice(0, 142).replace(/\s+\S*$/, '') + '…' : text;
 }
 
 function v12CompactAction(item) {
-  const text = cleanText(item.actionRequired || item.professionalFinding || 'Verify this criterion against original documents before lodgement.');
+  const text = fixGeneratedActionGrammar(item.actionRequired || item.professionalFinding || 'Verify this criterion against original documents before lodgement.');
   return text.length > 170 ? text.slice(0, 167).replace(/\s+\S*$/, '') + '…' : text;
 }
 
@@ -1480,7 +1570,7 @@ function v12WriteCriteriaTable(doc, group, items) {
   // full-width stacked criterion cards. Every text element is wrapped inside PAGE.WIDTH.
   const rows = ensureArray(items).filter(Boolean);
   for (const item of rows) {
-    const criterion = cleanText(item.criterion || 'Grant criterion');
+    const criterion = sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion'));
     const position = v12CompactPosition(item);
     const action = v12CompactAction(item);
     const risk = v12RiskLabel(item);
@@ -1551,7 +1641,7 @@ function v12BuildActionRows(criteria, evidenceItems) {
     .filter(a => !/direct entry stream is appropriate|remains offshore|offshore at time/i.test(a))
     .slice(0, 8);
   const rows = actions.length ? actions : uniqueClean(evidenceItems).slice(0, 8);
-  return rows.map((s, i) => [String(i + 1), cleanText(s).replace(/^lodgement is not recommended the application/i, 'Do not lodge the application'), priorityTerms.test(s) ? 'High' : 'Important']);
+  return rows.map((s, i) => [String(i + 1), fixGeneratedActionGrammar(s), priorityTerms.test(s) ? 'High' : 'Important']);
 }
 
 function v11WriteGrantCriteriaSummary(doc, criteria, family) {
@@ -1582,8 +1672,11 @@ function v11WriteGrantCriteriaSummary(doc, criteria, family) {
 
 function v11FinalRecommendation(subclass, stream, family, position, primaryIssue) {
   const pathway = `Subclass ${cleanText(subclass)}${stream ? ' ' + cleanText(stream) : ''}`;
+  const isLabourAgreement = /186/i.test(cleanText(subclass)) && /labou?r agreement/i.test(cleanText(stream));
   const materialMap = {
-    employer: 'the Labour Agreement or nomination material, employer records, occupation evidence, salary/concession evidence, English position and applicant eligibility documents',
+    employer: isLabourAgreement
+      ? 'the executed Labour Agreement, occupation coverage, nomination terms, any concession relied upon, salary/AMSR position, English position, skills/registration evidence, employer compliance records and applicant public-interest documents'
+      : 'the nomination material, employer records, occupation evidence, salary/concession evidence, English position and applicant eligibility documents',
     skilled: 'the invitation, EOI, points evidence, skills assessment, English evidence, nomination or sponsorship records and public interest documents',
     partner: 'the sponsor documents, relationship evidence, financial/social/household/commitment evidence, applicant history and public interest documents',
     protection: 'the identity and nationality material, protection claims, country information, credibility evidence, exclusion/security issues and public interest documents',
@@ -1594,9 +1687,10 @@ function v11FinalRecommendation(subclass, stream, family, position, primaryIssue
     temporary: 'the stream/activity evidence, sponsorship or support material, financial capacity, temporary-stay evidence and public interest documents'
   };
   const materials = materialMap[family] || 'the pathway-specific evidence, legal criteria and public interest documents';
+  const issueText = clientFriendlyIssueList(primaryIssue);
   return `Based on the information presently available, I do not recommend immediate lodgement of the ${pathway} matter.
 
-The matter should move to evidence verification and lodgement-readiness review. The key issue is ${cleanText(primaryIssue)}. Original documents, current legal settings, Departmental records and ${materials} must be checked before a final lodgement recommendation is issued.
+The matter should move to evidence verification and lodgement-readiness review. The key issue is ${issueText}. Before a final lodgement recommendation is issued, Bircan Migration should review ${materials}, together with current legal settings and Departmental records.
 
 If the evidence remains consistent after review, the matter may progress to final preparation. If the evidence identifies a material weakness, the strategy should be revised before filing.`;
 }
