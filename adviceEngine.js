@@ -569,7 +569,7 @@ async function generateMigrationAdvice(assessment){
     facts
   });
   validatedAdvice.seniorAgentNarrative = {
-    standard: '10/10 senior migration-agent advice standard',
+    standard: 'Senior migration-agent advice standard',
     clientFacingPurpose: 'The advice must read as a professional letter to the client, not as an internal registry report.',
     requiredTone: 'firm, careful, commercial and legally controlled',
     lodgementPosition: validatedAdvice.executive_summary || validatedAdvice.recommendation || 'Lodgement should not be recommended until original evidence and current-law checks support that position.',
