@@ -4335,66 +4335,6 @@ async function normalisePaidStripeSessionForAttachment(session) {
     }
   }
 
-  // Permanent Stripe-return recovery: if the Stripe session metadata is incomplete,
-  // recover the paid service from the local service_sessions row created at checkout-start.
-  // This prevents payment-complete/dashboard from showing an authenticated account with
-  // zero paid services merely because Stripe metadata did not include assessment_id.
-  try {
-    const ssRows = (await query(
-      `SELECT id, service_type, service_ref, client_email, selected_plan, metadata
-       FROM service_sessions
-       WHERE stripe_session_id=$1 OR id=$2
-       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-       LIMIT 1`,
-      [session.id, md.service_session_id || null]
-    )).rows;
-    const ss = ssRows[0];
-    if (ss && ss.service_ref) {
-      const serviceType = normaliseServiceType(ss.service_type);
-      if (serviceType === 'visa_assessment') {
-        const found = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [ss.service_ref])).rows[0];
-        if (found) {
-          md.service_type = 'visa_assessment';
-          md.assessment_id = found.id;
-          md.service_ref = found.id;
-          md.service_session_id = ss.id;
-          md.client_email = md.client_email || ss.client_email || session.customer_email || '';
-          md.visa_type = md.visa_type || found.visa_type || 'visa';
-          md.plan = safePlan(md.plan || ss.selected_plan || found.active_plan || found.selected_plan || 'instant');
-          return { ...session, metadata: md, client_reference_id: found.id };
-        }
-      }
-      if (serviceType === 'appeals_assessment') {
-        const found = (await query('SELECT id, visa_subclass, selected_plan, active_plan FROM appeals_assessments WHERE id=$1 LIMIT 1', [ss.service_ref])).rows[0];
-        if (found) {
-          md.service_type = 'appeals_assessment';
-          md.appeal_assessment_id = found.id;
-          md.assessment_id = found.id;
-          md.service_ref = found.id;
-          md.service_session_id = ss.id;
-          md.client_email = md.client_email || ss.client_email || session.customer_email || '';
-          md.visa_type = md.visa_type || found.visa_subclass || 'appeals';
-          md.plan = safePlan(md.plan || ss.selected_plan || found.active_plan || found.selected_plan || 'instant');
-          return { ...session, metadata: md, client_reference_id: found.id };
-        }
-      }
-      if (serviceType === 'citizenship_test') {
-        const found = (await query('SELECT id, selected_plan, active_plan FROM citizenship_access WHERE id=$1 LIMIT 1', [ss.service_ref])).rows[0];
-        if (found) {
-          md.service_type = 'citizenship_test';
-          md.citizenship_access_id = found.id;
-          md.service_ref = found.id;
-          md.service_session_id = ss.id;
-          md.client_email = md.client_email || ss.client_email || session.customer_email || '';
-          md.plan = normaliseCitizenshipPlan(md.plan || ss.selected_plan || found.active_plan || found.selected_plan || '20');
-          return { ...session, metadata: md, client_reference_id: found.id };
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('Stripe session local service-session recovery skipped:', err.message);
-  }
-
   return { ...session, metadata: md };
 }
 
@@ -6557,12 +6497,15 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
              COALESCE(a.currency, p.currency, 'aud') AS effective_currency,
              COALESCE(a.stripe_session_id, p.stripe_session_id, ss.stripe_session_id) AS effective_stripe_session_id,
              a.status, a.created_at, a.updated_at, a.release_at, a.pdf_generated_at, a.pdf_filename, a.pdf_sha256,
+             a.generation_error,
+             j.status AS pdf_job_status, j.last_error AS pdf_job_error, j.updated_at AS pdf_job_updated_at,
              CASE WHEN a.pdf_bytes IS NOT NULL AND octet_length(a.pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
              COALESCE(p.plan, ss.selected_plan, a.active_plan, a.selected_plan, 'instant') AS effective_plan
       FROM match_ids m
       JOIN assessments a ON a.id=m.id
       LEFT JOIN payments p ON p.service_type='visa_assessment' AND (p.service_ref=a.id OR p.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND p.stripe_session_id=$3))
       LEFT JOIN service_sessions ss ON ss.service_type='visa_assessment' AND (ss.service_ref=a.id OR ss.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND ss.stripe_session_id=$3))
+      LEFT JOIN pdf_jobs j ON j.assessment_id=a.id
       WHERE COALESCE(a.payment_status,'')='paid' OR p.status='paid' OR ss.payment_status='paid' OR ($3 <> '' AND COALESCE(a.stripe_session_id,'')=$3)
       ORDER BY a.id,
                CASE WHEN COALESCE(a.payment_status,'')='paid' THEN 4 WHEN p.status='paid' THEN 3 WHEN ss.payment_status='paid' THEN 2 ELSE 1 END DESC,
@@ -6576,6 +6519,8 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            effective_plan AS selected_plan,
            effective_plan AS active_plan,
            CASE WHEN has_pdf THEN 'pdf_ready'
+                WHEN COALESCE(pdf_job_status,'')='failed' OR COALESCE(status,'') IN ('pdf_failed','failed') THEN 'pdf_failed'
+                WHEN COALESCE(pdf_job_status,'')='processing' OR COALESCE(status,'')='pdf_generating' THEN 'pdf_generating'
                 WHEN effective_payment_status='paid' THEN COALESCE(NULLIF(status,''),'pdf_queued')
                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
            effective_payment_status AS payment_status,
@@ -6591,7 +6536,9 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            has_pdf,
            CASE WHEN effective_payment_status='paid' THEN true ELSE false END AS release_ready,
            0::integer AS release_seconds_remaining,
-           NULL::text AS generation_error
+           COALESCE(generation_error, pdf_job_error) AS generation_error,
+           pdf_job_status,
+           pdf_job_updated_at
     FROM enriched
     ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST
     LIMIT 20`;
@@ -6817,63 +6764,35 @@ async function queryDashboardV2Payments(email, sessionId) {
 }
 
 
-async function ensureDashboardStripeSessionAttached(sessionId, expectedEmail = '') {
-  const sid = String(sessionId || '').trim();
-  if (!stripe || !sid || !/^cs_(test|live)_/i.test(sid)) return null;
+function dashboardV2ShouldKickPdf(service) {
+  if (!service || service.type !== 'visa_assessment') return false;
+  if (service.documentStatus !== 'pdf_queued') return false;
+  if (service.paymentStatus !== 'paid') return false;
+  if (service.hasPdf || service.releaseSecondsRemaining > 0) return false;
+  if (service.generationError) return false;
+  return Boolean(service.id);
+}
 
-  // If the assessment is already attached locally, do not call Stripe again.
-  try {
-    const local = (await query(
-      `SELECT id, client_email, payment_status, status
-       FROM assessments
-       WHERE stripe_session_id=$1 AND COALESCE(payment_status,'')='paid'
-       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-       LIMIT 1`,
-      [sid]
-    )).rows[0];
-    if (local) return { attached: true, type: 'visa_assessment', assessmentId: local.id, local: true };
-  } catch (err) {
-    console.warn('Dashboard local paid assessment check skipped:', err.message);
-  }
-
-  // Local service_sessions recovery is cheap and usually gives the assessment id.
-  // If service_session says paid/checkout_created but the assessment has not been marked paid,
-  // attach from Stripe once here. This makes payment-complete non-critical: dashboard load repairs the link.
-  try {
-    const ss = (await query(
-      `SELECT id, service_type, service_ref, client_email, payment_status, stripe_session_id
-       FROM service_sessions
-       WHERE stripe_session_id=$1
-       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-       LIMIT 1`,
-      [sid]
-    )).rows[0];
-    if (ss && normaliseServiceType(ss.service_type) === 'visa_assessment' && ss.service_ref) {
-      const already = (await query(
-        `SELECT id, payment_status FROM assessments WHERE id=$1 AND COALESCE(payment_status,'')='paid' LIMIT 1`,
-        [ss.service_ref]
-      )).rows[0];
-      if (already) return { attached: true, type: 'visa_assessment', assessmentId: already.id, local: true };
+function scheduleDashboardV2PdfGeneration(services, email) {
+  const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 3);
+  if (!targets.length) return [];
+  const ids = targets.map(t => t.id);
+  setImmediate(async () => {
+    for (const service of targets) {
+      try {
+        await query(
+          `INSERT INTO pdf_jobs (assessment_id, status, run_after)
+           VALUES ($1,'queued',now())
+           ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
+          [service.id]
+        );
+        await generateAssessmentPdfNow(service.id, email);
+      } catch (err) {
+        console.error('Dashboard v2 PDF generation kick failed:', service.id, err && err.message ? err.message : err);
+      }
     }
-  } catch (err) {
-    console.warn('Dashboard local service-session attach precheck skipped:', err.message);
-  }
-
-  try {
-    let session = await stripe.checkout.sessions.retrieve(sid);
-    session = await normalisePaidStripeSessionForAttachment(session);
-    const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
-    if (!paid) return { attached: false, reason: 'stripe_session_not_paid', status: session.payment_status || session.status || null };
-    const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
-    const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email || session.customer_details?.email || '');
-    if (expectedEmail && email && normaliseEmail(expectedEmail) !== email) {
-      console.warn('Dashboard Stripe attach email differs from logged-in account:', expectedEmail, email);
-    }
-    return result;
-  } catch (err) {
-    console.warn('Dashboard Stripe-session attach recovery failed:', err.message);
-    return { attached: false, error: err.message };
-  }
+  });
+  return ids;
 }
 
 app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (req, res) => {
@@ -6883,10 +6802,25 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // Permanent payment-return rule: when session_id is present, dashboard-v2 repairs/attaches
-  // the paid Stripe session before it lists records. This removes reliance on payment-complete
-  // timing and prevents an authenticated dashboard from showing zero paid services after Stripe.
-  const attachRecovery = sessionId ? await ensureDashboardStripeSessionAttached(sessionId, email) : null;
+  // v7.7 permanent payment-link repair:
+  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
+  // paid Stripe session before the dashboard list query runs. This makes the dashboard
+  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
+  // The list query still returns metadata only; PDF bytes are never read here.
+  let paymentRepair = null;
+  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
+    try {
+      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
+      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
+      if (stripePaid) {
+        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
+      }
+    } catch (err) {
+      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
+      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
+    }
+  }
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -6916,15 +6850,17 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   }));
 
   const documents = visa.concat(appeals).filter(s => s.type !== 'citizenship_test');
+  const pdfGenerationKick = scheduleDashboardV2PdfGeneration(documents, email);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v1-local-session-access-v7-1',
+    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
     loadMs: Date.now() - startedAt,
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
-    attachRecovery: attachRecovery || null,
+    paymentRepair,
+    pdfGenerationKick,
     counts: {
       visa: visa.length,
       appeals: appeals.length,
