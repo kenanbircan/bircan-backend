@@ -6362,6 +6362,41 @@ async function clientFromStripeDashboardSession(sessionId) {
   }
 }
 
+
+// v7.1: resolve Stripe-return dashboard access from local database first.
+// This avoids slow Stripe API calls during dashboard load and prevents AbortController timeouts.
+async function clientFromLocalDashboardSession(sessionId) {
+  const sid = String(sessionId || '').trim();
+  if (!sid || !/^cs_(test|live)_/i.test(sid)) return null;
+  const lookups = [
+    `SELECT client_id, client_email FROM payments WHERE stripe_session_id=$1 ORDER BY COALESCE(paid_at, created_at) DESC NULLS LAST LIMIT 1`,
+    `SELECT client_id, client_email FROM service_sessions WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`,
+    `SELECT client_id, COALESCE(client_email, applicant_email) AS client_email FROM assessments WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`,
+    `SELECT client_id, client_email FROM appeals_assessments WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`,
+    `SELECT client_id, client_email FROM citizenship_access WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`
+  ];
+  for (const sql of lookups) {
+    try {
+      const { rows } = await query(sql, [sid]);
+      const row = rows && rows[0];
+      if (!row) continue;
+      if (row.client_id) {
+        const byId = await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [row.client_id]);
+        if (byId.rows[0]) return byId.rows[0];
+      }
+      const email = normaliseEmail(row.client_email);
+      if (email) {
+        const byEmail = await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
+        if (byEmail.rows[0]) return byEmail.rows[0];
+      }
+    } catch (err) {
+      // Some older deployments may not have every table/column. Continue to the next local source.
+      console.warn('Dashboard local session lookup skipped:', err.message);
+    }
+  }
+  return null;
+}
+
 async function resolveDashboardAccess(req, res, next) {
   try {
     let client = null;
@@ -6373,9 +6408,11 @@ async function resolveDashboardAccess(req, res, next) {
     // 2) Dedicated signed dashboard access token.
     if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
 
-    // 3) Stripe return fallback: verified checkout session email -> client account.
-    // This solves cross-site cookie loss when returning from Stripe to bircanmigration.au.
-    if (!client) client = await clientFromStripeDashboardSession(dashboardSessionId(req));
+    // 3) Stripe return fallback: resolve from local paid/session records first, then Stripe only as a last resort.
+    // This solves cross-site cookie loss without delaying the dashboard on external Stripe API latency.
+    const sid = dashboardSessionId(req);
+    if (!client) client = await clientFromLocalDashboardSession(sid);
+    if (!client) client = await clientFromStripeDashboardSession(sid);
 
     if (!client) return res.status(401).json({
       ok: false,
@@ -6756,7 +6793,7 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v1',
+    version: 'dashboard-v2-stable-contract-v1-local-session-access-v7-1',
     loadMs: Date.now() - startedAt,
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
