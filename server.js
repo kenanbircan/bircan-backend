@@ -4335,6 +4335,66 @@ async function normalisePaidStripeSessionForAttachment(session) {
     }
   }
 
+  // Permanent Stripe-return recovery: if the Stripe session metadata is incomplete,
+  // recover the paid service from the local service_sessions row created at checkout-start.
+  // This prevents payment-complete/dashboard from showing an authenticated account with
+  // zero paid services merely because Stripe metadata did not include assessment_id.
+  try {
+    const ssRows = (await query(
+      `SELECT id, service_type, service_ref, client_email, selected_plan, metadata
+       FROM service_sessions
+       WHERE stripe_session_id=$1 OR id=$2
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+       LIMIT 1`,
+      [session.id, md.service_session_id || null]
+    )).rows;
+    const ss = ssRows[0];
+    if (ss && ss.service_ref) {
+      const serviceType = normaliseServiceType(ss.service_type);
+      if (serviceType === 'visa_assessment') {
+        const found = (await query('SELECT id, visa_type, selected_plan, active_plan FROM assessments WHERE id=$1 LIMIT 1', [ss.service_ref])).rows[0];
+        if (found) {
+          md.service_type = 'visa_assessment';
+          md.assessment_id = found.id;
+          md.service_ref = found.id;
+          md.service_session_id = ss.id;
+          md.client_email = md.client_email || ss.client_email || session.customer_email || '';
+          md.visa_type = md.visa_type || found.visa_type || 'visa';
+          md.plan = safePlan(md.plan || ss.selected_plan || found.active_plan || found.selected_plan || 'instant');
+          return { ...session, metadata: md, client_reference_id: found.id };
+        }
+      }
+      if (serviceType === 'appeals_assessment') {
+        const found = (await query('SELECT id, visa_subclass, selected_plan, active_plan FROM appeals_assessments WHERE id=$1 LIMIT 1', [ss.service_ref])).rows[0];
+        if (found) {
+          md.service_type = 'appeals_assessment';
+          md.appeal_assessment_id = found.id;
+          md.assessment_id = found.id;
+          md.service_ref = found.id;
+          md.service_session_id = ss.id;
+          md.client_email = md.client_email || ss.client_email || session.customer_email || '';
+          md.visa_type = md.visa_type || found.visa_subclass || 'appeals';
+          md.plan = safePlan(md.plan || ss.selected_plan || found.active_plan || found.selected_plan || 'instant');
+          return { ...session, metadata: md, client_reference_id: found.id };
+        }
+      }
+      if (serviceType === 'citizenship_test') {
+        const found = (await query('SELECT id, selected_plan, active_plan FROM citizenship_access WHERE id=$1 LIMIT 1', [ss.service_ref])).rows[0];
+        if (found) {
+          md.service_type = 'citizenship_test';
+          md.citizenship_access_id = found.id;
+          md.service_ref = found.id;
+          md.service_session_id = ss.id;
+          md.client_email = md.client_email || ss.client_email || session.customer_email || '';
+          md.plan = normaliseCitizenshipPlan(md.plan || ss.selected_plan || found.active_plan || found.selected_plan || '20');
+          return { ...session, metadata: md, client_reference_id: found.id };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Stripe session local service-session recovery skipped:', err.message);
+  }
+
   return { ...session, metadata: md };
 }
 
@@ -4958,202 +5018,48 @@ app.post('/api/citizenship/start-free', asyncRoute(handleFreeCitizenshipExamStar
 app.post('/api/citizenship/submit-exam', asyncRoute(handleFreeCitizenshipExamSubmit));
 
 
-
-function cleanStripeSessionIdForServer(value) {
-  const raw = String(value || '').trim();
-  if (!raw || raw.includes('{CHECKOUT_SESSION_ID}')) return '';
-  const match = raw.match(/cs_(?:test|live)_[A-Za-z0-9_\-]+/);
-  return match ? match[0].slice(0, 120) : raw.replace(/[^A-Za-z0-9_\-]/g, '').slice(0, 120);
-}
-
-async function findClientForDashboardFinalise({ clientId = null, email = '' } = {}) {
-  let client = null;
-  if (clientId) {
-    client = (await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [clientId])).rows[0] || null;
-  }
-  if (!client && email) {
-    client = (await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [normaliseEmail(email)])).rows[0] || null;
-  }
-  return client;
-}
-
-async function findLocalPaidCheckout(sessionId) {
-  const sid = cleanStripeSessionIdForServer(sessionId);
-  if (!sid) return null;
-  let assessment = null;
-  let serviceSession = null;
-  let payment = null;
-  let citizenship = null;
-
-  try {
-    assessment = (await query(
-      `SELECT id, client_id, client_email, applicant_email, applicant_name, visa_type,
-              selected_plan, active_plan, payment_status, status, stripe_session_id,
-              amount_cents, currency, release_at, paid_at, updated_at,
-              CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
-       FROM assessments
-       WHERE stripe_session_id=$1
-          OR id IN (SELECT service_ref FROM service_sessions WHERE stripe_session_id=$1 AND service_type='visa_assessment' AND service_ref IS NOT NULL)
-          OR id IN (SELECT service_ref FROM payments WHERE stripe_session_id=$1 AND service_type='visa_assessment' AND service_ref IS NOT NULL)
-       ORDER BY updated_at DESC NULLS LAST, paid_at DESC NULLS LAST
-       LIMIT 1`,
-      [sid]
-    )).rows[0] || null;
-  } catch (err) {
-    console.warn('Local finalise assessment lookup failed:', err.message);
-  }
-
-  try {
-    serviceSession = (await query(
-      `SELECT id, service_type, service_ref, client_id, client_email, selected_plan,
-              status, payment_status, stripe_session_id, metadata, updated_at
-       FROM service_sessions
-       WHERE stripe_session_id=$1 OR metadata->>'stripe_session_id'=$1
-       ORDER BY updated_at DESC NULLS LAST
-       LIMIT 1`,
-      [sid]
-    )).rows[0] || null;
-  } catch (err) {
-    console.warn('Local finalise service-session lookup failed:', err.message);
-  }
-
-  try {
-    payment = (await query(
-      `SELECT id, client_id, client_email, service_type, service_ref, status, stripe_session_id,
-              amount_cents, currency, plan, paid_at, stripe_created_at, updated_at
-       FROM payments
-       WHERE stripe_session_id=$1
-       ORDER BY COALESCE(paid_at, stripe_created_at, updated_at) DESC NULLS LAST
-       LIMIT 1`,
-      [sid]
-    )).rows[0] || null;
-  } catch (err) {
-    console.warn('Local finalise payment lookup failed:', err.message);
-  }
-
-  try {
-    citizenship = (await query(
-      `SELECT id, client_id, client_email, plan, status, stripe_session_id, payment_status, updated_at
-       FROM citizenship_access
-       WHERE stripe_session_id=$1
-       ORDER BY updated_at DESC NULLS LAST
-       LIMIT 1`,
-      [sid]
-    )).rows[0] || null;
-  } catch (_err) {
-    // Some deployments may not have this table/column shape. Visa/appeals still work.
-  }
-
-  const paid = [
-    assessment && assessment.payment_status,
-    assessment && assessment.status,
-    serviceSession && serviceSession.payment_status,
-    serviceSession && serviceSession.status,
-    payment && payment.status,
-    citizenship && citizenship.payment_status,
-    citizenship && citizenship.status
-  ].some(v => /paid|complete|completed|active|verified|pdf_ready|advice_ready/i.test(String(v || '')));
-
-  if (!paid) return null;
-
-  const serviceType = normaliseServiceType(
-    (assessment && 'visa_assessment') ||
-    (serviceSession && serviceSession.service_type) ||
-    (payment && payment.service_type) ||
-    (citizenship && 'citizenship_test') ||
-    'visa_assessment'
-  );
-  const isCitizenship = serviceType === 'citizenship_test' || serviceType === 'citizenship';
-  const assessmentId = isCitizenship
-    ? null
-    : ((assessment && assessment.id) || (serviceSession && serviceSession.service_ref) || (payment && payment.service_ref) || null);
-  const accessId = isCitizenship
-    ? ((citizenship && citizenship.id) || (serviceSession && serviceSession.service_ref) || (payment && payment.service_ref) || null)
-    : null;
-  const email = normaliseEmail(
-    (assessment && (assessment.client_email || assessment.applicant_email)) ||
-    (serviceSession && serviceSession.client_email) ||
-    (payment && payment.client_email) ||
-    (citizenship && citizenship.client_email) || ''
-  );
-  const clientId = (assessment && assessment.client_id) || (serviceSession && serviceSession.client_id) || (payment && payment.client_id) || (citizenship && citizenship.client_id) || null;
-  const client = await findClientForDashboardFinalise({ clientId, email });
-  return {
-    fromLocalDatabase: true,
-    paid: true,
-    serviceType,
-    isCitizenship,
-    assessmentId,
-    accessId,
-    plan: (assessment && (assessment.active_plan || assessment.selected_plan)) || (serviceSession && serviceSession.selected_plan) || (payment && payment.plan) || (citizenship && citizenship.plan) || null,
-    pdfReady: Boolean(assessment && assessment.has_pdf),
-    client,
-    email
-  };
-}
-
-function sendPaymentFinaliseResponse(req, res, sessionId, result = {}) {
-  const serviceType = normaliseServiceType(result.serviceType || result.type || result.service || 'visa_assessment');
-  const isCitizenship = Boolean(result.isCitizenship) || serviceType === 'citizenship_test' || serviceType === 'citizenship';
-  const client = result.client || null;
-  if (client) setSessionCookie(res, sign(client));
-  const dashboardToken = client ? signDashboardAccessToken(client) : null;
-  const redirectUrl = isCitizenship
-    ? `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || result.assessmentId || '')}&session_id=${encodeURIComponent(sessionId)}`
-    : `${APP_BASE_URL}/account-dashboard.html?payment=verified&assessment_id=${encodeURIComponent(result.assessmentId || '')}&session_id=${encodeURIComponent(sessionId)}`;
-  return res.json({
-    ok: true,
-    status: 'paid',
-    verified: true,
-    paymentLinked: true,
-    finaliseMode: result.fromLocalDatabase ? 'local-database' : 'stripe-verified',
-    service: isCitizenship ? 'citizenship' : serviceType,
-    sessionId,
-    assessmentId: result.assessmentId || null,
-    assessment_id: result.assessmentId || null,
-    accessId: result.accessId || null,
-    citizenshipAccessId: result.accessId || null,
-    plan: result.plan || null,
-    pdfReady: Boolean(result.pdfReady),
-    client,
-    user: client,
-    token: client ? sign(client) : null,
-    dashboardAccessToken: dashboardToken,
-    accessToken: dashboardToken,
-    redirectUrl
-  });
-}
-
 async function finaliseStripePayment(req, res) {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
 
-  const sessionId = cleanStripeSessionIdForServer(req.body.sessionId || req.body.session_id || req.body.checkoutSessionId || req.query.session_id || req.query.sessionId);
-  if (!sessionId) {
+  const sessionId = req.body.sessionId || req.body.session_id || req.body.checkoutSessionId || req.query.session_id || req.query.sessionId;
+  if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) {
     return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   }
 
-  // Permanent payment-return rule:
-  // If the webhook or a previous finalise call has already attached this paid session,
-  // return from local Postgres immediately. Do not call Stripe and do not touch PDF bytes.
-  const localPaid = await findLocalPaidCheckout(sessionId);
-  if (localPaid) return sendPaymentFinaliseResponse(req, res, sessionId, localPaid);
-
-  // First-time fallback: verify with Stripe, attach payment, queue PDF generation only.
-  // Never wait for PDF generation on the payment-complete page.
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
-  const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email || (session.customer_details && session.customer_details.email));
-  const client = await findClientForDashboardFinalise({ email });
-  return sendPaymentFinaliseResponse(req, res, sessionId, {
-    fromLocalDatabase: false,
-    serviceType: result.type || (session.metadata || {}).service_type || 'visa_assessment',
-    assessmentId: result.assessmentId || (session.metadata || {}).assessment_id || null,
-    accessId: result.accessId || (session.metadata || {}).citizenship_access_id || null,
-    plan: result.plan || (session.metadata || {}).plan || null,
+  // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
+  // This restores the client session from the paid Stripe session email, so the dashboard opens cleanly.
+  const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
+  let client = null;
+  if (email) {
+    const clientRows = await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1)', [email]);
+    client = clientRows.rows[0] || null;
+    if (client) setSessionCookie(res, sign(client));
+  }
+
+  const serviceType = result.type || (session.metadata || {}).service_type || 'visa_assessment';
+  const isCitizenship = serviceType === 'citizenship_test' || serviceType === 'citizenship';
+  const redirectUrl = isCitizenship
+    ? `${APP_BASE_URL}/account-dashboard.html?payment=verified&service=citizenship&citizenship=active&access_id=${encodeURIComponent(result.accessId || result.assessmentId || '')}&session_id=${encodeURIComponent(sessionId)}`
+    : `${APP_BASE_URL}/account-dashboard.html?payment=verified&assessment_id=${encodeURIComponent(result.assessmentId || '')}&session_id=${encodeURIComponent(sessionId)}`;
+  res.json({
+    ok: true,
+    status: 'paid',
+    paymentLinked: true,
+    service: isCitizenship ? 'citizenship' : serviceType,
+    sessionId,
+    assessmentId: result.assessmentId,
+    accessId: result.accessId || null,
+    citizenshipAccessId: result.accessId || null,
+    plan: result.plan || null,
     pdfReady: result.pdfReady,
-    client
+    client,
+    dashboardAccessToken: client ? signDashboardAccessToken(client) : null,
+    accessToken: client ? signDashboardAccessToken(client) : null,
+    redirectUrl
   });
 }
 
@@ -6910,12 +6816,77 @@ async function queryDashboardV2Payments(email, sessionId) {
   catch (err) { console.warn('Dashboard v2 payments query failed:', err.message); return []; }
 }
 
+
+async function ensureDashboardStripeSessionAttached(sessionId, expectedEmail = '') {
+  const sid = String(sessionId || '').trim();
+  if (!stripe || !sid || !/^cs_(test|live)_/i.test(sid)) return null;
+
+  // If the assessment is already attached locally, do not call Stripe again.
+  try {
+    const local = (await query(
+      `SELECT id, client_email, payment_status, status
+       FROM assessments
+       WHERE stripe_session_id=$1 AND COALESCE(payment_status,'')='paid'
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+       LIMIT 1`,
+      [sid]
+    )).rows[0];
+    if (local) return { attached: true, type: 'visa_assessment', assessmentId: local.id, local: true };
+  } catch (err) {
+    console.warn('Dashboard local paid assessment check skipped:', err.message);
+  }
+
+  // Local service_sessions recovery is cheap and usually gives the assessment id.
+  // If service_session says paid/checkout_created but the assessment has not been marked paid,
+  // attach from Stripe once here. This makes payment-complete non-critical: dashboard load repairs the link.
+  try {
+    const ss = (await query(
+      `SELECT id, service_type, service_ref, client_email, payment_status, stripe_session_id
+       FROM service_sessions
+       WHERE stripe_session_id=$1
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+       LIMIT 1`,
+      [sid]
+    )).rows[0];
+    if (ss && normaliseServiceType(ss.service_type) === 'visa_assessment' && ss.service_ref) {
+      const already = (await query(
+        `SELECT id, payment_status FROM assessments WHERE id=$1 AND COALESCE(payment_status,'')='paid' LIMIT 1`,
+        [ss.service_ref]
+      )).rows[0];
+      if (already) return { attached: true, type: 'visa_assessment', assessmentId: already.id, local: true };
+    }
+  } catch (err) {
+    console.warn('Dashboard local service-session attach precheck skipped:', err.message);
+  }
+
+  try {
+    let session = await stripe.checkout.sessions.retrieve(sid);
+    session = await normalisePaidStripeSessionForAttachment(session);
+    const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
+    if (!paid) return { attached: false, reason: 'stripe_session_not_paid', status: session.payment_status || session.status || null };
+    const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+    const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email || session.customer_details?.email || '');
+    if (expectedEmail && email && normaliseEmail(expectedEmail) !== email) {
+      console.warn('Dashboard Stripe attach email differs from logged-in account:', expectedEmail, email);
+    }
+    return result;
+  } catch (err) {
+    console.warn('Dashboard Stripe-session attach recovery failed:', err.message);
+    return { attached: false, error: err.message };
+  }
+}
+
 app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
   const clientId = req.client.id;
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
+
+  // Permanent payment-return rule: when session_id is present, dashboard-v2 repairs/attaches
+  // the paid Stripe session before it lists records. This removes reliance on payment-complete
+  // timing and prevents an authenticated dashboard from showing zero paid services after Stripe.
+  const attachRecovery = sessionId ? await ensureDashboardStripeSessionAttached(sessionId, email) : null;
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -6953,6 +6924,7 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
+    attachRecovery: attachRecovery || null,
     counts: {
       visa: visa.length,
       appeals: appeals.length,
