@@ -7158,7 +7158,11 @@ app.get('/api/documents/open-pdf', asyncRoute(async (req, res) => {
   try {
     decoded = jwt.verify(rawToken.replace(/^Bearer\s+/i, ''), SESSION_SECRET);
   } catch (_err) {
-    return res.status(401).send('Login token is invalid or expired. Please log in again.');
+    try {
+      decoded = jwt.verify(rawToken.replace(/^Bearer\s+/i, ''), dashboardTokenSecret());
+    } catch (_err2) {
+      return res.status(401).send('Login token is invalid or expired. Please log in again.');
+    }
   }
 
   const clientRows = await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [decoded.sub]);
@@ -7178,7 +7182,7 @@ app.get('/api/documents/open-pdf', asyncRoute(async (req, res) => {
   return res.status(400).send('Unsupported document type.');
 }));
 
-app.post('/api/documents/pdf-link', requireAuth, asyncRoute(async (req, res) => {
+app.post('/api/documents/pdf-link', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type);
   const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
   const requestedSession = req.body && (req.body.session_id || req.body.sessionId || req.body.stripe_session_id || req.body.stripeSessionId);
@@ -7287,7 +7291,7 @@ function documentEmailSubject(doc) {
   return `Your ${subclass ? `Subclass ${subclass} ` : ''}advice letter is ready`;
 }
 
-app.post('/api/documents/email-pdf', requireAuth, asyncRoute(async (req, res) => {
+app.post('/api/documents/email-pdf', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type);
   const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
 
