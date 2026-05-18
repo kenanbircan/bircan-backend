@@ -6589,6 +6589,198 @@ async function handleDashboardFast(req, res) {
   });
 }
 
+
+
+// ---- Account dashboard v2: one stable client-portal contract ----
+// This endpoint is the preferred dashboard feed. The frontend should not guess
+// between legacy response shapes. It returns one predictable structure with
+// document_status and pdf access state for each service record.
+function dashboardV2PlanLabel(plan) {
+  const p = safePlan(plan || 'instant');
+  if (p === '24h') return '24 Hours';
+  if (p === '3d') return '3 Days';
+  return 'Instant';
+}
+
+function dashboardV2PdfStatus(row, type) {
+  if (type === 'citizenship_test') return 'active';
+  const paid = String(row.payment_status || '').toLowerCase() === 'paid';
+  const hasPdf = Boolean(row.has_pdf);
+  const locked = Boolean(row.locked) || Number(row.release_seconds_remaining || 0) > 0;
+  const raw = String(row.status || '').toLowerCase();
+  if (!paid) return 'awaiting_payment';
+  if (locked) return 'release_locked';
+  if (hasPdf) return 'pdf_ready';
+  if (/failed|error|blocked/.test(raw)) return 'pdf_failed';
+  if (/generating|processing|building/.test(raw)) return 'pdf_generating';
+  if (/review/.test(raw)) return 'manual_review_required';
+  return 'pdf_queued';
+}
+
+function dashboardV2Progress(status) {
+  return ({
+    awaiting_payment: 0,
+    payment_confirmed: 20,
+    release_locked: 25,
+    pdf_queued: 40,
+    pdf_generating: 70,
+    manual_review_required: 15,
+    pdf_failed: 10,
+    pdf_ready: 100,
+    active: 100
+  })[status] || 0;
+}
+
+function dashboardV2StatusLabel(status) {
+  return ({
+    awaiting_payment: 'Awaiting payment',
+    payment_confirmed: 'Payment confirmed',
+    release_locked: 'Locked until release',
+    pdf_queued: 'Advice letter queued',
+    pdf_generating: 'Advice letter generating',
+    manual_review_required: 'Manual review required',
+    pdf_failed: 'PDF generation failed',
+    pdf_ready: 'PDF ready',
+    active: 'Active'
+  })[status] || 'Processing';
+}
+
+function dashboardV2Service(row, type, dashboardToken) {
+  const status = dashboardV2PdfStatus(row, type);
+  const id = row.id || row.service_ref || row.reference || '';
+  const plan = row.active_plan || row.selected_plan || row.plan || 'instant';
+  const canOpenPdf = (type === 'visa_assessment' || type === 'appeals_assessment') && status === 'pdf_ready';
+  const title = type === 'visa_assessment'
+    ? `Subclass ${row.visa_type || row.subclass || ''} assessment`.trim()
+    : type === 'appeals_assessment'
+      ? 'Appeals assessment'
+      : 'Australian Citizenship Test Practice';
+  return {
+    id,
+    type,
+    title,
+    subclass: row.visa_type || row.subclass || null,
+    applicantName: row.applicant_name || null,
+    applicantEmail: row.applicant_email || null,
+    plan,
+    planLabel: dashboardV2PlanLabel(plan),
+    paymentStatus: row.payment_status || row.status || null,
+    amountCents: row.amount_cents || null,
+    currency: row.currency || 'aud',
+    stripeSessionId: row.stripe_session_id || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null,
+    releaseAt: row.release_at || null,
+    releaseSecondsRemaining: Number(row.release_seconds_remaining || 0),
+    documentStatus: status,
+    documentStatusLabel: dashboardV2StatusLabel(status),
+    progress: dashboardV2Progress(status),
+    hasPdf: status === 'pdf_ready',
+    canOpenPdf,
+    canEmailPdf: canOpenPdf,
+    pdfLinkEndpoint: canOpenPdf ? '/api/documents/pdf-link' : null,
+    finalPdfUrl: canOpenPdf ? buildFinalPdfUrl(id, dashboardToken) : null,
+    generationError: row.generation_error || null
+  };
+}
+
+async function queryDashboardV2Appeals(email, clientId, sessionId) {
+  const sql = `
+    SELECT id, 'appeals_assessment' AS service_type, client_email, applicant_email, applicant_name,
+           selected_plan, active_plan,
+           CASE WHEN COALESCE(payment_status,'')='paid' THEN 'paid' ELSE COALESCE(payment_status,status,'submitted') END AS payment_status,
+           amount_cents, currency, stripe_session_id, status, created_at, updated_at, release_at,
+           pdf_generated_at, pdf_filename, generation_error,
+           CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
+           CASE WHEN COALESCE(payment_status,'')='paid' AND (release_at IS NULL OR release_at <= now()) THEN true ELSE false END AS release_ready,
+           GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(release_at, now()) - now())))::integer AS release_seconds_remaining
+    FROM appeals_assessments
+    WHERE lower(COALESCE(client_email,''))=lower($1)
+       OR client_id=$2
+       OR ($3 <> '' AND COALESCE(stripe_session_id,'')=$3)
+    ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST
+    LIMIT 20`;
+  try { return (await query(sql, [email, clientId, sessionId || ''])).rows; }
+  catch (err) { console.warn('Dashboard v2 appeals query failed:', err.message); return []; }
+}
+
+async function queryDashboardV2Payments(email, sessionId) {
+  const sql = `
+    SELECT id, service_type, service_ref, status, stripe_session_id, stripe_payment_intent,
+           amount_cents, currency, plan, created_at, paid_at, stripe_created_at,
+           receipt_url, invoice_url
+    FROM payments
+    WHERE lower(COALESCE(client_email,''))=lower($1)
+       OR ($2 <> '' AND COALESCE(stripe_session_id,'')=$2)
+    ORDER BY COALESCE(paid_at, stripe_created_at, created_at) DESC NULLS LAST
+    LIMIT 50`;
+  try { return (await query(sql, [email, sessionId || ''])).rows; }
+  catch (err) { console.warn('Dashboard v2 payments query failed:', err.message); return []; }
+}
+
+app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (req, res) => {
+  const startedAt = Date.now();
+  const email = normaliseEmail(req.client.email);
+  const clientId = req.client.id;
+  const sessionId = dashboardSessionId(req);
+  const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
+
+  const [fastRows, appealRows, paymentRows] = await Promise.all([
+    queryDashboardFastRows(email, clientId, sessionId),
+    queryDashboardV2Appeals(email, clientId, sessionId),
+    queryDashboardV2Payments(email, sessionId)
+  ]);
+
+  const visa = dedupeDashboardRows(fastRows.visaRows || [], ['duplicate_key', 'id'])
+    .map(row => dashboardV2Service(row, 'visa_assessment', dashboardToken));
+  const appeals = dedupeDashboardRows(appealRows || [], ['id'])
+    .map(row => dashboardV2Service(row, 'appeals_assessment', dashboardToken));
+  const citizenship = (fastRows.citizenshipRows || [])
+    .map(row => dashboardV2Service(row, 'citizenship_test', dashboardToken));
+  const payments = (paymentRows || []).map(p => ({
+    id: p.id || p.stripe_session_id || p.stripe_payment_intent,
+    type: 'payment',
+    serviceType: normaliseServiceType(p.service_type),
+    serviceRef: p.service_ref || null,
+    status: p.status || null,
+    stripeSessionId: p.stripe_session_id || null,
+    paymentIntent: p.stripe_payment_intent || null,
+    amountCents: p.amount_cents || null,
+    currency: p.currency || 'aud',
+    plan: p.plan || null,
+    paidAt: p.paid_at || p.stripe_created_at || p.created_at || null,
+    receiptUrl: p.receipt_url || p.invoice_url || null
+  }));
+
+  const documents = visa.concat(appeals).filter(s => s.type !== 'citizenship_test');
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    version: 'dashboard-v2-stable-contract-v1',
+    loadMs: Date.now() - startedAt,
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    dashboardAccessToken: dashboardToken,
+    sessionId: sessionId || null,
+    counts: {
+      visa: visa.length,
+      appeals: appeals.length,
+      citizenship: citizenship.length,
+      payments: payments.length,
+      documentsReady: documents.filter(d => d.documentStatus === 'pdf_ready').length,
+      documentsPending: documents.filter(d => d.documentStatus !== 'pdf_ready').length
+    },
+    services: { visa, appeals, citizenship },
+    documents,
+    payments,
+    timeline: {
+      accountVerified: true,
+      paymentLinked: visa.concat(appeals, citizenship).some(s => s.paymentStatus === 'paid') || payments.some(p => p.status === 'paid'),
+      adviceReady: documents.some(d => d.documentStatus === 'pdf_ready'),
+      documentAccess: documents.some(d => d.canOpenPdf)
+    }
+  });
+}));
+
 app.get('/api/account/dashboard-open', resolveDashboardAccess, asyncRoute(handleDashboardFast));
 app.get('/api/account/dashboard-fast', resolveDashboardAccess, asyncRoute(handleDashboardFast));
 app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handleDashboardFast));
