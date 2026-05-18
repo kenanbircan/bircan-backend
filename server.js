@@ -112,7 +112,7 @@ const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !=
 const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
-const PDF_OPEN_ON_DEMAND_PATCH = 'paid-released-assessment-open-generates-pdf-v1';
+const PDF_OPEN_ON_DEMAND_PATCH = 'issued-pdf-only-dashboard-open-v2';
 
 function requestBaseUrl(req) {
   const proto = (req && (req.headers['x-forwarded-proto'] || req.protocol)) || 'https';
@@ -6461,7 +6461,7 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
              COALESCE(a.amount_cents, p.amount_cents) AS effective_amount_cents,
              COALESCE(a.currency, p.currency, 'aud') AS effective_currency,
              COALESCE(a.stripe_session_id, p.stripe_session_id, ss.stripe_session_id) AS effective_stripe_session_id,
-             a.status, a.created_at, a.updated_at, a.release_at, a.pdf_generated_at, a.pdf_filename, a.pdf_sha256,
+             a.status, a.created_at, a.updated_at, a.release_at, a.pdf_generated_at, a.pdf_filename, a.pdf_sha256, a.pdf_bytes,
              COALESCE(p.plan, ss.selected_plan, a.active_plan, a.selected_plan, 'instant') AS effective_plan
       FROM matches a
       LEFT JOIN payments p ON p.service_type='visa_assessment' AND (p.service_ref=a.id OR p.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND p.stripe_session_id=$3))
@@ -6478,8 +6478,8 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            visa_type, applicant_email, applicant_name,
            effective_plan AS selected_plan,
            effective_plan AS active_plan,
-           CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN 'pdf_ready'
-                WHEN effective_payment_status='paid' THEN COALESCE(NULLIF(status,''),'paid')
+           CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready'
+                WHEN effective_payment_status='paid' THEN COALESCE(NULLIF(status,''),'pdf_queued')
                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
            effective_payment_status AS payment_status,
            effective_amount_cents AS amount_cents,
@@ -6491,7 +6491,7 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
              WHEN lower(regexp_replace(COALESCE(effective_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
            END AS release_at,
-           CASE WHEN pdf_generated_at IS NOT NULL OR pdf_sha256 IS NOT NULL OR pdf_filename IS NOT NULL THEN true ELSE false END AS has_pdf,
+           CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
            CASE WHEN effective_payment_status='paid' THEN true ELSE false END AS release_ready,
            0::integer AS release_seconds_remaining
     FROM enriched
@@ -6548,15 +6548,20 @@ async function handleDashboardFast(req, res) {
     const paid = row.payment_status === 'paid';
     const secondsRemaining = Math.max(0, Number(row.release_seconds_remaining || 0));
     const locked = paid && secondsRemaining > 0;
-    const canOpenPdf = paid && !locked;
+    // A paid/released assessment is not the same as an issued PDF.
+    // The dashboard must only show/open the final advice letter after real PDF bytes
+    // have been saved for that exact assessment id. Otherwise a newly paid matter can
+    // be displayed as ready too early and the client may open an older generated PDF.
+    const hasIssuedPdf = Boolean(row.has_pdf);
+    const canOpenPdf = paid && !locked && hasIssuedPdf;
     return {
       ...row,
-      release_ready: canOpenPdf,
+      release_ready: paid && !locked,
       ready: canOpenPdf,
       locked,
-      has_pdf: Boolean(row.has_pdf || canOpenPdf),
-      status: canOpenPdf ? 'pdf_ready' : row.status,
-      actionLabel: canOpenPdf ? 'Open PDF' : (paid ? `${normalisePlanLabel(plan)} release pending` : 'Complete payment'),
+      has_pdf: hasIssuedPdf,
+      status: canOpenPdf ? 'pdf_ready' : (paid ? (row.status || 'pdf_queued') : row.status),
+      actionLabel: canOpenPdf ? 'Open PDF' : (paid ? 'PDF generating' : 'Complete payment'),
       finalPdfUrl: canOpenPdf ? buildFinalPdfUrl(row.id, dashboardToken) : null,
       pdfUrl: canOpenPdf ? buildFinalPdfUrl(row.id, dashboardToken) : null,
       downloadUrl: canOpenPdf ? buildFinalPdfUrl(row.id, dashboardToken) : null
