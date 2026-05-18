@@ -6277,8 +6277,12 @@ function dedupeDashboardRows(rows, idFields = ['id']) {
     // Payment-return consolidation: one Stripe Checkout session can only represent one
     // paid service card. Prefer the real subclass row (186/187/etc.) over any old
     // generic `visa` shell that was linked to the same session.
-    const key = String(serviceType === 'visa_assessment' && stripe
-      ? `${serviceType}:stripe:${stripe}`
+    // Visa assessments must never be collapsed by Stripe session, duplicate key,
+    // subclass, fingerprint or client email. Each paid assessment is a separate
+    // professional matter and its PDF must be opened by exact assessment id only.
+    const exactId = row && (row.id || row.assessment_id || row.assessmentId || row.service_ref || row.reference);
+    const key = String(serviceType === 'visa_assessment'
+      ? (exactId ? `${serviceType}:id:${exactId}` : `${serviceType}:fallback:${JSON.stringify(row || {})}`)
       : direct ? `${serviceType}:id:${direct}`
       : stripe ? `${serviceType}:stripe:${stripe}`
       : intent ? `${serviceType}:intent:${intent}`
@@ -6782,7 +6786,7 @@ app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
      ORDER BY COALESCE(created_at, updated_at) DESC`,
     [req.client.email, req.client.id]
   );
-  const dedupedVisaRows = dedupeDashboardRows(rows, ['duplicate_key', 'id']);
+  const dedupedVisaRows = dedupeDashboardRows(rows, ['id']);
   res.json({ ok: true, visa: dedupedVisaRows, visaAssessments: dedupedVisaRows, assessments: dedupedVisaRows, count: dedupedVisaRows.length });
 }));
 
@@ -7019,9 +7023,19 @@ async function resolveAssessmentByStripeSessionForAccount(stripeSessionId, email
 }
 
 async function sendAssessmentPdf(req, res, rawId) {
+  const requestedId = String(rawId || '').trim();
   const returnStripeSession = String((req.query && (req.query.stripe_session_id || req.query.session_id || req.query.sessionId)) || '').trim();
-  let assessment = await resolveAssessmentByStripeSessionForAccount(returnStripeSession, req.client.email);
-  if (!assessment) assessment = await resolveAssessmentForAccount(rawId, req.client.email);
+
+  // Permanent PDF identity rule:
+  // The route id is the record selector. Stripe session is only an access/context
+  // proof and must never override the requested assessment id.
+  let assessment = await resolveAssessmentForAccount(requestedId, req.client.email);
+
+  // Backward-compatible fallback only for legacy calls that do not provide an id.
+  if (!assessment && !requestedId && returnStripeSession) {
+    assessment = await resolveAssessmentByStripeSessionForAccount(returnStripeSession, req.client.email);
+  }
+
   if (!assessment) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
   const effectiveVisaPlan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
   if (!isInstantPlan(effectiveVisaPlan) && assessment.release_at && new Date(assessment.release_at).getTime() > Date.now()) {
@@ -7164,7 +7178,10 @@ app.post('/api/documents/pdf-link', requireAuth, asyncRoute(async (req, res) => 
   const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
   const requestedSession = req.body && (req.body.session_id || req.body.sessionId || req.body.stripe_session_id || req.body.stripeSessionId);
   let checked = await assertDocumentCanBeOpenedByEmail(requestedType, requestedId, req.client.email);
-  if (normaliseServiceType(requestedType) === 'visa_assessment' && requestedSession) {
+  // Security/permanency rule: if an assessment id/reference was requested, a
+  // Stripe session may prove access but must never replace the requested id.
+  // This prevents an old checkout session from opening a previous assessment PDF.
+  if (normaliseServiceType(requestedType) === 'visa_assessment' && requestedSession && !requestedId) {
     const bySession = await resolveAssessmentByStripeSessionForAccount(requestedSession, req.client.email);
     if (bySession) checked = { ok: true, type: 'visa_assessment', id: bySession.id };
   }
