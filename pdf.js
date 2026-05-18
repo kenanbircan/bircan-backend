@@ -1687,12 +1687,13 @@ function v12CompactPosition(item) {
         ? 'This issue requires verification before the matter is treated as lodgement-ready.'
         : 'This issue should be checked and reconciled during the final evidence review.';
   }
-  return text.length > 190 ? text.slice(0, 187).replace(/\s+\S*$/, '') + '…' : text;
+  // Do not truncate legal findings. PDF layout must wrap or create a taller card instead.
+  return cleanText(text, 'Verification required.');
 }
 
 function v12CompactAction(item) {
-  const text = fixGeneratedActionGrammar(item.actionRequired || item.professionalFinding || 'Verify this criterion against original documents before lodgement.');
-  return text.length > 170 ? text.slice(0, 167).replace(/\s+\S*$/, '') + '…' : text;
+  // Do not truncate legal action text. Appendix rendering uses dynamic-height cards.
+  return cleanText(fixGeneratedActionGrammar(item.actionRequired || item.professionalFinding || 'Verify this criterion against original documents before lodgement.'), 'Verify this criterion against original documents before lodgement.');
 }
 
 function v12WriteCriteriaTable(doc, group, items) {
@@ -2024,8 +2025,16 @@ function bmAppendixAreaLabel(value, issue) {
 
 function bmNormaliseAppendixRisk(row) {
   const text = cleanText(`${row.area || ''} ${row.issue || ''} ${row.position || ''} ${row.action || ''}`).toLowerCase();
-  if (/valid application|schedule 1|executed labour agreement|labour agreement.*(current|applies|coverage|covered)|occupation.*covered by.*labour agreement|nomination.*(agreement terms|reconcile)|salary.*amsr|amsr.*salary|evidence sufficiency|lodgement readiness|nomination can support.*decision/.test(text)) return 'Critical';
-  if (/identity|biographical|lawful status|visa status|current location|full-time position|genuine nominated position|position not created|employment contract|concession|english|skills|qualification|registration|licens|character|pic 4020|4020|special return|prior refusal|cancellation|family member|secondary applicant|police|court|health|work-rights|market salary|guaranteed earnings|employment terms|consistency/.test(text)) return 'High';
+
+  // Critical is reserved for true threshold blockers. Do not escalate ordinary
+  // verification issues merely because the action says “verify”, “review”, or “required”.
+  if (/schedule 1|valid application requirements|all schedule 1 validity/.test(text)) return 'Critical';
+  if (/nomination can support.*decision|valid employer nomination exists|nomination.*through to decision/.test(text)) return 'Critical';
+  if (/executed labour agreement.*(current|applies)|labour agreement.*current.*applies|occupation.*expressly covered by.*labour agreement|nomination.*exact labour agreement terms|reconcile.*labour agreement terms/.test(text)) return 'Critical';
+  if (/salary.*amsr.*labour agreement|amsr.*salary.*labour agreement|salary.*concession/.test(text)) return 'Critical';
+  if (/evidence sufficiency|lodgement readiness/.test(text)) return 'Critical';
+
+  if (/identity|biographical|lawful status|visa status|current location|full-time position|genuine nominated position|position not created|employment contract|concession|age requirement|english|skills|qualification|registration|licens|character|pic 4020|4020|special return|prior refusal|cancellation|family member|secondary applicant|police|court|health|work-rights|employment compliance|market salary|guaranteed earnings|employment terms|consistency|document integrity/.test(text)) return 'High';
   return 'Managed';
 }
 
@@ -2059,76 +2068,65 @@ function bmWriteAppendixSchedule(doc, criteria) {
   writeTitle(doc, 'Appendix A — Full grant criteria review', { gold: true });
   writePara(doc, 'This appendix is a professional lodgement-readiness schedule. It records the issue, risk level, assessment position and required action for file control. It is not a guarantee that each criterion is satisfied.', { size: 9.2 });
 
-  const columns = [
-    { key: 'area', label: 'Area', width: 58 },
-    { key: 'issue', label: 'Issue', width: 142 },
-    { key: 'risk', label: 'Risk', width: 50 },
-    { key: 'position', label: 'Position', width: 88 },
-    { key: 'action', label: 'Required action', width: PAGE.WIDTH - 338 }
-  ];
-  const tableX = PAGE.L;
-  const tableW = columns.reduce((n, c) => n + c.width, 0);
-  const headerH = 23;
-
-  function drawHeader() {
-    ensureSpace(doc, headerH + 18);
-    const y = doc.y;
-    doc.roundedRect(tableX, y, tableW, headerH, 5).fillAndStroke(BRAND.navy, BRAND.navy);
-    let x = tableX;
-    for (const col of columns) {
-      doc.font('Helvetica-Bold').fontSize(6.8).fillColor('#ffffff')
-        .text(col.label, x + 4, y + 8, { width: col.width - 8, lineBreak: false });
-      x += col.width;
-    }
-    doc.y = y + headerH;
-    doc.x = PAGE.L;
-  }
-
-  drawHeader();
+  // Permanent Appendix layout: use full-width schedule cards, not a 5-column table.
+  // The old table made the Required action column too narrow and forced ellipses.
+  // These cards calculate their own height and page-break before drawing, so legal text
+  // wraps naturally and is not cut off.
+  const pad = 12;
+  const badgeW = 86;
+  const gap = 9;
+  const innerW = PAGE.WIDTH - (pad * 2);
+  const titleW = innerW - badgeW - gap;
 
   for (const row of rows) {
-    const values = {
-      area: cleanText(row.area),
-      issue: cleanText(row.issue),
-      risk: cleanText(row.risk).toUpperCase(),
-      position: cleanText(row.position),
-      action: cleanText(row.action)
-    };
-    const heights = columns.map(col => {
-      const font = col.key === 'risk' || col.key === 'issue' ? 'Helvetica-Bold' : 'Helvetica';
-      const size = col.key === 'risk' ? 6.2 : 6.8;
-      return doc.font(font).fontSize(size).heightOfString(values[col.key], { width: col.width - 8, lineGap: 1.05 });
-    });
-    let h = Math.max(46, Math.max(...heights) + 18);
-    const maxPageRowH = PAGE.BOTTOM - PAGE.TOP - headerH - 18;
-    if (h > maxPageRowH) h = maxPageRowH;
-    if (doc.y + h > PAGE.BOTTOM) {
-      addPage(doc, 'Appendix A — full grant criteria review');
-      drawHeader();
-    }
+    const area = cleanText(row.area, 'Criteria');
+    const issue = cleanText(row.issue, 'Criterion requiring verification');
+    const risk = cleanText(row.risk, 'Managed');
+    const position = cleanText(row.position, 'Manage through evidence review.');
+    const action = cleanText(row.action, 'Verify this criterion against original documents before lodgement.');
+    const colour = riskColour(risk);
+
+    const title = `${area} — ${issue}`;
+    const positionText = `Position: ${position}`;
+    const actionText = `Required action: ${action}`;
+
+    doc.font('Helvetica-Bold').fontSize(9.2);
+    const titleH = doc.heightOfString(title, { width: titleW, lineGap: 1.45 });
+    doc.font('Helvetica').fontSize(8.7);
+    const positionH = doc.heightOfString(positionText, { width: innerW, lineGap: 1.7 });
+    const actionH = doc.heightOfString(actionText, { width: innerW, lineGap: 1.7 });
+    const cardH = Math.max(82, titleH + positionH + actionH + 48);
+
+    ensureSpace(doc, cardH + 9);
     const y = doc.y;
-    doc.rect(tableX, y, tableW, h).fillAndStroke('#ffffff', '#d8e0ea');
-    let x = tableX;
-    for (const col of columns) {
-      doc.rect(x, y, col.width, h).stroke('#d8e0ea');
-      if (col.key === 'risk') {
-        const colour = riskColour(values.risk);
-        const pillH = 16;
-        doc.roundedRect(x + 4, y + 8, col.width - 8, pillH, 7).fillAndStroke(colour.bg, colour.border);
-        doc.font('Helvetica-Bold').fontSize(5.8).fillColor(colour.text)
-          .text(values[col.key], x + 5, y + 13, { width: col.width - 10, align: 'center', lineBreak: false });
-      } else {
-        const isIssue = col.key === 'issue';
-        doc.font(isIssue ? 'Helvetica-Bold' : 'Helvetica').fontSize(6.8).fillColor(isIssue ? BRAND.navy : BRAND.text)
-          .text(values[col.key], x + 4, y + 8, { width: col.width - 8, lineGap: 1.05, height: h - 14, ellipsis: true });
-      }
-      x += col.width;
-    }
-    doc.y = y + h;
+
+    doc.roundedRect(PAGE.L, y, PAGE.WIDTH, cardH, 8).fillAndStroke('#ffffff', '#d8e0ea');
+
+    doc.font('Helvetica-Bold').fontSize(9.2).fillColor(BRAND.navy)
+      .text(title, PAGE.L + pad, y + 11, { width: titleW, lineGap: 1.45 });
+
+    const badgeY = y + 10;
+    doc.roundedRect(PAGE.R - badgeW - pad, badgeY, badgeW, 19, 9)
+      .fillAndStroke(colour.bg, colour.border);
+    doc.font('Helvetica-Bold').fontSize(7.4).fillColor(colour.text)
+      .text(risk.toUpperCase(), PAGE.R - badgeW - pad + 6, badgeY + 5.4, { width: badgeW - 12, align: 'center', lineBreak: false });
+
+    let cursorY = y + 17 + Math.max(titleH, 19);
+    doc.font('Helvetica-Bold').fontSize(8.45).fillColor(BRAND.muted)
+      .text('Position:', PAGE.L + pad, cursorY, { width: 58, lineBreak: false });
+    doc.font('Helvetica').fontSize(8.65).fillColor(BRAND.text)
+      .text(position, PAGE.L + pad + 62, cursorY, { width: innerW - 62, lineGap: 1.7 });
+
+    cursorY += positionH + 7;
+    doc.font('Helvetica-Bold').fontSize(8.45).fillColor(BRAND.muted)
+      .text('Required action:', PAGE.L + pad, cursorY, { width: 82, lineBreak: false });
+    doc.font('Helvetica').fontSize(8.65).fillColor(BRAND.text)
+      .text(action, PAGE.L + pad + 86, cursorY, { width: innerW - 86, lineGap: 1.7 });
+
+    doc.y = y + cardH + 8;
     doc.x = PAGE.L;
   }
 }
-
 
 function bmPrimaryIssueList(subclass, stream, family) {
   if (bmAgreementMatter(subclass, stream)) {
