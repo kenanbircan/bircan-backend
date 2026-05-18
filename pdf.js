@@ -1998,14 +1998,38 @@ function bmWriteRiskPriorityTable(doc, family) {
   }
 }
 
+
+function bmNormaliseAppendixRisk(row) {
+  const text = cleanText(`${row.area || ''} ${row.issue || ''} ${row.position || ''} ${row.action || ''}`).toLowerCase();
+  if (/labour agreement.*(current|applies|coverage|covered)|executed labour agreement|occupation.*covered by.*labour agreement|nomination.*(agreement terms|consistent|reconcile)|evidence sufficiency|lodgement readiness|valid application|schedule 1/.test(text)) return 'Critical';
+  if (/concession|salary|amsr|english|character|pic 4020|4020|special return|prior refusal|cancellation|family member|secondary applicant|police|court|health|identity|lawful status|visa status/.test(text)) return 'High';
+  const raw = cleanText(row.risk || '').toLowerCase();
+  if (/critical/.test(raw)) return 'Critical';
+  if (/high/.test(raw)) return 'High';
+  if (/medium/.test(raw)) return 'Managed';
+  return row.risk || 'Managed';
+}
+
+function bmShortAppendixPosition(row) {
+  const risk = bmNormaliseAppendixRisk(row);
+  if (risk === 'Critical') return 'Must be resolved before any lodgement recommendation.';
+  if (risk === 'High') return 'Must be verified before filing.';
+  return 'Manageable if documents are consistent and complete.';
+}
+
 function bmAppendixRows(criteria) {
-  return ensureArray(criteria).filter(Boolean).map(item => ({
-    area: cleanText(item.pdfSection || inferGrantCriteriaSection(item.criterion, '', ''), 'Grant criteria'),
-    issue: sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion')),
-    risk: v12RiskLabel(item),
-    position: v12CompactPosition(item),
-    action: v12CompactAction(item)
-  }));
+  return ensureArray(criteria).filter(Boolean).map(item => {
+    const row = {
+      area: cleanText(item.pdfSection || inferGrantCriteriaSection(item.criterion, '', ''), 'Grant criteria'),
+      issue: sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion')),
+      risk: v12RiskLabel(item),
+      position: v12CompactPosition(item),
+      action: v12CompactAction(item)
+    };
+    row.risk = bmNormaliseAppendixRisk(row);
+    row.position = bmShortAppendixPosition(row);
+    return row;
+  });
 }
 
 function bmWriteAppendixSchedule(doc, criteria) {
@@ -2013,23 +2037,67 @@ function bmWriteAppendixSchedule(doc, criteria) {
   if (!rows.length) return;
   addPage(doc, 'Appendix A — full grant criteria review');
   writeTitle(doc, 'Appendix A — Full grant criteria review', { gold: true });
-  writePara(doc, 'This appendix records the criteria review used for professional file control. It should be read as a lodgement-readiness schedule, not as a guarantee that each criterion is satisfied.', { size: 9.4 });
-  for (const row of rows) {
-    const top = `${row.area} — ${row.issue}`;
-    const body = `Assessment position: ${row.position}\nRequired action: ${row.action}`;
-    const h = Math.max(76,
-      doc.font('Helvetica-Bold').fontSize(9.2).heightOfString(top, { width: PAGE.WIDTH - 110, lineGap: 1.6 }) +
-      doc.font('Helvetica').fontSize(8.7).heightOfString(body, { width: PAGE.WIDTH - 28, lineGap: 1.9 }) + 38
-    );
-    ensureSpace(doc, h + 8);
+  writePara(doc, 'This appendix is a professional lodgement-readiness schedule. It records the issue, risk level, assessment position and required action for file control. It is not a guarantee that each criterion is satisfied.', { size: 9.4 });
+
+  const columns = [
+    { key: 'area', label: 'Area', width: 92 },
+    { key: 'issue', label: 'Issue', width: 142 },
+    { key: 'risk', label: 'Risk', width: 62 },
+    { key: 'position', label: 'Assessment position', width: 116 },
+    { key: 'action', label: 'Required action', width: 116 }
+  ];
+  const tableX = PAGE.L;
+  const tableW = columns.reduce((n, c) => n + c.width, 0);
+  const headerH = 24;
+
+  function drawHeader() {
+    ensureSpace(doc, headerH + 18);
     const y = doc.y;
-    const colour = riskColour(row.risk);
-    doc.roundedRect(PAGE.L, y, PAGE.WIDTH, h, 8).fillAndStroke('#ffffff', '#d8e0ea');
-    doc.font('Helvetica-Bold').fontSize(9.2).fillColor(BRAND.navy).text(top, PAGE.L + 12, y + 10, { width: PAGE.WIDTH - 112, lineGap: 1.6 });
-    doc.roundedRect(PAGE.R - 90, y + 10, 78, 18, 9).fillAndStroke(colour.bg, colour.border);
-    doc.font('Helvetica-Bold').fontSize(7.6).fillColor(colour.text).text(row.risk.toUpperCase(), PAGE.R - 84, y + 15, { width: 66, align: 'center', lineBreak: false });
-    doc.font('Helvetica').fontSize(8.7).fillColor(BRAND.text).text(body, PAGE.L + 12, y + 36, { width: PAGE.WIDTH - 24, lineGap: 1.9 });
-    doc.y = y + h + 7;
+    doc.roundedRect(tableX, y, tableW, headerH, 5).fillAndStroke(BRAND.navy, BRAND.navy);
+    let x = tableX;
+    for (const col of columns) {
+      doc.font('Helvetica-Bold').fontSize(7.2).fillColor('#ffffff')
+        .text(col.label, x + 5, y + 8, { width: col.width - 10, lineBreak: false });
+      x += col.width;
+    }
+    doc.y = y + headerH;
+    doc.x = PAGE.L;
+  }
+
+  drawHeader();
+
+  for (const row of rows) {
+    const values = {
+      area: cleanText(row.area),
+      issue: cleanText(row.issue),
+      risk: cleanText(row.risk).toUpperCase(),
+      position: cleanText(row.position),
+      action: cleanText(row.action)
+    };
+    const heights = columns.map(col => doc.font(col.key === 'risk' ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.4)
+      .heightOfString(values[col.key], { width: col.width - 10, lineGap: 1.2 }));
+    const h = Math.max(42, Math.max(...heights) + 16);
+    if (doc.y + h > PAGE.BOTTOM) {
+      addPage(doc, 'Appendix A — full grant criteria review');
+      drawHeader();
+    }
+    const y = doc.y;
+    doc.rect(tableX, y, tableW, h).fillAndStroke('#ffffff', '#d8e0ea');
+    let x = tableX;
+    for (const col of columns) {
+      doc.rect(x, y, col.width, h).stroke('#d8e0ea');
+      const colour = col.key === 'risk' ? riskColour(values.risk) : null;
+      if (col.key === 'risk') {
+        doc.roundedRect(x + 5, y + 9, col.width - 10, 18, 8).fillAndStroke(colour.bg, colour.border);
+        doc.font('Helvetica-Bold').fontSize(6.6).fillColor(colour.text)
+          .text(values[col.key], x + 7, y + 14, { width: col.width - 14, align: 'center', lineBreak: false });
+      } else {
+        doc.font(col.key === 'issue' ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.4).fillColor(col.key === 'issue' ? BRAND.navy : BRAND.text)
+          .text(values[col.key], x + 5, y + 8, { width: col.width - 10, lineGap: 1.2 });
+      }
+      x += col.width;
+    }
+    doc.y = y + h;
     doc.x = PAGE.L;
   }
 }
@@ -2137,17 +2205,6 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       drawCover(doc, { title, reference: assessment.id || '—', applicantName, applicantEmail, clientEmail, subclass, stream, generatedAt });
       addPage(doc, 'Professional Migration Advice Letter');
-
-      writeTitle(doc, pathwayLabel, { gold: true, size: 17 });
-      writeCard(doc, 'Matter details', [
-        ['Client', applicantName || 'Client'],
-        ['Reference', assessment.id || '—'],
-        ['Applicant email', applicantEmail || '—'],
-        ['Client email', clientEmail || '—'],
-        ['Visa subclass', `Subclass ${subclass}`],
-        ['Stream', stream || 'To be confirmed'],
-        ['Date generated', generatedAt]
-      ]);
 
       writeTitle(doc, 'Confidential professional advice', { gold: true });
       writePara(doc, 'This advice is prepared from the information presently available through the online assessment process. It is preliminary in nature and must be read subject to review of original documents, current legislative settings, Departmental records, nomination material, employer records and any applicable Labour Agreement or Designated Area Migration Agreement material before any lodgement action is taken.', { size: 9.8 });
