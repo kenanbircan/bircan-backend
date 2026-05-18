@@ -2710,9 +2710,8 @@ async function handleAssessmentSubmit(req, res) {
        FROM assessments
        WHERE visa_type=$2
          AND COALESCE(active_plan, selected_plan, 'instant')=$3
+         AND COALESCE(payment_status,'unpaid') <> 'paid'
          AND (
-         COALESCE(payment_status,'unpaid') <> 'paid'
-         AND 
            lower(client_email)=lower($1)
            OR lower(applicant_email)=lower($1)
            OR client_id=$6
@@ -7004,8 +7003,25 @@ async function resolveAssessmentForAccount(rawId, accountEmail) {
 }
 
 
+async function resolveAssessmentByStripeSessionForAccount(stripeSessionId, email) {
+  const sid = String(stripeSessionId || '').trim();
+  const cleanEmail = normaliseEmail(email);
+  if (!sid || !cleanEmail) return null;
+  const { rows } = await query(
+    `SELECT * FROM assessments
+     WHERE stripe_session_id=$1
+       AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))
+     ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+     LIMIT 1`,
+    [sid, cleanEmail]
+  );
+  return rows[0] || null;
+}
+
 async function sendAssessmentPdf(req, res, rawId) {
-  let assessment = await resolveAssessmentForAccount(rawId, req.client.email);
+  const returnStripeSession = String((req.query && (req.query.stripe_session_id || req.query.session_id || req.query.sessionId)) || '').trim();
+  let assessment = await resolveAssessmentByStripeSessionForAccount(returnStripeSession, req.client.email);
+  if (!assessment) assessment = await resolveAssessmentForAccount(rawId, req.client.email);
   if (!assessment) return res.status(404).json({ ok: false, error: 'Assessment was not found for this account.' });
   const effectiveVisaPlan = safePlan(assessment.active_plan || assessment.selected_plan || 'instant');
   if (!isInstantPlan(effectiveVisaPlan) && assessment.release_at && new Date(assessment.release_at).getTime() > Date.now()) {
@@ -7146,7 +7162,12 @@ app.get('/api/documents/open-pdf', asyncRoute(async (req, res) => {
 app.post('/api/documents/pdf-link', requireAuth, asyncRoute(async (req, res) => {
   const requestedType = req.body && (req.body.type || req.body.serviceType || req.body.service_type);
   const requestedId = req.body && (req.body.id || req.body.assessmentId || req.body.assessment_id || req.body.reference);
-  const checked = await assertDocumentCanBeOpenedByEmail(requestedType, requestedId, req.client.email);
+  const requestedSession = req.body && (req.body.session_id || req.body.sessionId || req.body.stripe_session_id || req.body.stripeSessionId);
+  let checked = await assertDocumentCanBeOpenedByEmail(requestedType, requestedId, req.client.email);
+  if (normaliseServiceType(requestedType) === 'visa_assessment' && requestedSession) {
+    const bySession = await resolveAssessmentByStripeSessionForAccount(requestedSession, req.client.email);
+    if (bySession) checked = { ok: true, type: 'visa_assessment', id: bySession.id };
+  }
   const token = makeDocumentAccessToken({
     type: checked.type,
     id: checked.id,
