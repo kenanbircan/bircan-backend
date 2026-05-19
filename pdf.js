@@ -2093,6 +2093,20 @@ function bmDeduplicateAppendixRows(rows) {
   });
 }
 
+
+function bmAppendixAreaLabel(section, issue) {
+  const text = cleanText(`${section || ''} ${issue || ''}`).toLowerCase();
+  if (/valid|schedule 1|application method|visa application charge|stream|pathway|time-of-application|time of application|time-of-decision|time of decision/.test(text)) return 'Validity';
+  if (/labou?r agreement|dama|agreement terms|agreement ceiling|ceiling|location limit|occupation list|concession schedule/.test(text)) return 'Labour Agreement';
+  if (/nomination|nominating employer|employer|sponsor|business|genuine position|full-time|full time|created primarily|operational|adverse information/.test(text)) return 'Nomination';
+  if (/salary|amsr|market salary|guaranteed earnings|employment contract|employment terms|nes|award|enterprise agreement|income/.test(text)) return 'Salary';
+  if (/identity|biographical|age|english|skills|qualification|experience|registration|licens|applicant work|work-rights|work rights|employment history|lawful status|visa status|current location/.test(text)) return 'Applicant';
+  if (/health|character|police|court|pic 4020|4020|integrity|false|misleading|special return|src|refusal|cancellation|compliance|debt|removal|deportation|exclusion/.test(text)) return 'Public interest';
+  if (/family|secondary|dependent|partner|child|relationship/.test(text)) return 'Family';
+  if (/translation|certification|document quality|evidence sufficiency|lodgement readiness|final migration-agent review|final agent review|consistency across forms|file control|evidence index/.test(text)) return 'File control';
+  return 'Criteria';
+}
+
 function bmAppendixRows(criteria) {
   const rows = ensureArray(criteria).filter(Boolean).map(item => {
     const issue = sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion'));
