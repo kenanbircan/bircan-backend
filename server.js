@@ -6452,6 +6452,34 @@ function dashboardSessionId(req) {
   ).trim();
 }
 
+function dashboardMatterEmailFromServices(...groups) {
+  for (const group of groups) {
+    for (const row of Array.isArray(group) ? group : []) {
+      const email = normaliseEmail(
+        row && (row.applicant_email || row.applicantEmail || row.assessment_email || row.assessmentEmail || row.form_email || row.formEmail || row.client_email || row.clientEmail)
+      );
+      if (email) return email;
+    }
+  }
+  return '';
+}
+
+function dashboardClientPayload(req, matterEmail = '') {
+  const account = (req && req.client) || {};
+  const accountEmail = normaliseEmail(account.email);
+  const formEmail = normaliseEmail(matterEmail) || accountEmail;
+  return {
+    id: account.id || null,
+    email: formEmail,
+    clientEmail: formEmail,
+    assessmentEmail: formEmail,
+    applicantEmail: formEmail,
+    accountEmail,
+    portalEmail: accountEmail,
+    name: account.name || null
+  };
+}
+
 async function clientFromStripeDashboardSession(sessionId) {
   if (!stripe || !sessionId || !/^cs_(test|live)_/i.test(sessionId)) return null;
   try {
@@ -6732,7 +6760,7 @@ async function handleDashboardFast(req, res) {
     ok: true,
     fast: true,
     loadMs: Date.now() - startedAt,
-    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(rawFast.visaRows || [], rawFast.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
     accessToken: dashboardToken,
     accessPatch: DASHBOARD_ACCESS_PATCH,
