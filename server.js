@@ -33,60 +33,6 @@ const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine
 const { listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
 const { loadCriteriaRegistry } = require('./criteriaRegistry');
 const { buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
-
-
-// ---- V9 criteria registry bridge: use knowledgebase automation-ceiling registry metadata ----
-const BIRCAN_CRITERIA_REGISTRY_V9_PDF_BRIDGE = 'criteria-registry-v9-pdf-bridge-v1';
-function v9RegistryNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-function buildV9CriteriaRegistryProfile(registry = {}) {
-  const coverage = registry.coverageScoring || {};
-  const expected = registry.expectedGrantCriteriaManifest || {};
-  const streams = registry.streams && typeof registry.streams === 'object' ? registry.streams : {};
-  const criteria = [];
-  for (const [streamName, stream] of Object.entries(streams)) {
-    const items = Array.isArray(stream && stream.grantCriteria) ? stream.grantCriteria : Array.isArray(stream && stream.criteria) ? stream.criteria : [];
-    for (const item of items) criteria.push({ stream: streamName, ...(item || {}) });
-  }
-  const readiness = Math.max(
-    v9RegistryNumber(coverage.estimatedSchedule2CoverageReadiness, 0),
-    v9RegistryNumber(coverage.currentSubclass187WeightedScore, 0),
-    v9RegistryNumber(coverage.weightedAuditScore, 0),
-    v9RegistryNumber(coverage.estimatedCoverage, 0)
-  );
-  return {
-    schemaVersion: registry.schemaVersion || null,
-    subclass: registry.subclass || null,
-    title: registry.title || null,
-    availabilityGate: registry.availabilityGate || null,
-    validApplicationRequirements: registry.validApplicationRequirements || null,
-    expectedGrantCriteriaManifest: expected,
-    expectedSchedule2ClauseCount: Array.isArray(expected.expectedClauses) ? expected.expectedClauses.length : v9RegistryNumber(expected.expectedClauseCount, criteria.length),
-    schedule2CriteriaItemCount: criteria.length,
-    coverageScoring: coverage,
-    estimatedSchedule2CoverageReadiness: readiness,
-    manualAuditRequiredForExternal98Claim: Boolean(coverage.manualAuditRequiredForExternal98Claim || coverage.external98ClaimAllowed === false),
-    external98ClaimAllowed: coverage.external98ClaimAllowed === true,
-    pdfContaminationControls: registry.pdfContaminationControls || registry.contaminationGuards || null,
-    contaminationGuards: registry.contaminationGuards || null,
-    intakeCoverageControls: registry.intakeCoverageControls || null,
-    pamsControls: registry.pamsControls || null,
-    registryFingerprint: registry.registryFingerprint || null,
-    sourceOfTruth: registry.sourceOfTruth || null,
-    sourceMap: registry.sourceMap || null,
-    v9Bridge: BIRCAN_CRITERIA_REGISTRY_V9_PDF_BRIDGE
-  };
-}
-function registryUnsupportedCriteriaAreBlocking(audit = {}, profile = {}) {
-  const unsupported = Array.isArray(audit.unsupportedSourceCriteria) ? audit.unsupportedSourceCriteria : [];
-  if (!unsupported.length) return false;
-  // V9 knowledgebase extracted registries deliberately carry source-mapping/audit controls.
-  // Unsupported source labels should downgrade the advice to review-required, not kill PDF generation,
-  // unless the registry has no V9 source/audit structure at all.
-  return !profile || (!profile.expectedGrantCriteriaManifest && !profile.sourceOfTruth && !profile.registryFingerprint);
-}
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
@@ -749,16 +695,21 @@ async function attachVisaAssessmentToClientById(assessmentId, client) {
     throw err;
   }
 
+  // Preserve the assessment-form email as the matter email.
+  // The dashboard account is attached by client_id; client_email must not be overwritten
+  // with a different portal login email, otherwise the dashboard/PDF can display the
+  // wrong client/form email and lose the original assessment identity.
+  const formEmail = assessmentEmail || clientEmail;
   const updated = await query(
     `UPDATE assessments
      SET client_id=$1,
-         client_email=$2,
-         applicant_email=COALESCE(applicant_email,$2),
+         client_email=COALESCE(NULLIF(client_email,''), $2),
+         applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
          active_plan=COALESCE(active_plan, selected_plan),
          updated_at=now()
      WHERE id=$3
      RETURNING *`,
-    [client.id, client.email, assessment.id]
+    [client.id, formEmail, assessment.id]
   );
   return updated.rows[0] || assessment;
 }
@@ -4443,23 +4394,24 @@ async function attachPaidSession(session, options = {}) {
     const assessment = assessmentRes.rows[0];
     if (!assessment) throw new Error(`Assessment not found for Stripe session ${session.id}`);
     // Stripe-paid recovery rule:
-    // Checkout is created only after the portal account has paid. If an older/public
-    // assessment still carries the form/applicant email, do not lose the paid matter
-    // from the dashboard. Preserve applicant_email, but attach the account owner from
-    // the paid Stripe session/customer email to client_email.
-    if (normaliseEmail(assessment.client_email) !== email) {
+    // Attach the paid matter to the portal account by client_id, but do NOT overwrite
+    // client_email/applicant_email where they came from the assessment form. The
+    // assessment-form email remains the displayed matter email; the portal account
+    // email remains available separately through req.client / clients.
+    if (normaliseEmail(assessment.client_email) !== email || !assessment.client_id) {
       const accountRows = await client.query('SELECT id, email FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
       const account = accountRows.rows[0] || null;
       await client.query(
         `UPDATE assessments
          SET client_id=COALESCE($1, client_id),
-             client_email=$2,
-             applicant_email=COALESCE(applicant_email, client_email, $2),
+             client_email=COALESCE(NULLIF(client_email,''), $2),
+             applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
              updated_at=now()
          WHERE id=$3`,
         [account && account.id ? account.id : null, email, assessmentId]
       );
-      assessment.client_email = email;
+      if (!assessment.client_email) assessment.client_email = email;
+      if (!assessment.applicant_email) assessment.applicant_email = assessment.client_email || email;
       if (account && account.id) assessment.client_id = account.id;
     }
 
@@ -6209,31 +6161,19 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         legalPack: adviceBundle.legalSourcePack,
         assessment: assessmentForAdvice
       });
-      const registryV9Profile = buildV9CriteriaRegistryProfile(registry);
-      const minimumCoverage = Number(process.env.MIN_REGISTRY_COVERAGE_RATE || process.env.MIN_REGISTRY_READINESS_RATE || 95);
-      const validatorCoverage = Number(registryResult.audit && registryResult.audit.registryCoverageRate || 0);
-      const v9Coverage = Number(registryV9Profile.estimatedSchedule2CoverageReadiness || 0);
-      const effectiveCoverage = Math.max(validatorCoverage, v9Coverage);
-      if (!registryResult.audit.ok || effectiveCoverage < minimumCoverage || registryUnsupportedCriteriaAreBlocking(registryResult.audit, registryV9Profile)) {
-        const detail = JSON.stringify({
-          validatorAudit: registryResult.audit,
-          v9RegistryProfile,
-          effectiveCoverage,
-          minimumCoverage
-        });
+      if (!registryResult.audit.ok || registryResult.audit.registryCoverageRate < 100 || registryResult.audit.unsupportedSourceCriteria.length) {
+        const detail = JSON.stringify(registryResult.audit);
         throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
       }
-      adviceBundle.v9CriteriaRegistryProfile = registryV9Profile;
       adviceBundle.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.criteriaRegistryAudit = { ...(registryResult.audit || {}), effectiveCoverage, minimumCoverage, v9RegistryProfile };
-      adviceBundle.grantCriteriaCoverageAudit = adviceBundle.criteriaRegistryAudit;
-      adviceBundle.registryCoverageRate = effectiveCoverage;
+      adviceBundle.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
+      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
       adviceBundle.advice = adviceBundle.advice || {};
       adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
       adviceBundle.advice.criterion_findings = registryResult.findings;
       adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.internalLegalAudit.criteriaRegistryAudit = adviceBundle.criteriaRegistryAudit;
-      adviceBundle.internalLegalAudit.v9CriteriaRegistryProfile = registryV9Profile;
+      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
@@ -6615,7 +6555,7 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(effective_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key,
            md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(effective_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key,
            'visa_assessment' AS service_type,
-           visa_type, applicant_email, applicant_name,
+           visa_type, client_email, applicant_email, applicant_name,
            effective_plan AS selected_plan,
            effective_plan AS active_plan,
            CASE WHEN has_pdf THEN 'pdf_ready'
@@ -6681,6 +6621,30 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
   };
 }
 
+function dashboardMatterEmailFromServices(...groups) {
+  for (const group of groups) {
+    for (const item of (Array.isArray(group) ? group : [])) {
+      const email = normaliseEmail(item && (item.applicant_email || item.applicantEmail || item.client_email || item.clientEmail));
+      if (email) return email;
+    }
+  }
+  return '';
+}
+
+function dashboardClientPayload(req, displayEmail) {
+  const accountEmail = normaliseEmail(req && req.client && req.client.email);
+  const matterEmail = normaliseEmail(displayEmail) || accountEmail;
+  return {
+    id: req.client.id,
+    email: matterEmail,
+    assessmentEmail: matterEmail,
+    applicantEmail: matterEmail,
+    accountEmail,
+    portalEmail: accountEmail,
+    name: req.client.name || null
+  };
+}
+
 async function handleDashboardFast(req, res) {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
@@ -6717,8 +6681,9 @@ async function handleDashboardFast(req, res) {
   res.json({
     ok: true,
     fast: true,
+    version: 'dashboard-fast-v8-form-email-preserved',
     loadMs: Date.now() - startedAt,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(visaRows, citizenshipRows)),
     dashboardAccessToken: dashboardToken,
     accessToken: dashboardToken,
     accessPatch: DASHBOARD_ACCESS_PATCH,
@@ -6999,9 +6964,9 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
+    version: 'dashboard-v2-stable-contract-v8-form-email-preserved',
     loadMs: Date.now() - startedAt,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(visaRows, citizenshipRows)),
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
     paymentRepair,
