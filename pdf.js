@@ -1886,7 +1886,7 @@ function bmWriteBulletList(doc, items) {
 }
 
 function bmWriteDocumentTable(doc, rows) {
-  writeTitle(doc, '6. Documents required before final lodgement advice', { gold: true });
+  writeTitle(doc, '8. Documents required before final lodgement advice', { gold: true });
   writePara(doc, 'Before a final lodgement recommendation is issued, the following documents should be requested and reviewed.', { size: 9.7 });
   for (const row of rows) {
     const priority = cleanText(row.priority);
@@ -1908,7 +1908,7 @@ function bmWriteDocumentTable(doc, rows) {
 }
 
 function bmWriteActionPlanTable(doc, rows) {
-  writeTitle(doc, '7. Lodgement-readiness action plan', { gold: true });
+  writeTitle(doc, '9. Lodgement-readiness action plan', { gold: true });
   writePara(doc, 'Before this matter is treated as ready for lodgement, I recommend the following steps.', { size: 9.7 });
   for (const row of rows) {
     const step = cleanText(row.step);
@@ -2129,8 +2129,8 @@ function bmWriteAppendixSchedule(doc, criteria) {
   const rows = bmAppendixRows(criteria);
   if (!rows.length) return;
   addPage(doc, 'Appendix A — full grant criteria review');
-  writeTitle(doc, 'Appendix A — Full grant criteria review', { gold: true });
-  writePara(doc, 'This appendix is a professional lodgement-readiness schedule. It records the issue, risk level, assessment position and required action for file control. It is not a guarantee that each criterion is satisfied.', { size: 9.2 });
+  writeTitle(doc, 'Appendix A — Controlled criteria and evidence schedule', { gold: true });
+  writePara(doc, 'This appendix is a compressed professional control schedule. It records the key criterion area, risk level, position and required action for file management. Repeated registry findings are intentionally merged so the appendix remains a usable lodgement-readiness schedule rather than a raw criteria dump.', { size: 9.2 });
 
   // Permanent Appendix layout: group criteria by proper legal category and render
   // full-width schedule cards. This avoids false "Nomination" labels for public
@@ -2234,7 +2234,7 @@ function bmPrimaryIssueList(subclass, stream, family) {
 }
 
 function bmWriteLabourAgreementIssues(doc, subclass, stream) {
-  writeTitle(doc, '4. Key Labour Agreement issues requiring verification', { gold: true });
+  writeTitle(doc, '6. Key Labour Agreement issues requiring verification', { gold: true });
   writeSubheading(doc, '4.1 Labour Agreement currency and coverage');
   writePara(doc, 'The first issue is whether the executed Labour Agreement is current and applies to the nominating employer and proposed role. Before lodgement, Bircan Migration should obtain and review the executed Labour Agreement, including any schedules, occupation lists, concessions, location limits, ceilings, special conditions and DAMA material where relevant.', { size: 9.7 });
   bmWriteBulletList(doc, ['the agreement is currently in force', 'the employer is a party to or properly covered by the agreement', 'the agreement permits a Subclass 186 nomination', 'the nominated occupation is included', 'the proposed work location is permitted', 'any applicable cap, ceiling or quota has not been exceeded', 'any concession relied upon is expressly available']);
@@ -2259,6 +2259,175 @@ function bmWriteLabourAgreementIssues(doc, subclass, stream) {
 
   writeSubheading(doc, '4.6 English, skills, qualifications and registration');
   writePara(doc, 'The applicant’s English, skills, qualifications, experience and registration position must be verified before lodgement. This includes English test results or passport exemption evidence, any lawful Labour Agreement English concession, qualifications, employment references, skills evidence, registration or licensing evidence, occupation-specific requirements and proof that any concession relied upon applies to the applicant.', { size: 9.7 });
+}
+
+
+
+// ---- Bircan 10/10 professional advice layer v2026-05-19 ----
+// This layer converts the raw intake/registry output into a fact-led professional
+// advice structure: client facts -> legal issue -> risk -> required action.
+function bmFactFlatten(value, prefix = '', out = {}) {
+  if (value === null || value === undefined) return out;
+  if (typeof value !== 'object') {
+    if (prefix && String(value).trim() !== '') out[prefix] = String(value).trim();
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, idx) => bmFactFlatten(item, prefix ? `${prefix}.${idx}` : String(idx), out));
+    return out;
+  }
+  for (const [key, val] of Object.entries(value)) {
+    if (/password|token|secret|authorization|card|stripe/i.test(key)) continue;
+    const next = prefix ? `${prefix}.${key}` : key;
+    bmFactFlatten(val, next, out);
+  }
+  return out;
+}
+
+function bmFactBag(assessment, facts, adviceBundle) {
+  const raw = {
+    ...(assessment || {}),
+    facts: facts || {},
+    form_payload: assessment && assessment.form_payload,
+    answers: assessment && assessment.answers,
+    rawSubmission: assessment && assessment.raw_submission,
+    adviceFacts: adviceBundle && (adviceBundle.facts || adviceBundle.extractedFacts || adviceBundle.clientFacts)
+  };
+  const flat = bmFactFlatten(raw);
+  const entries = Object.entries(flat).map(([k, v]) => ({
+    key: String(k),
+    normal: String(k).toLowerCase().replace(/[^a-z0-9]+/g, ''),
+    value: cleanText(v, '')
+  })).filter(x => x.value && x.value !== '—');
+  return entries;
+}
+
+function bmFindFact(entries, patterns, fallback = '') {
+  const pats = ensureArray(patterns).map(p => p instanceof RegExp ? p : new RegExp(String(p), 'i'));
+  for (const p of pats) {
+    const exact = entries.find(e => p.test(e.normal));
+    if (exact) return cleanText(exact.value, fallback);
+  }
+  return fallback;
+}
+
+function bmYesNoMeaning(value, positiveText, missingText) {
+  const text = cleanText(value, '').toLowerCase();
+  if (!text) return missingText;
+  if (/^(no|none|not applicable|n\/a|false)$/i.test(text)) return missingText;
+  return positiveText.replace('{value}', cleanText(value));
+}
+
+function bmBuildClientFactRows(assessment, facts, adviceBundle, subclass, stream, family) {
+  const entries = bmFactBag(assessment || {}, facts || {}, adviceBundle || {});
+  const employer = bmFindFact(entries, [/employer(name)?$/, /nominatingemployer/, /sponsor(name)?/, /businessname/]);
+  const occupation = bmFindFact(entries, [/occupation$/, /nominatedoccupation/, /anzsco/, /role(title)?/, /position(title)?/]);
+  const location = bmFindFact(entries, [/currentlocation/, /applicantlocation/, /onshoreoffshore/, /countryofresidence/]);
+  const visaStatus = bmFindFact(entries, [/currentvisa/, /visastatus/, /visaexpiry/, /bridgingvisa/]);
+  const salary = bmFindFact(entries, [/salary/, /amsr/, /earnings/, /remuneration/, /guaranteedearnings/]);
+  const english = bmFindFact(entries, [/english/, /ielts/, /pte/, /toefl/, /passportexemption/]);
+  const skills = bmFindFact(entries, [/skillsassessment/, /qualification/, /registration/, /licen[cs]e/, /workexperience/]);
+  const health = bmFindFact(entries, [/health/, /medical/]);
+  const character = bmFindFact(entries, [/character/, /police/, /criminal/, /court/]);
+  const refusals = bmFindFact(entries, [/refusal/, /cancellation/, /compliance/, /overstay/, /pic4020/]);
+  const familyIncluded = bmFindFact(entries, [/familymember/, /dependant/, /secondaryapplicant/]);
+  const agreement = bmFindFact(entries, [/labou?ragreement/, /dama/, /agreement/]);
+  const concession = bmFindFact(entries, [/concession/, /ageconcession/, /englishconcession/, /salaryconcession/]);
+
+  const rows = [];
+  const push = (fact, issue, risk, action) => rows.push({ fact: cleanText(fact), issue: cleanText(issue), risk: cleanText(risk), action: cleanText(action) });
+
+  if (bmAgreementMatter(subclass, stream)) {
+    push(agreement || 'The intake identifies the Labour Agreement stream, but the executed agreement has not been verified in this PDF record.', 'The Labour Agreement must be current, cover the employer, permit the occupation and support any concession relied upon.', 'Critical', 'Obtain the executed agreement, schedules, occupation list, concession schedule, location limits and any DAMA material before final lodgement advice.');
+    push(employer || 'The nominating employer details must be verified against business and agreement records.', 'The nomination can only support the visa if the employer is lawfully covered by the agreement and actively operating.', employer ? 'High' : 'Critical', 'Reconcile the employer entity against ABN/ASIC records, agreement party details, nomination material and compliance records.');
+    push(occupation || 'The nominated occupation/duties must be mapped to the Labour Agreement occupation schedule.', 'A role may be commercially genuine but still not covered by the exact agreement occupation terms.', occupation ? 'High' : 'Critical', 'Prepare an occupation and duties matrix against the agreement schedule, position description, duties, reporting line and business need.');
+    push(concession || 'Any age, English, salary or skills concession has not been finally verified in the issued advice record.', 'A concession cannot be assumed merely because the matter is under a Labour Agreement.', 'Critical', 'Identify every concession relied upon and obtain written agreement support for that concession before filing.');
+  } else {
+    push(`The selected pathway is ${bmPathwayLabel(subclass, stream)}.`, 'The correct subclass/stream and any threshold prerequisite must be confirmed before lodgement.', 'High', 'Verify the selected pathway against current criteria, original evidence and any invitation, nomination, sponsorship, relationship or enrolment requirement.');
+  }
+
+  push(location || 'Current location and lawful status have not been conclusively verified in this PDF record.', 'Location, visa status and validity settings may affect whether the application can be validly made and safely pursued.', location || visaStatus ? 'High' : 'Critical', 'Confirm current location, current visa, expiry date, bridging position, conditions and any section 48/8503 or status issue before lodgement.');
+  push(salary || 'Salary/AMSR and employment terms require objective verification.', 'Salary, guaranteed earnings and employment conditions must be consistent with the nomination and any Labour Agreement concession.', salary ? 'High' : 'Critical', 'Review contract, guaranteed earnings, AMSR/market evidence, award/NES position, payroll/tax/super records and concession basis.');
+  push(english || 'English evidence or concession basis has not been finally verified in this PDF record.', 'English eligibility must be proven by valid evidence or a lawful concession.', english ? 'High' : 'High', 'Check original test result/passport exemption or the exact Labour Agreement English concession before lodgement.');
+  push(skills || 'Skills, qualifications, registration/licensing and experience must be verified against the nominated role.', 'Applicant-side eligibility cannot be assumed from job title alone.', skills ? 'High' : 'High', 'Review qualifications, references, registration/licensing, skills evidence and employment chronology against the occupation.');
+  push(bmYesNoMeaning(refusals, 'The intake discloses visa history/compliance material: {value}.', 'No final adverse visa-history conclusion is made from the current record.'), 'Prior refusals, cancellations, PIC 4020, SRC and compliance history can materially affect strategy.', refusals ? 'High' : 'Managed', 'Obtain a complete visa history and reconcile any adverse event before final advice.');
+  push(bmYesNoMeaning(health || character, 'The intake discloses health/character material requiring review: {value}.', 'Health and character remain subject to normal public-interest verification.'), 'Public-interest criteria must be clear or manageable before filing.', health || character ? 'High' : 'Managed', 'Review health disclosures, police/court records and any public-interest issue before lodgement.');
+  push(bmYesNoMeaning(familyIncluded, 'The intake indicates family/secondary applicant material: {value}.', 'Family-member inclusion/dependency has not been finally verified in this PDF record.'), 'Included family members can create additional identity, dependency, health and character requirements.', familyIncluded ? 'High' : 'Managed', 'Confirm all included/non-migrating family members and collect relationship, dependency, identity, health and character evidence.');
+
+  // Remove exact duplicates while preserving professional priority.
+  const rank = { Critical: 3, High: 2, Managed: 1 };
+  const out = [];
+  const seen = new Map();
+  for (const row of rows) {
+    const key = cleanText(`${row.issue} ${row.action}`).toLowerCase().replace(/[^a-z0-9]+/g, ' ').slice(0, 130);
+    const existingIndex = seen.get(key);
+    if (existingIndex === undefined) { seen.set(key, out.length); out.push(row); continue; }
+    if ((rank[row.risk] || 0) > (rank[out[existingIndex].risk] || 0)) out[existingIndex] = row;
+  }
+  return out.slice(0, 10);
+}
+
+function bmWriteExecutiveDecisionPanel(doc, pathwayLabel, overallRisk, position, nextStep) {
+  writeTitle(doc, '2. Executive recommendation', { gold: true });
+  writeRiskCard(doc, 'Executive decision', overallRisk, [
+    ['Present position', `${pathwayLabel} may be available in principle, but it is not lodgement-ready on the present record.`],
+    ['Professional reason', position || 'The file requires evidence verification before any positive lodgement recommendation is issued.'],
+    ['Commercial next step', nextStep || 'Proceed to a formal evidence review and lodgement-readiness assessment before filing.'],
+    ['Agent control', 'Do not file until the nomination/pathway evidence, applicant eligibility and public-interest risks are reconciled against original documents.']
+  ]);
+}
+
+function bmWriteClientSpecificFindings(doc, rows) {
+  writeTitle(doc, '3. Client-specific findings', { gold: true });
+  writePara(doc, 'The following findings convert the intake material into a professional issue, risk and action plan. This section is intentionally fact-led: it identifies what is known or not yet verified, why it matters legally, and what must be done before final lodgement advice.', { size: 9.7 });
+  const display = ensureArray(rows).slice(0, 7);
+  for (const row of display) {
+    const risk = cleanText(row.risk, 'Managed');
+    const colour = riskColour(risk);
+    const fact = `Client fact / current record: ${cleanText(row.fact)}`;
+    const issue = `Professional issue: ${cleanText(row.issue)}`;
+    const action = `Required action: ${cleanText(row.action)}`;
+    const contentW = PAGE.WIDTH - 42;
+    const factH = doc.font('Helvetica').fontSize(8.9).heightOfString(fact, { width: contentW, lineGap: 2.0 });
+    const issueH = doc.font('Helvetica-Bold').fontSize(9.0).heightOfString(issue, { width: contentW, lineGap: 2.0 });
+    const actionH = doc.font('Helvetica').fontSize(8.9).heightOfString(action, { width: contentW, lineGap: 2.0 });
+    const h = Math.max(92, factH + issueH + actionH + 58);
+    ensureSpace(doc, h + 8);
+    const y = doc.y;
+    doc.roundedRect(PAGE.L, y, PAGE.WIDTH, h, 10).fillAndStroke('#ffffff', BRAND.line);
+    doc.roundedRect(PAGE.L + 14, y + 12, 86, 20, 10).fillAndStroke(colour.bg, colour.border);
+    doc.font('Helvetica-Bold').fontSize(7.6).fillColor(colour.text).text(risk.toUpperCase(), PAGE.L + 22, y + 17, { width: 70, align: 'center', lineBreak: false });
+    doc.font('Helvetica').fontSize(8.9).fillColor(BRAND.text).text(fact, PAGE.L + 20, y + 42, { width: contentW, lineGap: 2.0 });
+    doc.font('Helvetica-Bold').fontSize(9.0).fillColor(BRAND.navy).text(issue, PAGE.L + 20, y + 46 + factH, { width: contentW, lineGap: 2.0 });
+    doc.font('Helvetica').fontSize(8.9).fillColor(BRAND.text).text(action, PAGE.L + 20, y + 51 + factH + issueH, { width: contentW, lineGap: 2.0 });
+    doc.y = y + h + 8;
+    doc.x = PAGE.L;
+  }
+}
+
+function bmLegalControlRows(subclass, stream, family) {
+  if (bmAgreementMatter(subclass, stream)) {
+    return [
+      ['Validity control', 'Confirm Schedule 1 validity, correct form, charge, applicant identity, linked nomination and time-of-application requirements.'],
+      ['Nomination control', 'Confirm the nomination is approved or capable of approval, remains valid through decision and matches this applicant, employer, occupation and stream.'],
+      ['Labour Agreement control', 'Confirm the executed agreement is current, covers the employer, permits Subclass 186, includes the occupation and supports any concession.'],
+      ['Salary / AMSR control', 'Reconcile contract, guaranteed earnings, market salary/AMSR material, payroll records and any lawful agreement concession.'],
+      ['Applicant control', 'Verify identity, age/concession, English/concession, skills, qualifications, registration/licensing and employment history.'],
+      ['Public-interest control', 'Review health, character, PIC 4020, Special Return Criteria, prior refusals/cancellations, visa compliance and family-member issues.']
+    ];
+  }
+  return [
+    ['Validity control', 'Confirm the application can be validly made and that all threshold requirements are satisfied.'],
+    ['Pathway control', 'Confirm the selected subclass/stream and any invitation, nomination, sponsorship, enrolment, relationship or activity requirement.'],
+    ['Applicant control', 'Verify identity, eligibility evidence, English/skills where relevant, current status and immigration history.'],
+    ['Public-interest control', 'Review health, character, PIC/SRC, prior refusals/cancellations and document integrity before filing.']
+  ];
+}
+
+function bmWriteLegalMapping(doc, subclass, stream, family) {
+  writeTitle(doc, '4. Legal control map', { gold: true });
+  writePara(doc, 'This advice is controlled by the legal and evidentiary checkpoints below. The purpose is not to overload the client with legislation; it is to show the precise matters that must be satisfied before the file can safely move from preliminary assessment to lodgement-ready advice.', { size: 9.7 });
+  writeCard(doc, 'Controlled legal checkpoints', bmLegalControlRows(subclass, stream, family));
 }
 
 function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
@@ -2304,6 +2473,8 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       const criteria = v10BuildCriteria(effectiveAdvice, bundleForPdf || {}, subclass, stream);
       const position = v11ProfessionalPosition(effectiveAdvice || {}, bundleForPdf || {}, criteria);
       const overallRisk = v10OverallRisk(criteria);
+      const clientFactRows = bmBuildClientFactRows(assessment || {}, facts || {}, bundleForPdf || {}, subclass, stream, family);
+      const nextCommercialStep = 'Proceed to a paid formal evidence review and lodgement-readiness assessment before any filing step.';
 
       const doc = createDoc({
         Title: `Bircan Migration - ${pathwayLabel}`,
@@ -2320,7 +2491,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       writeTitle(doc, '1. Professional advice', { gold: true });
       writePara(doc, `Dear ${applicantName && applicantName !== 'Client' ? applicantName : 'Client'},`, { size: 10.3 });
       writePara(doc, `I have reviewed the information presently available in relation to the proposed ${pathwayLabel.replace(' — ', ' ')} pathway.`, { size: 9.9 });
-      writePara(doc, 'My present view is that the pathway may be available in principle. However, the matter is not presently lodgement-ready. A final lodgement recommendation should not be given until the employer nomination, the executed Labour Agreement, the nominated occupation, any concessions relied upon, the salary and AMSR position, and the applicant’s eligibility evidence have been verified against original documents.', { size: 9.9 });
+      writePara(doc, `My present view is that the pathway may be available in principle, but it is not presently lodgement-ready. This is a controlled preliminary advice letter: the intake material must now be converted into an evidence brief, and the decisive documents must be reviewed before any final positive lodgement recommendation is issued.`, { size: 9.9 });
       writePara(doc, bmAgreementMatter(subclass, stream)
         ? 'In a Subclass 186 Labour Agreement matter, the application cannot be assessed by looking only at the applicant’s personal circumstances. The strength of the matter depends heavily on whether the nominating employer is covered by a current Labour Agreement, whether the nominated occupation is expressly permitted under that agreement, whether the nomination is consistent with the agreement terms, and whether any age, English, skills, salary or other concession is lawfully available and properly evidenced.'
         : 'The application cannot be assessed only by identifying a visa subclass. The strength of the matter depends on whether the selected pathway, threshold criteria, applicant evidence, public-interest issues and Departmental history can be reconciled into one defensible application record.', { size: 9.9 });
@@ -2329,18 +2500,16 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       writePara(doc, 'At this stage, I do not recommend immediate lodgement. The appropriate next step is a formal evidence review and lodgement-readiness assessment. If the original documents confirm the pathway, nomination validity, occupation alignment, concession basis and applicant eligibility, the matter may then progress to final preparation. If any material inconsistency is identified, the strategy should be revised before filing.', { size: 9.9 });
       writePara(doc, 'This approach protects the client from avoidable refusal risk and ensures that any final lodgement advice is based on verified documents, current legal settings and a defensible application record.', { size: 9.9 });
 
-      writeTitle(doc, '2. Executive recommendation', { gold: true });
-      writeRiskCard(doc, 'Professional position', overallRisk, [
-        ['Position', `The ${pathwayLabel} pathway may be available in principle, but the matter is not presently ready for lodgement.`],
-        ['Why', 'The application should not be filed until the Labour Agreement, nomination, occupation coverage, concession basis, salary/AMSR evidence, applicant eligibility and public-interest requirements have been verified and reconciled.'],
-        ['Recommended next step', 'Proceed to a formal evidence review and lodgement-readiness assessment before filing.']
-      ]);
+      bmWriteExecutiveDecisionPanel(doc, pathwayLabel, overallRisk, position, nextCommercialStep);
+      bmWriteClientSpecificFindings(doc, clientFactRows);
+      bmWriteLegalMapping(doc, subclass, stream, family);
+
+      writeTitle(doc, '5. What this means for you', { gold: true });
       writeSubheading(doc, 'Main concern');
       writePara(doc, bmAgreementMatter(subclass, stream)
         ? 'The main concern is whether the employer’s Labour Agreement and nomination can lawfully support this particular Subclass 186 application. In particular, the Labour Agreement must be current, the employer and proposed role must be covered, the nominated occupation must be expressly permitted, any concession relied upon must be available and evidenced, and the salary, AMSR, English, skills, qualifications and registration position must be legally supportable.'
         : 'The main concern is whether the selected pathway can be supported by verified evidence and current legal settings. The file must show that the threshold criteria, applicant eligibility, public-interest requirements and any sponsor, nomination, invitation or relationship requirement are legally supportable.', { size: 9.8 });
 
-      writeTitle(doc, '3. What this means for you', { gold: true });
       writePara(doc, 'At this stage, the matter should not be treated as a ready-to-lodge visa application.', { size: 9.9 });
       writePara(doc, bmAgreementMatter(subclass, stream)
         ? 'The information presently available indicates that the Subclass 186 Labour Agreement pathway may be open, but the decisive issue is evidence. The Department will not assess the matter only on the basis that the applicant wishes to proceed, or that the employer is willing to nominate. The Department will assess whether the nomination, Labour Agreement, occupation, salary, concessions and applicant evidence all support the same legal pathway.'
@@ -2350,12 +2519,12 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       if (bmAgreementMatter(subclass, stream)) bmWriteLabourAgreementIssues(doc, subclass, stream);
       else {
-        writeTitle(doc, '4. Key issues requiring verification', { gold: true });
+        writeTitle(doc, '6. Key issues requiring verification', { gold: true });
         writePara(doc, 'The file should be tested against the selected subclass and stream, current legislative settings, public-interest requirements and original evidence. The advice should remain preliminary until those matters have been verified.', { size: 9.8 });
         criteria.slice(0, 8).forEach(c => writeBullet(doc, `${clientFriendlyCriterionLabel(c.criterion)}: ${v12CompactAction(c)}`));
       }
 
-      writeTitle(doc, '5. Applicant-side eligibility and public-interest issues', { gold: true });
+      writeTitle(doc, '7. Applicant-side eligibility and public-interest issues', { gold: true });
       writePara(doc, 'Although the employer nomination and Labour Agreement issues are central, the applicant-side criteria must also be verified.', { size: 9.8 });
       writeSubheading(doc, '5.1 Identity and biographical consistency');
       writePara(doc, 'The applicant’s identity documents should be reviewed and reconciled against all prior Departmental records, including passports, birth records where relevant, name-change material, visa records, prior applications and any inconsistency in names, dates of birth or travel history.', { size: 9.6 });
@@ -2367,20 +2536,20 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       bmWriteDocumentTable(doc, bmEvidenceRows(family));
       bmWriteActionPlanTable(doc, bmActionRows(subclass, stream, family));
 
-      writeTitle(doc, '8. Risk assessment', { gold: true });
+      writeTitle(doc, '10. Risk assessment', { gold: true });
       writeSubheading(doc, 'Overall risk position');
       writePara(doc, `The matter presents as potentially supportable but not presently lodgement-ready. The risk does not arise from one isolated issue. It arises because the ${pathwayLabel} pathway depends on several connected elements being correct at the same time.`, { size: 9.7 });
       bmWriteRiskPriorityTable(doc, family);
 
-      writeTitle(doc, '9. Professional recommendation', { gold: true, size: 17 });
+      writeTitle(doc, '11. Professional recommendation', { gold: true, size: 17 });
       writePara(doc, `Based on the information presently available, I do not recommend immediate lodgement of the ${pathwayLabel} application.`, { size: 10 });
       writePara(doc, bmAgreementMatter(subclass, stream)
         ? 'The pathway may remain available, but only if the Labour Agreement, nomination, occupation coverage, salary position, concessions and applicant eligibility evidence can be verified and reconciled.'
         : 'The pathway may remain available, but only if the threshold criteria, applicant eligibility evidence, public-interest position and pathway-specific requirements can be verified and reconciled.', { size: 10 });
       writePara(doc, 'The matter should now proceed to a formal evidence review and lodgement-readiness assessment. If the original documents support the pathway, the matter can move to final preparation. If the review identifies a material inconsistency, the strategy should be revised before filing.', { size: 10 });
-      writePara(doc, 'This is the appropriate professional approach because it protects the client from avoidable refusal risk and ensures that any final lodgement advice is based on verified evidence, current legal settings and a defensible application record.', { size: 10 });
+      writePara(doc, 'This is the appropriate professional and commercial approach because it converts the preliminary assessment into a controlled evidence-review engagement before the client is exposed to avoidable lodgement risk. The next paid step should be a document-by-document review, a criterion-by-criterion evidence brief and a final agent decision on whether to proceed, delay or restructure.', { size: 10 });
 
-      writeTitle(doc, '10. Important limitations', { gold: true });
+      writeTitle(doc, '12. Important limitations', { gold: true });
       writePara(doc, effectiveAdvice.disclaimer || 'This advice is preliminary and is based on the information presently available. It is subject to review of original documents, confirmation of current law and policy, review of the relevant pathway material, review of applicant eligibility evidence, review of Departmental records, conflict checks and final professional assessment before lodgement. No guarantee of visa grant is given.', { size: 9.8 });
       writePara(doc, 'The Department may request further information, apply policy differently, identify adverse information, or reach a different view after assessing the complete application record.', { size: 9.8 });
 

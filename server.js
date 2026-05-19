@@ -1924,7 +1924,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.4-dashboard-v2-payment-ledger-schema-safe-v7-11',
+    version: '12.2.5-pdf-advice-10-final-v7-12',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
