@@ -2062,7 +2062,7 @@ function bmShortAppendixPosition(row) {
 }
 
 function bmAppendixRows(criteria) {
-  return ensureArray(criteria).filter(Boolean).map(item => {
+  const rows = ensureArray(criteria).filter(Boolean).map(item => {
     const issue = sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion'));
     const row = {
       area: bmAppendixAreaLabel(item.pdfSection || inferGrantCriteriaSection(item.criterion, '', ''), issue),
@@ -2075,6 +2075,54 @@ function bmAppendixRows(criteria) {
     row.position = bmShortAppendixPosition(row);
     return row;
   });
+
+  // v7.12 quality control: collapse duplicate/near-duplicate appendix rows so the
+  // professional schedule reads as a controlled lodgement-readiness matrix, not
+  // as repeated registry output. Keep the highest risk version and preserve the
+  // first legally meaningful category.
+  const riskRank = { Critical: 3, High: 2, Managed: 1 };
+  const normaliseKey = value => cleanText(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(the|and|or|any|all|before|lodgement|verify|review|confirm|evidence|requirements|requirement|position|criteria|criterion)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const merged = new Map();
+  for (const row of rows) {
+    const keyBase = normaliseKey(`${row.area} ${row.issue}`);
+    const actionKey = normaliseKey(row.action).slice(0, 90);
+    const key = `${keyBase}|${actionKey}`;
+    if (!keyBase) continue;
+
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, row);
+      continue;
+    }
+
+    const existingRank = riskRank[existing.risk] || 0;
+    const rowRank = riskRank[row.risk] || 0;
+    if (rowRank > existingRank) {
+      merged.set(key, Object.assign({}, row, {
+        area: existing.area || row.area,
+        action: row.action || existing.action
+      }));
+    }
+  }
+
+  // Second pass: remove obvious duplicate professional concepts that arrive from
+  // different registry labels but require the same client action.
+  const finalRows = [];
+  const seenConcepts = new Set();
+  for (const row of merged.values()) {
+    const concept = normaliseKey(`${row.area} ${row.action}`).slice(0, 120);
+    if (seenConcepts.has(concept)) continue;
+    seenConcepts.add(concept);
+    finalRows.push(row);
+  }
+
+  return finalRows;
 }
 
 function bmWriteAppendixSchedule(doc, criteria) {

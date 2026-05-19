@@ -1924,7 +1924,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.3-production-email-lock-admin-route-removed',
+    version: '12.2.4-dashboard-v2-payment-ledger-schema-safe-v7-11',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -4055,9 +4055,22 @@ async function recordServicePaymentAuditSafe({ serviceType, serviceRef, clientId
     const stripeCreatedAt = session && session.created ? new Date(Number(session.created) * 1000) : new Date();
     const isPaid = status ? /paid|complete|completed|active|verified/i.test(String(status)) : (session && (session.payment_status === 'paid' || session.status === 'complete'));
     const finalPaidAt = paidAt || (isPaid ? stripeCreatedAt : null);
+    const sessionMetadata = (session && session.metadata) || {};
+    const resolvedEmail = normaliseEmail(
+      clientEmail ||
+      (session && session.customer_email) ||
+      (session && session.customer_details && session.customer_details.email) ||
+      sessionMetadata.client_email ||
+      sessionMetadata.email ||
+      sessionMetadata.applicant_email ||
+      sessionMetadata.portal_login_email ||
+      sessionMetadata.original_started_email ||
+      ''
+    );
     const values = {
       client_id: clientId || null,
-      client_email: normaliseEmail(clientEmail),
+      email: resolvedEmail || null,
+      client_email: resolvedEmail || null,
       service_type: normaliseServiceType(serviceType),
       service_ref: serviceRef || null,
       visa_type: visaType || null,
@@ -4106,6 +4119,9 @@ async function recordServicePaymentAuditSafe({ serviceType, serviceRef, clientId
       params.push(stripeCreatedAt);
     }
 
+    if (columns.get('email')?.is_nullable === 'NO' && !values.email) {
+      return { ok: false, skipped: true, reason: 'payments_email_required_but_missing' };
+    }
     if (columns.get('client_email')?.is_nullable === 'NO' && !values.client_email) {
       return { ok: false, skipped: true, reason: 'payments_client_email_required_but_missing' };
     }
@@ -4165,10 +4181,25 @@ async function recordPaymentAuditSafe(assessmentId, email, session) {
 
     const stripeCreatedAt = session.created ? new Date(Number(session.created) * 1000) : new Date();
     const paidAt = session.payment_status === 'paid' || session.status === 'complete' ? stripeCreatedAt : null;
+    const sessionMetadata = (session && session.metadata) || {};
+    const resolvedEmail = normaliseEmail(
+      email ||
+      assessment.client_email ||
+      assessment.applicant_email ||
+      (session && session.customer_email) ||
+      (session && session.customer_details && session.customer_details.email) ||
+      sessionMetadata.client_email ||
+      sessionMetadata.email ||
+      sessionMetadata.applicant_email ||
+      sessionMetadata.portal_login_email ||
+      sessionMetadata.original_started_email ||
+      ''
+    );
 
     const values = {
       client_id: assessment.client_id || null,
-      client_email: normaliseEmail(email || assessment.client_email),
+      email: resolvedEmail || null,
+      client_email: resolvedEmail || null,
       service_type: 'visa_assessment',
       service_ref: assessmentId,
       visa_type: assessment.visa_type || null,
@@ -4217,6 +4248,9 @@ async function recordPaymentAuditSafe(assessmentId, email, session) {
       params.push(stripeCreatedAt);
     }
 
+    if (!names.includes('email') && columns.get('email')?.is_nullable === 'NO') {
+      return { ok: false, skipped: true, reason: 'payments_email_required_but_missing' };
+    }
     if (!names.includes('client_email') && columns.get('client_email')?.is_nullable === 'NO') {
       return { ok: false, skipped: true, reason: 'payments_client_email_required_but_missing' };
     }
@@ -6750,19 +6784,64 @@ async function queryDashboardV2Appeals(email, clientId, sessionId) {
 }
 
 async function queryDashboardV2Payments(email, sessionId) {
-  const sql = `
-    SELECT id, service_type, service_ref, status, stripe_session_id, stripe_payment_intent,
-           amount_cents, currency, plan, created_at, paid_at, stripe_created_at,
-           receipt_url, invoice_url
-    FROM payments
-    WHERE lower(COALESCE(client_email,''))=lower($1)
-       OR ($2 <> '' AND COALESCE(stripe_session_id,'')=$2)
-    ORDER BY COALESCE(paid_at, stripe_created_at, created_at) DESC NULLS LAST
-    LIMIT 50`;
-  try { return (await query(sql, [email, sessionId || ''])).rows; }
-  catch (err) { console.warn('Dashboard v2 payments query failed:', err.message); return []; }
-}
+  try {
+    const columnsRes = await query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'payments'
+    `);
+    const columns = new Set(columnsRes.rows.map(r => r.column_name));
+    if (!columns.size) return [];
 
+    const select = (name, fallback = 'NULL::text') => columns.has(name) ? name : `${fallback} AS ${name}`;
+    const selectInt = (name) => columns.has(name) ? name : `NULL::integer AS ${name}`;
+    const selectDate = (name) => columns.has(name) ? name : `NULL::timestamptz AS ${name}`;
+    const selectJson = (name) => columns.has(name) ? name : `'{}'::jsonb AS ${name}`;
+
+    const emailPredicates = [];
+    if (columns.has('client_email')) emailPredicates.push(`lower(COALESCE(client_email,''))=lower($1)`);
+    if (columns.has('email')) emailPredicates.push(`lower(COALESCE(email,''))=lower($1)`);
+    if (!emailPredicates.length) emailPredicates.push('false');
+
+    const sessionPredicate = columns.has('stripe_session_id')
+      ? `($2 <> '' AND COALESCE(stripe_session_id,'')=$2)`
+      : 'false';
+
+    const orderExpr = [
+      columns.has('paid_at') ? 'paid_at' : null,
+      columns.has('stripe_created_at') ? 'stripe_created_at' : null,
+      columns.has('created_at') ? 'created_at' : null,
+      columns.has('updated_at') ? 'updated_at' : null
+    ].filter(Boolean).join(', ');
+
+    const sql = `
+      SELECT
+        ${select('id')},
+        ${select('service_type')},
+        ${select('service_ref')},
+        ${select('status')},
+        ${select('stripe_session_id')},
+        ${select('stripe_payment_intent')},
+        ${selectInt('amount_cents')},
+        ${select('currency', `'aud'::text`)},
+        ${select('plan')},
+        ${selectDate('created_at')},
+        ${selectDate('paid_at')},
+        ${selectDate('stripe_created_at')},
+        ${select('receipt_url')},
+        ${select('invoice_url')},
+        ${selectJson('raw_payload')}
+      FROM payments
+      WHERE (${emailPredicates.join(' OR ')})
+         OR ${sessionPredicate}
+      ORDER BY ${orderExpr ? `COALESCE(${orderExpr}) DESC NULLS LAST` : '1 DESC'}
+      LIMIT 50`;
+    return (await query(sql, [email, sessionId || ''])).rows;
+  } catch (err) {
+    console.warn('Dashboard v2 payments query failed:', err.message);
+    return [];
+  }
+}
 
 function dashboardV2ShouldKickPdf(service) {
   if (!service || service.type !== 'visa_assessment') return false;
