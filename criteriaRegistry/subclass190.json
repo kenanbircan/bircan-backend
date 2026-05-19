@@ -1,0 +1,4081 @@
+{
+  "schemaVersion": "v9-automation-ceiling-knowledgebase-audit",
+  "subclass": "190",
+  "title": "Skilled Nominated",
+  "sourceOfTruth": {
+    "backendZip": "bircan-backend-main(9).zip",
+    "regulations": [
+      "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01.pdf",
+      "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL02.pdf",
+      "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL03.pdf",
+      "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL04.pdf"
+    ],
+    "pams": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+    "extractionDate": "2026-05-20",
+    "legalNote": "Schedule 2 grant criteria were extracted from the uploaded backend knowledgebase Regulations PDFs. Schedule 1 is validity only and is excluded from grant-criteria coverage.",
+    "v8Upgrade": "Added expected manifest controls, manual audit metadata, sourceMap references, intakeMapping and stricter PDF contamination rules.",
+    "v8UpgradeDate": "2026-05-20",
+    "v9Upgrade": "Automation ceiling: strengthened manifests, source fingerprints, intake mapping, instruments, evidence sufficiency, contamination controls and validator scoring without false manual verification.",
+    "v9UpgradeDate": "2026-05-20"
+  },
+  "professionalUse": {
+    "notClientFacing": true,
+    "requiresRMAReviewBeforePositiveAdvice": true,
+    "schedule1IsValidityOnly": true,
+    "schedule2IsGrantCriteria": true,
+    "notVisaGrantRate": true,
+    "v8Purpose": "legal-audit readiness: source-mapped, clause-controlled, intake-mapped and PDF-contamination-controlled registry",
+    "v9Warning": "This registry improves Schedule 2 coverage readiness, not visa grant probability. Manual RMA clause verification is still required before 98%+ external claims."
+  },
+  "availabilityGate": {
+    "status": "open_or_current_pathway_subject_to_current_law_check",
+    "blockPositiveAdviceUnlessVerified": false,
+    "pdfWarningRequired": false,
+    "mustCheck": [
+      "current legal availability of the subclass/stream",
+      "stream/pathway availability on the facts",
+      "current or historical legislative instrument controls",
+      "any saved, transitional or closure provisions where relevant",
+      "current law and instrument currency",
+      "stream/pathway applies on the facts",
+      "all required original evidence supports the criterion",
+      "exact Schedule 2 clause applicability",
+      "current legislative instrument currency",
+      "stream/pathway availability",
+      "evidence sufficiency before positive advice"
+    ],
+    "automationCeiling": true
+  },
+  "validApplicationRequirements": {
+    "source": "Schedule 1 / PAMS validity controls",
+    "coverageType": "validity_only_not_grant_criteria",
+    "notGrantCriteria": true,
+    "pamsHeadings": [
+      "5. Schedule 1 Requirements",
+      "5.1. Item 1138 of Schedule 1 to the Regulations",
+      "5.1.1 Application form",
+      "5.1.2 Visa application charge (VAC)",
+      "5.2. If Schedule 1 requirements are not met",
+      "6.3.6 Validity period for skills assessment",
+      "6.4.2 Validity period of English language test",
+      "7.6 Second Instalment of the Visa Application Charge (VAC) – Functional English"
+    ],
+    "manualAudit": {
+      "status": "needs_validity_review",
+      "notIncludedInGrantCriteriaCoverage": true
+    },
+    "excludedFromSchedule2Coverage": true,
+    "manualValidityAudit": {
+      "status": "needs_review",
+      "note": "Schedule 1 validity controls are separate from Schedule 2 grant criteria."
+    }
+  },
+  "expectedGrantCriteriaManifest": {
+    "source": "Schedule 2 only",
+    "expectedClauses": [
+      "190.211",
+      "190.212",
+      "190.213",
+      "190.214",
+      "190.215",
+      "190.215A",
+      "190.216",
+      "190.217",
+      "190.311",
+      "190.312",
+      "190.313",
+      "190.314",
+      "190.411",
+      "190.511",
+      "190.611"
+    ],
+    "expectedClauseCount": 15,
+    "manifestStatus": "source_extracted_from_knowledgebase",
+    "manualAudit": {
+      "status": "needs_rma_clause_verification_before_external_98_claim"
+    },
+    "schedule1Excluded": true,
+    "verified": false,
+    "manualManifestAudit": {
+      "status": "needs_review",
+      "verifiedBy": null,
+      "verifiedDate": null
+    },
+    "streams": {
+      "common_or_secondary": {
+        "expectedClauses": [
+          "190.211",
+          "190.212",
+          "190.213",
+          "190.214",
+          "190.215",
+          "190.215A",
+          "190.216",
+          "190.217",
+          "190.311",
+          "190.312",
+          "190.313",
+          "190.314",
+          "190.411",
+          "190.511",
+          "190.611"
+        ],
+        "mappedClauses": [
+          "190.211",
+          "190.212",
+          "190.213",
+          "190.214",
+          "190.215",
+          "190.215A",
+          "190.216",
+          "190.217",
+          "190.311",
+          "190.312",
+          "190.313",
+          "190.314",
+          "190.411",
+          "190.511",
+          "190.611"
+        ],
+        "missingClauses": [],
+        "manualAudit": {
+          "status": "needs_review",
+          "note": "Expected clause list is generated from knowledgebase extraction and must be manually verified before external 98%+ claim."
+        }
+      }
+    },
+    "v9ManifestHash": "624c386956209d7887623b66880202e499b2cfd80b4811612e8db8dc9feab6ea",
+    "verificationStatus": "source_extracted_plus_automation_hardened_needs_manual_legal_audit",
+    "external98ClaimAllowed": false
+  },
+  "streams": {
+    "common_or_secondary": {
+      "grantCriteria": [
+        {
+          "criterionId": "190-S2-190.211",
+          "schedule": "Schedule 2",
+          "clause": "190.211",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_primary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "location_status",
+            "general_grant_criterion"
+          ],
+          "requirementText": "The applicant was invited, in writing, by the Minister to apply for the visa.",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Location Status",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "86aeb731e80a848f556d50d118248536eda7683a577ab6cea400be76fc6aeab2",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.212",
+          "schedule": "Schedule 2",
+          "clause": "190.212",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_primary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "nomination",
+            "skills_occupation",
+            "location_status",
+            "course_student"
+          ],
+          "requirementText": "(1) At the time of invitation to apply for the visa: (a) the relevant assessing authority for the applicant’s nominated skilled occupation had assessed the applicant’s skills as suitable for that occupation; and (b) the assessment was not for a Subclass 485 (Temporary Graduate) visa; and (c) if the assessment specified a period during which the assessment was valid, and the period did not end more than 3 years after the date of the assessment—the period had not ended; and (d) if paragraph (c) did not apply—not more than 3 years had passed since the date of the assessment. (2) If the assessment was made on the basis of a qualification obtained in Australia while the applicant held a student visa, the qualification was obtained as a result of studying a registered course.",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "nomination approval, nomination application, position description, employer records",
+              "proves": "Criterion area: nomination, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: nomination, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: nomination, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Nomination evidence",
+              "proves": "nomination criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Course Student evidence",
+              "proves": "course student criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "occupation_list_or_ANZSCO_control",
+              "controls": "occupation eligibility/alignment",
+              "verificationStatus": "occupation_instrument_or_ANZSCO_check_required"
+            },
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Nomination / Skills Occupation",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "890ccbe8292a20ed3f01b27a8e4739d806d9224052b023281aa2b236bf4649ad",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "full-name",
+              "has-australian-sponsor",
+              "highest-qualification",
+              "nominated-position-title",
+              "occupation-title",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.213",
+          "schedule": "Schedule 2",
+          "clause": "190.213",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_primary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "nomination",
+            "english",
+            "skills_occupation",
+            "location_status"
+          ],
+          "requirementText": "At the time of invitation to apply for the visa, the applicant had competent English. Schedule 2 Provisions with respect to the grant of Subclasses of visas Subclass 190 Skilled—Nominated Clause 190.214",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "nomination approval, nomination application, position description, employer records",
+              "proves": "Criterion area: nomination, english, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "English test result, passport exemption evidence, concession authority if applicable",
+              "proves": "Criterion area: nomination, english, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: nomination, english, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: nomination, english, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Nomination evidence",
+              "proves": "nomination criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "English evidence",
+              "proves": "english criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "english_test_instrument_or_regulation",
+              "controls": "accepted tests, scores, exemptions/concessions",
+              "verificationStatus": "english_evidence_check_required"
+            },
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            },
+            {
+              "instrumentType": "english_test_or_exemption_instrument",
+              "controls": "accepted English tests, score levels, exemption or concession settings",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Nomination / English",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "8bd723efc3b820138b28b8d67df48734e52d23e8f0a2627e83d42abd13618cf4",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "english-test-completed",
+              "english-test-date",
+              "english-test-type",
+              "full-name",
+              "has-australian-sponsor",
+              "highest-qualification",
+              "nominated-position-title",
+              "occupation-title",
+              "passport-english-country",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.214",
+          "schedule": "Schedule 2",
+          "clause": "190.214",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_primary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "location_status"
+          ],
+          "requirementText": "(1) The applicant’s score, when assessed in relation to the visa under Subdivision B of Division 3 of Part 2 of the Act, is not less than the score stated in the invitation to apply for the visa. (2) The applicant’s score, when assessed in relation to the visa under Subdivision B of Division 3 of Part 2 of the Act, is not less than the qualifying score for that Subdivision. Note: Subdivision B of Division 3 of Part 2 of the Act provides for the application of a points system under which applicants for relevant visas are given an assessed score based on a prescribed number of points for particular attributes, assessed against the relevant pool mark and pass mark: see sections 92 to 96 of the Act. The prescribed points and the manner of their allocation are provided for in Division 2.6 and Schedule 6D of these Regulations. Pool marks and pass marks are set from time to time by the Minister by instrument: see section 96 of the Act.",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Location Status",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "0f5efaa6e5a5beac99e24a05d0e39184fd9d0c29878453cbf8d454a961831526",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.215",
+          "schedule": "Schedule 2",
+          "clause": "190.215",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_primary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "nomination",
+            "age"
+          ],
+          "requirementText": "The nominating State or Territory government agency has not withdrawn the nomination.",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "nomination approval, nomination application, position description, employer records",
+              "proves": "Criterion area: nomination, age",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, birth certificate, age exemption evidence if applicable",
+              "proves": "Criterion area: nomination, age",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Nomination evidence",
+              "proves": "nomination criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Age evidence",
+              "proves": "age criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Nomination / Age",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "63427046a126a1ffdd8bd45ce342920d18516d3c24acc3191aec9c7d33a56612",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "full-name",
+              "has-australian-sponsor",
+              "nominated-position-title",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 85.7
+        },
+        {
+          "criterionId": "190-S2-190.215A",
+          "schedule": "Schedule 2",
+          "clause": "190.215A",
+          "stream": "common_or_secondary",
+          "timePoint": "time_of_application",
+          "criterionType": [
+            "sponsorship",
+            "skills_occupation",
+            "location_status",
+            "salary_employment",
+            "sponsor"
+          ],
+          "requirementText": "(1) If, at the time of application: (a) the applicant held a Subclass 491 (Skilled Work Regional (Provisional)) visa or a Subclass 494 (Skilled Employer Sponsored Regional (Provisional)) visa; or (b) the last substantive visa held by the applicant was a Subclass 491 (Skilled Work Regional (Provisional)) visa or a Subclass 494 (Skilled Employer Sponsored Regional (Provisional)) visa; the applicant must have held that visa for at least 3 years at the time of application unless circumstances specified in an instrument under subclause (2) exist. (2) The Minister may, by legislative instrument, specify circumstances for the purposes of subclause (1).",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "sponsorship approval, sponsor identity/legal status, sponsor obligations evidence",
+              "proves": "Criterion area: sponsorship, skills_occupation, location_status, salary_employment",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: sponsorship, skills_occupation, location_status, salary_employment",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: sponsorship, skills_occupation, location_status, salary_employment",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "employment contract, payslips, payroll, tax, superannuation, AMSR/market salary evidence",
+              "proves": "Criterion area: sponsorship, skills_occupation, location_status, salary_employment",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Salary Employment evidence",
+              "proves": "salary employment criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Sponsor evidence",
+              "proves": "sponsor criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "regional_area_instrument_or_definition",
+              "controls": "regional area/location eligibility where applicable",
+              "verificationStatus": "current_or_historical_area_check_required"
+            },
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            },
+            {
+              "instrumentType": "regional_area_or_legacy_instrument",
+              "controls": "regional area, legacy regional pathway, RCB or location controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Sponsorship / Skills Occupation",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "ea2dfbc944d4fcb1bb894b7c66dca025017a2849bc1823a4160dbb8359c07927",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "full-name",
+              "has-australian-sponsor",
+              "highest-qualification",
+              "nominated-position-title",
+              "occupation-title",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.216",
+          "schedule": "Schedule 2",
+          "clause": "190.216",
+          "stream": "common_or_secondary",
+          "timePoint": "time_of_application",
+          "criterionType": [
+            "public_interest",
+            "health",
+            "nomination",
+            "skills_occupation",
+            "relationship_family",
+            "location_status",
+            "health_character"
+          ],
+          "requirementText": "(1) The applicant (the primary applicant) satisfies public interest criteria 4001, 4002, 4003, 4004, 4005, 4010, 4020 and 4021. (2) If the primary applicant has turned 18 at the time of application, the primary applicant satisfies public interest criterion 4019. (3) Each person who is covered by subclause (4), (5) or (6) satisfies public interest criteria 4001, 4002, 4003, 4004, 4005, 4010 and 4020. (4) This subclause covers a person who is a member of the family unit of the primary applicant who is also an applicant for a Subclass 190 visa. 194 Migration Regulations 1994 Provisions with respect to the grant of Subclasses of visas Schedule 2 Skilled—Nominated Subclass 190 Clause 190.216 (5) This subclause covers a person (the relevant person) if: (a) the relevant person was, at the time of the primary applicant’s application, a member of the family unit of the primary applicant; and (b) the relevant person is an applicant for a Subclass 190 visa; and (c) the Minister is satisfied that: (i) the relevant person; or (ii) a member of the family unit of the relevant person who has made a combined application with the relevant person or with the primary applicant; or (iii) a dependent child of the relevant person or of the primary applicant; has experienced family violence committed by the primary applicant. Note: For special provisions relating to family violence, see Division 1.5.",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "police certificates, court records, immigration history, statutory declarations where relevant",
+              "proves": "Criterion area: public_interest, health, nomination, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "health examination results, medical history, HAP ID where applicable",
+              "proves": "Criterion area: public_interest, health, nomination, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "nomination approval, nomination application, position description, employer records",
+              "proves": "Criterion area: public_interest, health, nomination, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: public_interest, health, nomination, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "identity, relationship, dependency and custody evidence",
+              "proves": "Criterion area: public_interest, health, nomination, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: public_interest, health, nomination, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Public Interest evidence",
+              "proves": "public interest criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Nomination evidence",
+              "proves": "nomination criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Relationship Family evidence",
+              "proves": "relationship family criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Health Character evidence",
+              "proves": "health character criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Public Interest / Health",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "4c3f8dc3469afc25a7ac3fb4351bf620b1896c17c8e5cbf5d96cdefaf8a14799",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "full-name",
+              "has-australian-sponsor",
+              "highest-qualification",
+              "nominated-position-title",
+              "occupation-title",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.217",
+          "schedule": "Schedule 2",
+          "clause": "190.217",
+          "stream": "common_or_secondary",
+          "timePoint": "time_of_decision",
+          "criterionType": [
+            "special_return",
+            "character",
+            "age",
+            "health_character"
+          ],
+          "requirementText": "(1) The applicant satisfies special return criteria 5001, 5002 and 5010. (2) Each person covered by subclause 190.216(4), (5) or (6) satisfies special return criteria 5001, 5002 and 5010. 190.3—Secondary criteria Note: These criteria are for applicants seeking to satisfy the secondary criteria. All criteria must be satisfied at the time a decision is made on the application. 190.31—Criteria",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "visa history, removal/deportation records, offshore/onshore status evidence",
+              "proves": "Criterion area: special_return, character, age",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "police certificates, court records, character declarations",
+              "proves": "Criterion area: special_return, character, age",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, birth certificate, age exemption evidence if applicable",
+              "proves": "Criterion area: special_return, character, age",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Age evidence",
+              "proves": "age criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Health Character evidence",
+              "proves": "health character criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Special Return / Character",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "8b242dcf87c04233836882b479ed8dc044c8d22716ee76a76638ae1d23b12fcc",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "primary_or_secondary_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.311",
+          "schedule": "Schedule 2",
+          "clause": "190.311",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_secondary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "nomination",
+            "age",
+            "skills_occupation",
+            "relationship_family",
+            "location_status"
+          ],
+          "requirementText": "(1) The applicant meets the requirements of subclause (2), (3), (4) or (5). (2) The applicant: (a) is a member of the family unit of a person who holds a Subclass 190 visa granted on the basis of satisfying the primary criteria for the grant of the visa; and (b) made a combined application with that person. (3) The applicant meets the requirements of this subclause if: (a) at the time of the application, the applicant was the spouse or de facto partner of a person (the primary applicant) seeking to satisfy the primary criteria for the grant of a Subclass 190 visa, and the primary applicant has since been granted that visa; and (b) the relationship between the primary applicant and the applicant has ceased; and (c) one or more of the following: (i) the applicant; (ii) a member of the family unit of the applicant who has made a combined application with the applicant or with the primary applicant; (iii) a dependent child of the applicant or of the primary applicant; has experienced family violence committed by the primary applicant; and (d) the applicant: (i) was in Australia at the time the applicant’s visa application was made; or (ii) entered Australia after the applicant’s visa application was made. 196 Migration Regulations 1994 Provisions with respect to the grant of Subclasses of visas Schedule 2 Skilled—Nominated Subclass 190 Clause 190.312 (4) The applicant meets the req",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "nomination approval, nomination application, position description, employer records",
+              "proves": "Criterion area: nomination, age, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, birth certificate, age exemption evidence if applicable",
+              "proves": "Criterion area: nomination, age, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: nomination, age, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "identity, relationship, dependency and custody evidence",
+              "proves": "Criterion area: nomination, age, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: nomination, age, skills_occupation, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Nomination evidence",
+              "proves": "nomination criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Age evidence",
+              "proves": "age criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Relationship Family evidence",
+              "proves": "relationship family criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Nomination / Age",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "22ad14c6090808c0059f052a9b6469124f53043782738cc2c0793395a4a6989e",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "full-name",
+              "has-australian-sponsor",
+              "highest-qualification",
+              "nominated-position-title",
+              "occupation-title",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.312",
+          "schedule": "Schedule 2",
+          "clause": "190.312",
+          "stream": "common_or_secondary",
+          "timePoint": "time_of_application",
+          "criterionType": [
+            "public_interest",
+            "health",
+            "health_character"
+          ],
+          "requirementText": "(1) The applicant satisfies public interest criteria 4001, 4002, 4003, 4004, 4005, 4010, 4020 and 4021. (2) If the applicant had turned 18 at the time of application, the applicant satisfies public interest criterion 4019. (3) If the applicant has not turned 18, the applicant satisfies public interest criteria 4017 and 4018.",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "police certificates, court records, immigration history, statutory declarations where relevant",
+              "proves": "Criterion area: public_interest, health",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "health examination results, medical history, HAP ID where applicable",
+              "proves": "Criterion area: public_interest, health",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Public Interest evidence",
+              "proves": "public interest criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Health Character evidence",
+              "proves": "health character criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Public Interest / Health",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "21b61b19ff362c40ebcc8e301f6670b84825740978a4f1c4a100bff2108dbb3a",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.313",
+          "schedule": "Schedule 2",
+          "clause": "190.313",
+          "stream": "common_or_secondary",
+          "timePoint": "grant_criteria_secondary_time_of_decision_unless_clause_states_otherwise",
+          "criterionType": [
+            "special_return",
+            "character",
+            "nomination",
+            "age",
+            "skills_occupation",
+            "location_status",
+            "health_character"
+          ],
+          "requirementText": "The applicant satisfies special return criteria 5001, 5002 and 5010. Schedule 2 Provisions with respect to the grant of Subclasses of visas Subclass 190 Skilled—Nominated Clause 190.314",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "visa history, removal/deportation records, offshore/onshore status evidence",
+              "proves": "Criterion area: special_return, character, nomination, age, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "police certificates, court records, character declarations",
+              "proves": "Criterion area: special_return, character, nomination, age, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "nomination approval, nomination application, position description, employer records",
+              "proves": "Criterion area: special_return, character, nomination, age, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, birth certificate, age exemption evidence if applicable",
+              "proves": "Criterion area: special_return, character, nomination, age, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: special_return, character, nomination, age, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: special_return, character, nomination, age, skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Nomination evidence",
+              "proves": "nomination criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Age evidence",
+              "proves": "age criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Health Character evidence",
+              "proves": "health character criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Special Return / Character",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "4fa8262f939eddd7896bff4bd202c91196b7d9e45f3f9ed7b786d4d20d62b2eb",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "employer-name",
+              "full-name",
+              "has-australian-sponsor",
+              "highest-qualification",
+              "nominated-position-title",
+              "occupation-title",
+              "points-claimed",
+              "role-full-time",
+              "role-ongoing",
+              "salary-offered",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.314",
+          "schedule": "Schedule 2",
+          "clause": "190.314",
+          "stream": "common_or_secondary",
+          "timePoint": "time_of_application",
+          "criterionType": [
+            "public_interest",
+            "special_return",
+            "health",
+            "character",
+            "age",
+            "relationship_family",
+            "location_status",
+            "health_character"
+          ],
+          "requirementText": "(1) This clause applies if the applicant (the secondary applicant) meets the requirements of subclause 190.311(4). (2) Each member of the family unit of the secondary applicant who is an applicant for a Subclass 190 visa satisfies: (a) public interest criteria 4001, 4002, 4003, 4004, 4005, 4010 and 4020; and (b) special return criteria 5001, 5002 and 5010. (3) Each member of the family unit of the secondary applicant who is an applicant for a Subclass 190 visa and who has turned 18 at the time of application satisfies public interest criterion 4019. (4) Public interest criteria 4015 and 4016 are satisfied in relation to each member of the family unit of the secondary applicant who is an applicant for a Subclass 190 visa and who has not turned 18 at the time of application. (5) Each member of the family unit of the secondary applicant who is not an applicant for a Subclass 190 visa: (a) satisfies public interest criteria 4001, 4002, 4003 and 4004; and (b) satisfies public interest criterion 4005 unless it would be unreasonable to require the member to undergo assessment in relation to that criterion. 190.4—Circumstances applicable to grant",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "police certificates, court records, immigration history, statutory declarations where relevant",
+              "proves": "Criterion area: public_interest, special_return, health, character, age, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "visa history, removal/deportation records, offshore/onshore status evidence",
+              "proves": "Criterion area: public_interest, special_return, health, character, age, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "health examination results, medical history, HAP ID where applicable",
+              "proves": "Criterion area: public_interest, special_return, health, character, age, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "police certificates, court records, character declarations",
+              "proves": "Criterion area: public_interest, special_return, health, character, age, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, birth certificate, age exemption evidence if applicable",
+              "proves": "Criterion area: public_interest, special_return, health, character, age, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "identity, relationship, dependency and custody evidence",
+              "proves": "Criterion area: public_interest, special_return, health, character, age, relationship_family, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Public Interest evidence",
+              "proves": "public interest criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Age evidence",
+              "proves": "age criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Relationship Family evidence",
+              "proves": "relationship family criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Health Character evidence",
+              "proves": "health character criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Public Interest / Special Return",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "cb2386d1bd6200279b44d6f8d7802f30aa1b5e26a1cf05626e0a236e10194b17",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "primary_or_secondary_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.411",
+          "schedule": "Schedule 2",
+          "clause": "190.411",
+          "stream": "common_or_secondary",
+          "timePoint": "public_interest_or_special_return_time_of_decision",
+          "criterionType": [
+            "location_status",
+            "general_grant_criterion"
+          ],
+          "requirementText": "The applicant may be in or outside Australia when the visa is granted, but not in immigration clearance. Note: The second instalment of visa application charge must be paid before the visa can be granted. 190.5—When visa is in effect",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Location Status",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "bb09c39ea450438b857d4a768258bfff6ecf1017be8c1a4084fcdda8821f00f5",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.511",
+          "schedule": "Schedule 2",
+          "clause": "190.511",
+          "stream": "common_or_secondary",
+          "timePoint": "public_interest_or_special_return_time_of_decision",
+          "criterionType": [
+            "location_status",
+            "general_grant_criterion"
+          ],
+          "requirementText": "Permanent visa permitting the holder to travel to and enter Australia for 5 years from the date of grant. 190.6—Conditions",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Location Status",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "c6ad826cbd125bf49990344ab604cfcd44b6f77269afeffb6be84d950d59001a",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "grant_criterion_control",
+          "automationQualityScore": 100.0
+        },
+        {
+          "criterionId": "190-S2-190.611",
+          "schedule": "Schedule 2",
+          "clause": "190.611",
+          "stream": "common_or_secondary",
+          "timePoint": "public_interest_or_special_return_time_of_decision",
+          "criterionType": [
+            "skills_occupation",
+            "location_status"
+          ],
+          "requirementText": "If the applicant is outside Australia when the visa is granted: (a) first entry must be made before the date specified by the Minister; and (b) if the applicant satisfies the secondary criteria for the grant of the visa, condition 8515 may be imposed. 198 Migration Regulations 1994 Provisions with respect to the grant of Subclasses of visas Schedule 2 Permanent Residence (Skilled Regional) Subclass 191 Clause 191.111",
+          "source": {
+            "legalFrame": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "pamDoc": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction"
+          },
+          "appliesIf": {
+            "stream": "common_or_secondary"
+          },
+          "evidenceRules": [
+            {
+              "documentGroup": "skills assessment, qualifications, employment references, registration/licensing, duties evidence",
+              "proves": "Criterion area: skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "documentGroup": "passport, VEVO/current visa evidence, entry/exit/travel history, bridging visa details",
+              "proves": "Criterion area: skills_occupation, location_status",
+              "mustShow": [
+                "identity consistency",
+                "date/currency",
+                "criterion-specific facts",
+                "no material contradiction"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified for final lodgement advice."
+            },
+            {
+              "document": "Skills Occupation evidence",
+              "proves": "skills occupation criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            },
+            {
+              "document": "Location Status evidence",
+              "proves": "location status criterion or risk position",
+              "mustShow": [
+                "identity match",
+                "date/currency",
+                "source reliability",
+                "consistency with application record"
+              ],
+              "riskIfMissing": "Criterion cannot be treated as verified before final lodgement advice."
+            }
+          ],
+          "instrumentControls": [
+            {
+              "instrumentType": "regional_area_instrument_or_definition",
+              "controls": "regional area/location eligibility where applicable",
+              "verificationStatus": "current_or_historical_area_check_required"
+            },
+            {
+              "instrumentType": "occupation_or_assessing_authority_instrument",
+              "controls": "occupation eligibility, ANZSCO, skills authority or registration controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            },
+            {
+              "instrumentType": "regional_area_or_legacy_instrument",
+              "controls": "regional area, legacy regional pathway, RCB or location controls",
+              "verificationStatus": "needs_current_instrument_check",
+              "automationCeilingTag": true
+            }
+          ],
+          "riskTriggers": [
+            "criterion not verified against original evidence",
+            "client answer inconsistent with document evidence",
+            "current law or incorporated instrument not checked",
+            "adverse health, character, immigration history or integrity issue"
+          ],
+          "pdfMapping": {
+            "section": "Skills Occupation / Location Status",
+            "clientWordingControl": "Use subclass-specific, evidence-review wording. Do not state the criterion is satisfied unless evidence is verified.",
+            "agentWordingControl": "Check clause text, PAMS context, current instruments and original evidence before final advice.",
+            "avoidWording": [
+              "business investment",
+              "generic multi-subclass pathway wording",
+              "invitation, nomination, sponsorship, relationship or enrolment requirement",
+              "labour agreement",
+              "protection claim",
+              "relationship requirement",
+              "student enrolment",
+              "visitor genuine temporary stay"
+            ],
+            "requiredConcepts": [
+              "character",
+              "evidence",
+              "health",
+              "identity",
+              "invitation",
+              "nomination",
+              "occupation list",
+              "points test",
+              "public interest",
+              "regional",
+              "skills assessment",
+              "time of application"
+            ],
+            "safeFallbackWording": "This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control.",
+            "clientWordingMode": "evidence_required_before_positive_lodgement_advice",
+            "avoidGenericAdvice": true
+          },
+          "manualClauseAudit": {
+            "status": "source_extracted_from_knowledgebase_needs_rma_verification",
+            "verifiedBy": null,
+            "verifiedDate": null
+          },
+          "sourceMap": {
+            "knowledgebaseFile": "knowledgebase/MIGRATION/REGULATIONS/F2026C00324VOL01-04.pdf",
+            "pamFile": "knowledgebase/MIGRATION/PAMS/SUBCLASS 190.docx",
+            "sourceType": "Migration Regulations 1994 compilation from uploaded backend knowledgebase",
+            "extractionMethod": "Schedule 2 subclass block and clause marker extraction",
+            "sourceHash": "f6738eaac2ab5e78fefff1821892ab47e3302577fe5c3a2357226be189d65c58",
+            "extractionConfidence": "high_text_match_needs_legal_audit"
+          },
+          "intakeMapping": {
+            "requiredFields": [
+              "anzsco-code-known",
+              "country-of-citizenship",
+              "criminal-history",
+              "current-visa-status",
+              "currently-in-australia",
+              "daily-duties",
+              "date-of-birth",
+              "email-address",
+              "full-name",
+              "highest-qualification",
+              "occupation-title",
+              "points-claimed",
+              "serious-medical",
+              "skills-assessment-status",
+              "state-nomination",
+              "visa-cancelled",
+              "visa-refused"
+            ],
+            "missingAnswerEffect": "criterion_requires_follow_up_or_evidence_review",
+            "automationCoverage": "mapped_by_criterion_type"
+          },
+          "criterionRole": "primary_or_secondary_control",
+          "automationQualityScore": 100.0
+        }
+      ],
+      "manualStreamAudit": {
+        "status": "needs_review",
+        "verifiedBy": null,
+        "verifiedDate": null,
+        "v9Status": "criteria_enriched_needs_rma_verification"
+      },
+      "availability": "open_or_current_pathway_subject_to_current_law_check",
+      "sourceMap": {
+        "source": "knowledgebase_schedule2_v7_enriched_to_v8",
+        "subclass": "190",
+        "stream": "common_or_secondary",
+        "streamHash": "1cab98cbdbb33f60c343976a34dd7d8578e403334d04a393e217a6c659b874a5"
+      },
+      "automationCeilingScore": 99.0
+    }
+  },
+  "pamsControls": {
+    "schedule2Headings": [
+      "6. Schedule 2 Primary criteria",
+      "6.1. Primary criteria",
+      "6.8. Public interest and special return criteria",
+      "6.8.1 Health, character and other public interest criteria (PIC)",
+      "6.8.2 Special return criteria (SRC)",
+      "7. Subclass 190 Secondary criteria",
+      "7.1 Secondary criteria",
+      "7.4 Special return criteria",
+      "Secondary applicants are those persons seeking to satisfy the secondary criteria for the grant of a Subclass 190 visa whose application is:",
+      "Public interest criterion"
+    ],
+    "instrumentHeadings": [
+      "5.1.3 Application must be made at the place and in the manner specified by the Minister",
+      "5.1.12 Application must be made within the specified period",
+      "11.2. Exercise of Legislative Powers and Functions"
+    ],
+    "evidenceHeadings": [
+      "6.3. Suitable skills assessment",
+      "6.3.2 Subclass 485 skills assessments are not acceptable",
+      "6.3.5 Professional membership or registration is not a skills assessment",
+      "6.3.7 Skills assessment made on the basis of a qualification obtained in Australia",
+      "6.5.1 Points assessment",
+      "English proficiency and assessment; and"
+    ],
+    "generalPathwayHeadings": [
+      "Schedule 6D general points test for General Skilled Migration visas mentioned in subregulation 2.26AC(1)",
+      "1. Purpose",
+      "2. Scope",
+      "3. Policy intent",
+      "3.1. Objectives of the program",
+      "4. Procedural Instruction",
+      "4.1. About Subclass 190",
+      "4.2 Subclass 190 legislation",
+      "4.3 Subclass 190 – section 499 directions",
+      "5.1.4 Where Subclass 190 visa applicants must be",
+      "5.1.5 Qualifying visas",
+      "5.1.6 Application by a member of the family unit",
+      "5.1.7 Bars on applying",
+      "5.1.8 Section 48 bar on applying for certain visas in Australia",
+      "5.1.9 No further application conditions – waiver provisions",
+      "5.1.10 Additional requirements to be met by the primary applicant",
+      "5.1.11 Invitation required",
+      "5.1.13 Applicant must not have turned 45 at the time of invitation",
+      "5.1.14 Applicant must nominate a skilled occupation",
+      "5.1.15 Applicant must be nominated by a State or Territory government agency",
+      "5.1.16 Nominated skilled occupation cannot later be changed",
+      "5.3. If primary application is invalid, all ‘combined’ applications invalid",
+      "6.1.1 Introduction",
+      "6.2. Invitation",
+      "6.3.1 Time of invitation to apply",
+      "6.3.3 Medical Practitioners",
+      "6.3.4 Solicitors and Barristers",
+      "6.4. English language criterion",
+      "6.4.1 Competent English",
+      "6.5. Points test",
+      "6.5.2 Assessed score must be at least equal to score at invitation",
+      "6.5.3 Assessed score must meet pass mark",
+      "6.6. Nomination",
+      "6.6.1 State or Territory government agency nomination",
+      "6.7. Certain Regional Provisional visa holders",
+      "6.7.1 Additional criteria applicable to a Subclass 491 (Skilled Work Regional (Provisional) visa holder or a Subclass 494 (Skilled Employer Sponsored Regional Provisional) visa holder",
+      "6.8.3 “One fails, all fail” criteria",
+      "7.1.1 Introduction",
+      "7.2 Member of the family unit (MoFU)- Eligibility",
+      "7.2.1 Relationship",
+      "7.2.2 Applying as a secondary applicant",
+      "7.2.3 Relationship to primary applicant",
+      "7.2.4 Change in circumstances to be notified",
+      "7.2.5 Establishing the spouse or de facto partner relationship",
+      "7.3 MoFU PICs",
+      "7.3.1 PICs",
+      "7.3.2 If a minor",
+      "7.5 Primary applicant must be granted a Subclass 190 visa first",
+      "8. Subclass 190 visa grant",
+      "8.1. Where the applicant must be to be granted their visa"
+    ]
+  },
+  "contaminationGuards": {
+    "blockedGenericTerms": [
+      "business investment",
+      "generic multi-subclass pathway wording",
+      "invitation, nomination, sponsorship, relationship or enrolment requirement",
+      "labour agreement",
+      "protection claim",
+      "relationship requirement",
+      "student enrolment",
+      "visitor genuine temporary stay"
+    ],
+    "pdfInstruction": "If generated wording contains a blocked phrase, rewrite using allowed pathway terms or downgrade to a verification-required statement.",
+    "allowedPathwayTerms": [
+      "character",
+      "evidence",
+      "health",
+      "identity",
+      "invitation",
+      "nomination",
+      "occupation list",
+      "points test",
+      "public interest",
+      "regional",
+      "skills assessment",
+      "time of application",
+      "time of decision",
+      "visa history"
+    ]
+  },
+  "coverageScoring": {
+    "method": "v8 weighted legal-audit readiness scoring, Schedule 2 only",
+    "schedule1ExcludedFromGrantCriteria": true,
+    "schedule2CriteriaItems": 15,
+    "criteriaWithInstrumentControls": 4,
+    "criteriaWithIntakeMapping": 15,
+    "expectedManifestPresent": true,
+    "manualAuditRequiredForExternal98Claim": true,
+    "estimatedSchedule2CoverageReadiness": 97.8,
+    "external98ClaimAllowed": false,
+    "reasonExternal98NotAutomatic": "v8 improves structure and source/audit controls, but manual clause verification by an RMA is required before external 98%+ claims.",
+    "version": "v9_automation_ceiling_weighted_readiness",
+    "manualVerificationStillRequiredFor98Plus": true,
+    "notVisaGrantRate": true,
+    "v9EstimatedSchedule2CoverageReadiness": 97.6
+  },
+  "legacyOriginalRegistry": {
+    "subclass": "190",
+    "title": "Skilled Nominated",
+    "version": "2026-05-14",
+    "coverageTarget": "98plus_grant_criteria",
+    "requiredSources": [
+      "ACT",
+      "REGULATIONS",
+      "INSTRUMENTS",
+      "PAMS"
+    ],
+    "streams": {
+      "default": {
+        "criteria": [
+          {
+            "id": "correct_subclass_stream",
+            "label": "Correct subclass, stream and pathway selected",
+            "mandatory": true,
+            "timing": "pre_lodgement_review",
+            "sourceCategory": "ACT / REGULATIONS / SCHEDULES / PAM",
+            "sourceSupport": {
+              "required": [
+                "ACT",
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "correct subclass, stream and pathway selected",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "valid_application_schedule1",
+            "label": "Schedule 1 valid application requirements",
+            "mandatory": true,
+            "timing": "time_of_application",
+            "sourceCategory": "Schedule 1 / Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "schedule 1 valid application requirements",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "identity",
+            "label": "Identity, name and document consistency",
+            "mandatory": true,
+            "timing": "pre_lodgement_review",
+            "sourceCategory": "Act / Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "ACT",
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "identity, name and document consistency",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "current_location_status",
+            "label": "Current location, immigration status and jurisdiction",
+            "mandatory": true,
+            "timing": "time_of_application",
+            "sourceCategory": "Act / Regulations / Schedule 1 / PAM",
+            "sourceSupport": {
+              "required": [
+                "ACT",
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "current location, immigration status and jurisdiction",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "visa_history_bars",
+            "label": "Visa history, refusals, cancellations and statutory bars",
+            "mandatory": true,
+            "timing": "pre_lodgement_review",
+            "sourceCategory": "Act / Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "ACT",
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "visa history, refusals, cancellations and statutory bars",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "health_pic",
+            "label": "Health requirements / public interest criteria",
+            "mandatory": true,
+            "timing": "time_of_decision",
+            "sourceCategory": "PIC / Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "health requirements / public interest criteria",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "character_pic",
+            "label": "Character, security and integrity requirements",
+            "mandatory": true,
+            "timing": "time_of_decision",
+            "sourceCategory": "Act s501 / PIC / PAM",
+            "sourceSupport": {
+              "required": [
+                "ACT",
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "character, security and integrity requirements",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "pic4020_integrity",
+            "label": "False, misleading information and bogus document risk",
+            "mandatory": true,
+            "timing": "time_of_decision",
+            "sourceCategory": "PIC 4020 / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "false, misleading information and bogus document risk",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "special_return_criteria",
+            "label": "Special Return Criteria if applicable",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "SRC / Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "special return criteria if applicable",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "secondary_applicants",
+            "label": "Secondary applicants / members of family unit if included",
+            "mandatory": false,
+            "timing": "secondary_applicant_review",
+            "sourceCategory": "Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "secondary applicants / members of family unit if included",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "evidence_sufficiency",
+            "label": "Evidence sufficiency and lodgement readiness",
+            "mandatory": true,
+            "timing": "pre_lodgement_review",
+            "sourceCategory": "PAM / internal evidence matrix",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "evidence sufficiency and lodgement readiness",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "risk_classification",
+            "label": "Overall risk classification and professional recommendation",
+            "mandatory": true,
+            "timing": "final_review",
+            "sourceCategory": "RMA professional judgment / internal risk matrix",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "overall risk classification and professional recommendation",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "invitation",
+            "label": "Invitation to apply",
+            "mandatory": true,
+            "timing": "time_of_application",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "invitation to apply",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "occupation_list",
+            "label": "Occupation on relevant skilled list",
+            "mandatory": true,
+            "timing": "time_of_invitation",
+            "sourceCategory": "Instruments",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "occupation on relevant skilled list",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skills_assessment",
+            "label": "Valid skills assessment",
+            "mandatory": true,
+            "timing": "time_of_invitation_or_application",
+            "sourceCategory": "Regulations / Instruments",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "valid skills assessment",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "age_points",
+            "label": "Age requirement and points",
+            "mandatory": true,
+            "timing": "time_of_invitation",
+            "sourceCategory": "Regulations",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "age requirement and points",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "english_points",
+            "label": "English requirement and points",
+            "mandatory": true,
+            "timing": "time_of_invitation",
+            "sourceCategory": "Regulations / Instruments",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "english requirement and points",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "points_test",
+            "label": "Points test score and claimed components",
+            "mandatory": true,
+            "timing": "time_of_invitation",
+            "sourceCategory": "Regulations / Instruments",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "points test score and claimed components",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "eoi_consistency",
+            "label": "EOI consistency and claim substantiation",
+            "mandatory": true,
+            "timing": "pre_lodgement_review",
+            "sourceCategory": "PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "eoi consistency and claim substantiation",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "employment_points",
+            "label": "Skilled employment points",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled employment points",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "education_points",
+            "label": "Educational qualification points",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "educational qualification points",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "partner_points",
+            "label": "Partner/single/other points claims",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "partner/single/other points claims",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_1",
+            "label": "Skilled Nominated subclass-specific grant issue 1",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 1",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_2",
+            "label": "Skilled Nominated subclass-specific grant issue 2",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 2",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_3",
+            "label": "Skilled Nominated subclass-specific grant issue 3",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 3",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_4",
+            "label": "Skilled Nominated subclass-specific grant issue 4",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 4",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_5",
+            "label": "Skilled Nominated subclass-specific grant issue 5",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 5",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_6",
+            "label": "Skilled Nominated subclass-specific grant issue 6",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 6",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_7",
+            "label": "Skilled Nominated subclass-specific grant issue 7",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 7",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_8",
+            "label": "Skilled Nominated subclass-specific grant issue 8",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 8",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_9",
+            "label": "Skilled Nominated subclass-specific grant issue 9",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 9",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_10",
+            "label": "Skilled Nominated subclass-specific grant issue 10",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 10",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_11",
+            "label": "Skilled Nominated subclass-specific grant issue 11",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 11",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_12",
+            "label": "Skilled Nominated subclass-specific grant issue 12",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 12",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_13",
+            "label": "Skilled Nominated subclass-specific grant issue 13",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 13",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          },
+          {
+            "id": "skilled_specific_grant_issue_14",
+            "label": "Skilled Nominated subclass-specific grant issue 14",
+            "mandatory": false,
+            "timing": "conditional_review",
+            "sourceCategory": "Regulations / Instruments / PAM",
+            "sourceSupport": {
+              "required": [
+                "REGULATIONS",
+                "PAMS"
+              ],
+              "preferred": []
+            },
+            "factsRequired": [
+              "skilled nominated subclass-specific grant issue 14",
+              "client answer consistency",
+              "relevant dates/status"
+            ],
+            "evidenceRequired": [
+              "primary evidence",
+              "supporting evidence",
+              "consistency check"
+            ],
+            "riskFlags": [
+              "missing evidence",
+              "inconsistent answers",
+              "adverse history"
+            ],
+            "pdfSection": "Grant criteria assessment"
+          }
+        ]
+      }
+    },
+    "contaminationBlocks": []
+  },
+  "pdfContaminationControls": {
+    "blockedPhrases": [
+      "98% visa grant rate",
+      "business investment",
+      "generic multi-subclass pathway wording",
+      "generic visa pathway",
+      "guaranteed visa grant",
+      "invitation, nomination, sponsorship, relationship or enrolment requirement",
+      "labour agreement",
+      "protection claim",
+      "relationship requirement",
+      "relationship/enrolment/invitation requirement unless subclass-specific",
+      "student enrolment",
+      "visitor genuine temporary stay"
+    ],
+    "allowedPathwayTerms": [
+      "character",
+      "evidence",
+      "health",
+      "identity",
+      "invitation",
+      "nomination",
+      "occupation list",
+      "points test",
+      "public interest",
+      "regional",
+      "skills assessment",
+      "time of application",
+      "time of decision",
+      "visa history"
+    ],
+    "safeFallbackWording": "The pathway requires verification against current law, relevant instruments and original evidence before final lodgement advice.",
+    "engineInstruction": "If generated wording contains a blocked phrase, rewrite using allowed pathway terms or downgrade to a verification-required statement.",
+    "positiveAdviceGate": "Do not issue positive lodgement advice where availabilityGate.blockPositiveAdviceUnlessVerified is true or manualClauseAudit is not verified."
+  },
+  "intakeCoverageControls": {
+    "purpose": "Map Schedule 2 criteria to assessment-page fields so missing answers create follow-up items rather than generic positive advice.",
+    "missingRequiredFieldBehaviour": "criterion_requires_follow_up_or_agent_review",
+    "automationCeiling": true
+  },
+  "registryFingerprint": "33303de489da43093cc4cf6a20745631a94bfcbfd0c3c55231a30665496f4a93"
+}

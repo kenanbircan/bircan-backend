@@ -1,0 +1,332 @@
+{
+  "version": "v9-automation-ceiling",
+  "created": "2026-05-20",
+  "overallEstimatedSchedule2CoverageReadiness": 97.6,
+  "importantLegalNote": "This is not a visa grant rate. It is automated Schedule 2 coverage readiness. External 98%+ requires manual RMA clause verification.",
+  "files": [
+    {
+      "subclass": "100",
+      "criteriaItems": 15,
+      "expectedClauseCount": 15,
+      "averageAutomationQualityScore": 97.1,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "101",
+      "criteriaItems": 21,
+      "expectedClauseCount": 21,
+      "averageAutomationQualityScore": 97.3,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "103",
+      "criteriaItems": 28,
+      "expectedClauseCount": 28,
+      "averageAutomationQualityScore": 98.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "115",
+      "criteriaItems": 24,
+      "expectedClauseCount": 24,
+      "averageAutomationQualityScore": 97.6,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "116",
+      "criteriaItems": 22,
+      "expectedClauseCount": 22,
+      "averageAutomationQualityScore": 97.4,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "173",
+      "criteriaItems": 28,
+      "expectedClauseCount": 28,
+      "averageAutomationQualityScore": 96.9,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "186",
+      "criteriaItems": 32,
+      "expectedClauseCount": 32,
+      "averageAutomationQualityScore": 97.3,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "187",
+      "criteriaItems": 25,
+      "expectedClauseCount": 25,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "188",
+      "criteriaItems": 56,
+      "expectedClauseCount": 56,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "189",
+      "criteriaItems": 20,
+      "expectedClauseCount": 20,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "190",
+      "criteriaItems": 15,
+      "expectedClauseCount": 15,
+      "averageAutomationQualityScore": 99.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "300",
+      "criteriaItems": 31,
+      "expectedClauseCount": 31,
+      "averageAutomationQualityScore": 97.7,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "309",
+      "criteriaItems": 24,
+      "expectedClauseCount": 24,
+      "averageAutomationQualityScore": 95.2,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "407",
+      "criteriaItems": 24,
+      "expectedClauseCount": 24,
+      "averageAutomationQualityScore": 98.2,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "408",
+      "criteriaItems": 35,
+      "expectedClauseCount": 35,
+      "averageAutomationQualityScore": 94.7,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "417",
+      "criteriaItems": 9,
+      "expectedClauseCount": 9,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "444",
+      "criteriaItems": 2,
+      "expectedClauseCount": 2,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "461",
+      "criteriaItems": 12,
+      "expectedClauseCount": 12,
+      "averageAutomationQualityScore": 96.4,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "462",
+      "criteriaItems": 23,
+      "expectedClauseCount": 23,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "482",
+      "criteriaItems": 32,
+      "expectedClauseCount": 32,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "485",
+      "criteriaItems": 26,
+      "expectedClauseCount": 26,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "489",
+      "criteriaItems": 24,
+      "expectedClauseCount": 24,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "491",
+      "criteriaItems": 15,
+      "expectedClauseCount": 15,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "494",
+      "criteriaItems": 29,
+      "expectedClauseCount": 29,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "500",
+      "criteriaItems": 21,
+      "expectedClauseCount": 21,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "590",
+      "criteriaItems": 19,
+      "expectedClauseCount": 19,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "600",
+      "criteriaItems": 34,
+      "expectedClauseCount": 34,
+      "averageAutomationQualityScore": 91.2,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "602",
+      "criteriaItems": 20,
+      "expectedClauseCount": 20,
+      "averageAutomationQualityScore": 95.7,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "785",
+      "criteriaItems": 12,
+      "expectedClauseCount": 12,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "790",
+      "criteriaItems": 12,
+      "expectedClauseCount": 12,
+      "averageAutomationQualityScore": 98.8,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "801",
+      "criteriaItems": 13,
+      "expectedClauseCount": 13,
+      "averageAutomationQualityScore": 97.8,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "820",
+      "criteriaItems": 19,
+      "expectedClauseCount": 19,
+      "averageAutomationQualityScore": 95.5,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "836",
+      "criteriaItems": 20,
+      "expectedClauseCount": 20,
+      "averageAutomationQualityScore": 97.1,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "866",
+      "criteriaItems": 15,
+      "expectedClauseCount": 15,
+      "averageAutomationQualityScore": 98.1,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "870",
+      "criteriaItems": 12,
+      "expectedClauseCount": 12,
+      "averageAutomationQualityScore": 96.4,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    },
+    {
+      "subclass": "888",
+      "criteriaItems": 28,
+      "expectedClauseCount": 28,
+      "averageAutomationQualityScore": 100.0,
+      "estimatedSchedule2CoverageReadiness": 97.6,
+      "external98ClaimAllowed": false,
+      "manualAuditRequired": true
+    }
+  ]
+}
