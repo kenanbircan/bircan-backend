@@ -5,6 +5,7 @@ const { evaluateDecisionEngine } = require('./decisionEngines');
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclass, extractSelectedStream } = require('./knowledgebaseLoader');
 const { loadCriteriaRegistry, listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
 const { validateCriteriaCoverage, buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
+const { loadLegalFrame } = require('./legalFrameLoader');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
@@ -539,7 +540,8 @@ async function generateMigrationAdvice(assessment){
   const legalPack=await buildKnowledgebaseLegalPack(assessmentForAdvice);
   assertKnowledgebasePack(legalPack);
   if(String(legalPack.subclass) !== String(subclass)) throw new Error('Knowledgebase subclass does not match extracted assessment subclass. Advice generation blocked.');
-  const criteriaRegistry = loadCriteriaRegistry(subclass, selectedStream || legalPack.selectedStream || '');
+  const legalFrame = loadLegalFrame(subclass, selectedStream || legalPack.selectedStream || '');
+  const criteriaRegistry = legalFrame.registry || loadCriteriaRegistry(subclass, selectedStream || legalPack.selectedStream || '');
   const advice=await callOpenAIForAdvice(facts,rules,legalPack,criteriaRegistry);
   const legalSourcePack={
     loadedAt:legalPack.loadedAt,
@@ -592,9 +594,10 @@ async function generateMigrationAdvice(assessment){
   internalLegalAudit.researchGradeStrategicLayer = researchGradeStrategicLayer;
   internalLegalAudit.universalLegalGraph = universalLegalGraph;
   internalLegalAudit.knowledgebaseSnapshot = legalSourcePack.knowledgebaseSnapshot;
-  internalLegalAudit.criteriaRegistry = { registryVersion: criteriaRegistry.registryVersion, subclass: criteriaRegistry.subclass, mandatoryCriteriaCount: criteriaRegistry.mandatoryCriteriaCount, sourceFile: criteriaRegistry.sourceFile };
+  internalLegalAudit.criteriaRegistry = { registryVersion: criteriaRegistry.registryVersion || criteriaRegistry.version, subclass: criteriaRegistry.subclass, mandatoryCriteriaCount: criteriaRegistry.mandatoryCriteriaCount, sourceFile: criteriaRegistry.sourceFile };
+  internalLegalAudit.legalFrame = { subclass: legalFrame.subclass, stream: legalFrame.stream, snapshotHash: legalFrame.snapshotHash, validation: legalFrame.validation, knowledgeAudit: legalFrame.knowledgeAudit };
   internalLegalAudit.criteriaCoverage = criteriaCoverage;
-  const bundle = {facts,rules,matrix,criteriaRegistry,criteriaCoverage,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
+  const bundle = {facts,rules,matrix,criteriaRegistry,legalFrame,legalFrameSnapshotHash:legalFrame.snapshotHash,criteriaCoverage,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
   assertFinalProductionControls(bundle);
   assertDynamicKnowledgebaseControls(bundle);
   assertResearchGradeControls(bundle);
