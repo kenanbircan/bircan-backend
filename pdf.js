@@ -737,8 +737,99 @@ function writeSubheading(doc, text) {
   doc.x = PAGE.L;
 }
 
+
+// ---- V9 registry-aware PDF wording controls ----
+function bmLoadV9Registry(subclass, adviceBundle = {}) {
+  if (adviceBundle && adviceBundle.v9CriteriaRegistryProfile) return adviceBundle.v9CriteriaRegistryProfile;
+  if (!criteriaCoverageValidator || typeof criteriaCoverageValidator.loadCriteriaRegistry !== 'function') return null;
+  try {
+    const registry = criteriaCoverageValidator.loadCriteriaRegistry(String(subclass || '').replace(/[^0-9]/g, ''));
+    if (!registry || typeof registry !== 'object') return null;
+    const coverage = registry.coverageScoring || {};
+    const expected = registry.expectedGrantCriteriaManifest || {};
+    const streams = registry.streams && typeof registry.streams === 'object' ? registry.streams : {};
+    let itemCount = 0;
+    Object.values(streams).forEach(stream => {
+      const items = Array.isArray(stream && stream.grantCriteria) ? stream.grantCriteria : Array.isArray(stream && stream.criteria) ? stream.criteria : [];
+      itemCount += items.length;
+    });
+    return {
+      schemaVersion: registry.schemaVersion || null,
+      subclass: registry.subclass || subclass,
+      title: registry.title || null,
+      availabilityGate: registry.availabilityGate || null,
+      validApplicationRequirements: registry.validApplicationRequirements || null,
+      expectedGrantCriteriaManifest: expected,
+      expectedSchedule2ClauseCount: Array.isArray(expected.expectedClauses) ? expected.expectedClauses.length : Number(expected.expectedClauseCount || itemCount || 0),
+      schedule2CriteriaItemCount: itemCount,
+      coverageScoring: coverage,
+      estimatedSchedule2CoverageReadiness: Number(coverage.estimatedSchedule2CoverageReadiness || coverage.weightedAuditScore || coverage.estimatedCoverage || 0),
+      manualAuditRequiredForExternal98Claim: Boolean(coverage.manualAuditRequiredForExternal98Claim || coverage.external98ClaimAllowed === false),
+      external98ClaimAllowed: coverage.external98ClaimAllowed === true,
+      pdfContaminationControls: registry.pdfContaminationControls || registry.contaminationGuards || null,
+      contaminationGuards: registry.contaminationGuards || null,
+      intakeCoverageControls: registry.intakeCoverageControls || null,
+      registryFingerprint: registry.registryFingerprint || null,
+      sourceOfTruth: registry.sourceOfTruth || null
+    };
+  } catch (_err) { return null; }
+}
+function bmV9BlockedPhrases(profile = {}) {
+  const c = profile.pdfContaminationControls || profile.contaminationGuards || {};
+  return []
+    .concat(Array.isArray(c.blockedPhrases) ? c.blockedPhrases : [])
+    .concat(Array.isArray(c.blockedGenericTerms) ? c.blockedGenericTerms : [])
+    .filter(Boolean);
+}
+function bmApplyV9ContaminationControls(text, docOrProfile) {
+  let out = cleanText(text || '');
+  const profile = docOrProfile && docOrProfile._bmV9RegistryProfile ? docOrProfile._bmV9RegistryProfile : docOrProfile;
+  if (!profile) return out;
+  const blocked = bmV9BlockedPhrases(profile);
+  for (const phrase of blocked) {
+    const p = String(phrase || '').trim();
+    if (!p) continue;
+    const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try { out = out.replace(new RegExp(escaped, 'gi'), 'pathway-specific requirement'); } catch (_err) {}
+  }
+  // Hard stop the known generic multi-subclass contamination phrase even if the registry wording changes.
+  out = out.replace(/any invitation, nomination, sponsorship, relationship or enrolment requirement/gi, 'the pathway-specific requirement that applies to this subclass and stream');
+  out = out.replace(/any sponsor, nomination, invitation or relationship requirement/gi, 'the pathway-specific sponsor, nomination or eligibility requirement that applies to this subclass and stream');
+  out = out.replace(/Subclass 186 application/g, match => {
+    const sub = profile && profile.subclass ? String(profile.subclass).replace(/[^0-9]/g, '') : '';
+    return sub && sub !== '186' ? `Subclass ${sub} application` : match;
+  });
+  out = out.replace(/Subclass 186 Labour Agreement/g, match => {
+    const sub = profile && profile.subclass ? String(profile.subclass).replace(/[^0-9]/g, '') : '';
+    return sub && sub !== '186' ? `Subclass ${sub} Labour Agreement` : match;
+  });
+  return out;
+}
+function bmV9AvailabilityWarning(profile = {}, pathwayLabel = 'the selected pathway') {
+  const gate = profile.availabilityGate || {};
+  if (!gate || !gate.pdfWarningRequired) return '';
+  return cleanText(gate.clientSafeWording || `The ${pathwayLabel} must be treated as availability-sensitive. A positive lodgement recommendation should not be issued unless the applicable legal basis, current-law position and any saved, transitional or instrument-dependent requirement have been verified.`);
+}
+function bmV9RegistryAuditText(profile = {}) {
+  const c = profile.coverageScoring || {};
+  const readiness = Number(profile.estimatedSchedule2CoverageReadiness || c.estimatedSchedule2CoverageReadiness || 0);
+  const count = Number(profile.schedule2CriteriaItemCount || c.schedule2CriteriaItems || 0);
+  const expected = Number(profile.expectedSchedule2ClauseCount || 0);
+  const bits = [];
+  if (readiness) bits.push(`Schedule 2 registry readiness: ${readiness.toFixed(1)}%.`);
+  if (count || expected) bits.push(`Mapped Schedule 2 controls: ${count}${expected ? ` against ${expected} expected clause references` : ''}.`);
+  if (profile.validApplicationRequirements && profile.validApplicationRequirements.notGrantCriteria) bits.push('Schedule 1 is treated separately as a validity-control layer and is not counted as grant criteria.');
+  if (profile.manualAuditRequiredForExternal98Claim) bits.push('Manual RMA clause verification remains required before any external 98%+ legal-coverage claim is made.');
+  return bits.join(' ');
+}
+function bmV9AgreementIntro(profile, subclass, stream) {
+  const sub = String(subclass || '').replace(/[^0-9]/g, '') || 'the selected subclass';
+  if (!/labour agreement/i.test(String(stream || ''))) return '';
+  return `In a Subclass ${sub} Labour Agreement matter, the application cannot be assessed only by looking at the applicant’s personal circumstances. The strength of the matter depends on whether the employer is covered by the applicable Labour Agreement, whether the nominated occupation and work location are permitted, whether the nomination is consistent with the agreement terms, and whether any concession relied upon is lawfully available and properly evidenced.`;
+}
+
 function writePara(doc, text, opts = {}) {
-  const content = cleanText(text || '').split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
+  const content = bmApplyV9ContaminationControls(text || '', doc).split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
   const size = opts.size || 10.1;
   for (const para of content.length ? content : ['—']) {
     const h = doc.font('Helvetica').fontSize(size).heightOfString(para, { width: PAGE.WIDTH, lineGap: 4.2 }) + 10;
@@ -751,7 +842,7 @@ function writePara(doc, text, opts = {}) {
 
 
 function writeBullet(doc, text) {
-  const t = cleanText(text);
+  const t = bmApplyV9ContaminationControls(text, doc);
   const bulletText = `• ${t}`;
   const h = doc.font('Helvetica').fontSize(9.7).heightOfString(bulletText, { width: PAGE.WIDTH, lineGap: 2.6 }) + 8;
   ensureSpace(doc, h);
@@ -2479,6 +2570,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       }
       adviceBundle.legalFrame = adviceBundle.legalFrame || legalFrame;
       adviceBundle.legalFrameSnapshotHash = adviceBundle.legalFrameSnapshotHash || legalFrame.snapshotHash;
+      const v9RegistryProfile = bmLoadV9Registry(subclass, adviceBundle) || {};
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const pathwayLabel = bmPathwayLabel(subclass, stream);
       const title = pathwayLabel;
@@ -2520,6 +2612,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
         Author: 'Bircan Migration & Education',
         Subject: `Professional migration advice letter for assessment ${assessment.id || ''}`
       });
+      doc._bmV9RegistryProfile = { ...(v9RegistryProfile || {}), subclass: String(subclass || '').replace(/[^0-9]/g, '') || subclass };
       const chunks = [];
       doc.on('data', c => chunks.push(c));
       doc.on('error', reject);
@@ -2531,8 +2624,10 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       writePara(doc, `Dear ${applicantName && applicantName !== 'Client' ? applicantName : 'Client'},`, { size: 10.3 });
       writePara(doc, `I have reviewed the information presently available in relation to the proposed ${pathwayLabel.replace(' — ', ' ')} pathway.`, { size: 9.9 });
       writePara(doc, `My present view is that the pathway may be available in principle, but it is not presently lodgement-ready. This is a controlled preliminary advice letter: the intake material must now be converted into an evidence brief, and the decisive documents must be reviewed before any final positive lodgement recommendation is issued.`, { size: 9.9 });
+      const availabilityWarning = bmV9AvailabilityWarning(v9RegistryProfile, pathwayLabel);
+      if (availabilityWarning) writePara(doc, availabilityWarning, { size: 9.9 });
       writePara(doc, bmAgreementMatter(subclass, stream)
-        ? 'In a Subclass 186 Labour Agreement matter, the application cannot be assessed by looking only at the applicant’s personal circumstances. The strength of the matter depends heavily on whether the nominating employer is covered by a current Labour Agreement, whether the nominated occupation is expressly permitted under that agreement, whether the nomination is consistent with the agreement terms, and whether any age, English, skills, salary or other concession is lawfully available and properly evidenced.'
+        ? (bmV9AgreementIntro(v9RegistryProfile, subclass, stream) || 'In a Labour Agreement matter, the application cannot be assessed by looking only at the applicant’s personal circumstances. The strength of the matter depends on whether the employer, nominated occupation, nomination terms, concessions and applicant evidence all support the same legal pathway.')
         : 'The application cannot be assessed only by identifying a visa subclass. The strength of the matter depends on whether the selected pathway, threshold criteria, applicant evidence, public-interest issues and Departmental history can be reconciled into one defensible application record.', { size: 9.9 });
       writePara(doc, 'The principal issues requiring verification are:', { size: 9.9, after: 0.35 });
       bmWriteNumberedList(doc, bmPrimaryIssueList(subclass, stream, family));
@@ -2542,6 +2637,11 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       bmWriteExecutiveDecisionPanel(doc, pathwayLabel, overallRisk, position, nextCommercialStep);
       bmWriteClientSpecificFindings(doc, clientFactRows);
       bmWriteLegalMapping(doc, subclass, stream, family);
+      const v9AuditText = bmV9RegistryAuditText(v9RegistryProfile);
+      if (v9AuditText) {
+        writeTitle(doc, '4.1 Registry and legal-source control', { gold: true });
+        writePara(doc, v9AuditText, { size: 9.5 });
+      }
 
       writeTitle(doc, '5. What this means for you', { gold: true });
       writeSubheading(doc, 'Main concern');
@@ -2551,7 +2651,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       writePara(doc, 'At this stage, the matter should not be treated as a ready-to-lodge visa application.', { size: 9.9 });
       writePara(doc, bmAgreementMatter(subclass, stream)
-        ? 'The information presently available indicates that the Subclass 186 Labour Agreement pathway may be open, but the decisive issue is evidence. The Department will not assess the matter only on the basis that the applicant wishes to proceed, or that the employer is willing to nominate. The Department will assess whether the nomination, Labour Agreement, occupation, salary, concessions and applicant evidence all support the same legal pathway.'
+        ? 'The information presently available indicates that the Labour Agreement pathway may be open in principle, but the decisive issue is evidence and legal availability. The Department will not assess the matter only on the basis that the applicant wishes to proceed, or that the employer is willing to nominate. The Department will assess whether the nomination, Labour Agreement, occupation, salary, concessions and applicant evidence all support the same legal pathway.'
         : 'The information presently available indicates that the pathway may be open, but the decisive issue is evidence. The Department will assess whether the selected pathway, applicant evidence and public-interest material support the same legal position.', { size: 9.9 });
       writePara(doc, 'This means the next step is not immediate lodgement. The next step is to verify the documents that control the case.', { size: 9.9 });
       writePara(doc, 'If the evidence confirms the pathway, the matter can progress to final preparation. If the evidence does not confirm the pathway, filing prematurely may expose the client to avoidable refusal risk, unnecessary cost and a weaker future migration position.', { size: 9.9 });
@@ -2570,7 +2670,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       writeSubheading(doc, '7.2 Current location and visa status');
       writePara(doc, 'The applicant’s current location and visa status must be confirmed before lodgement, including whether the applicant is onshore or offshore, the current visa held, visa expiry, bridging visa implications, visa conditions, work rights, any condition breach and whether the application can be validly made in the applicant’s circumstances.', { size: 9.6 });
       writeSubheading(doc, '7.3 Health, character and integrity');
-      writePara(doc, 'Health, character, PIC 4020, document-integrity, Special Return Criteria and prior refusal, cancellation or compliance issues should be reviewed before final advice. A Subclass 186 application should not be filed until the evidence is internally consistent and public-interest risks are clear or manageable.', { size: 9.6 });
+      writePara(doc, 'Health, character, PIC 4020, document-integrity, Special Return Criteria and prior refusal, cancellation or compliance issues should be reviewed before final advice. The application should not be filed until the evidence is internally consistent and public-interest risks are clear or manageable.', { size: 9.6 });
 
       bmWriteDocumentTable(doc, bmEvidenceRows(family));
       bmWriteActionPlanTable(doc, bmActionRows(subclass, stream, family));
