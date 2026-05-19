@@ -116,7 +116,7 @@ function clientFriendlyCriterionLabelLegacy(value) {
   if (/adverse information.*employer/.test(lower)) return 'whether any adverse information about the employer affects the nomination';
   if (/nominated position.*genuine/.test(lower)) return 'whether the nominated position is genuine';
   if (/employer compliance.*labour agreement/.test(lower)) return 'whether the employer has complied with its Labour Agreement obligations';
-  if (/english evidence.*exemption.*concession/.test(lower)) return 'whether English evidence, exemption or concession has been verified';
+  if (/english evidence.*exemption.*concession/.test(lower)) return 'whether English evidence or a lawful Labour Agreement English concession has been verified';
   if (/primary applicant identity/.test(lower)) return 'whether the primary applicant identity and biographical details are consistent';
   if (/position.*full time.*available/.test(lower)) return 'whether the position is full-time and available for the required period';
   if (/position.*created.*migration outcome/.test(lower)) return 'whether the position was created primarily to secure a migration outcome';
@@ -1243,7 +1243,7 @@ function v13PolishCriterionLabel(value) {
     .replace(/\bSalary, AMSR And Guaranteed Earnings Evidence\b/gi, 'Salary, AMSR and guaranteed earnings evidence')
     .replace(/\bEmployment Terms And Conditions Are Appropriate\b/gi, 'Employment terms and conditions')
     .replace(/\bMarket Salary Or Concession Evidence Is Defensible\b/gi, 'Market salary or concession evidence')
-    .replace(/\bSkills, Qualifications And Experience For Nominated Role\b/gi, 'Skills, qualifications and experience for the nominated role')
+    .replace(/\bSkills, Qualifications And Experience For Nominated Role\b/gi, 'Verify skills, qualifications, experience and any lawful concession')
     .replace(/\bHealth Criteria \/ Public Interest Health Requirements\b/gi, 'Health and public-interest health requirements')
     .replace(/\bCharacter Requirements Including Police\/Court History\b/gi, 'Character requirements and police/court history')
     .replace(/\bPIC 4020 And Information\/Document Integrity\b/gi, 'PIC 4020 and information/document integrity')
@@ -2235,29 +2235,29 @@ function bmPrimaryIssueList(subclass, stream, family) {
 
 function bmWriteLabourAgreementIssues(doc, subclass, stream) {
   writeTitle(doc, '6. Key Labour Agreement issues requiring verification', { gold: true });
-  writeSubheading(doc, '4.1 Labour Agreement currency and coverage');
+  writeSubheading(doc, '6.1 Labour Agreement currency and coverage');
   writePara(doc, 'The first issue is whether the executed Labour Agreement is current and applies to the nominating employer and proposed role. Before lodgement, Bircan Migration should obtain and review the executed Labour Agreement, including any schedules, occupation lists, concessions, location limits, ceilings, special conditions and DAMA material where relevant.', { size: 9.7 });
   bmWriteBulletList(doc, ['the agreement is currently in force', 'the employer is a party to or properly covered by the agreement', 'the agreement permits a Subclass 186 nomination', 'the nominated occupation is included', 'the proposed work location is permitted', 'any applicable cap, ceiling or quota has not been exceeded', 'any concession relied upon is expressly available']);
   writePara(doc, 'If the agreement does not support the employer, role, location, occupation or concession relied upon, the application strategy must be revised before filing.', { size: 9.7 });
 
-  writeSubheading(doc, '4.2 Occupation coverage');
+  writeSubheading(doc, '6.2 Occupation coverage');
   writePara(doc, 'The nominated occupation must be expressly covered by the Labour Agreement. It is not sufficient that the applicant has skills or experience in the role. The nomination must be legally supportable under the exact terms of the agreement.', { size: 9.7 });
   bmWriteBulletList(doc, ['the Labour Agreement occupation schedule', 'any DAMA occupation list where relevant', 'any location-specific restrictions', 'any occupation-specific concession rules', 'the actual duties performed or proposed', 'the position description and employer business need']);
   writePara(doc, 'A duties and occupation matrix should be prepared to show that the actual role aligns with the nominated occupation and the agreement coverage.', { size: 9.7 });
 
-  writeSubheading(doc, '4.3 Nomination consistency');
+  writeSubheading(doc, '6.3 Nomination consistency');
   writePara(doc, 'The nomination must be reconciled against the exact Labour Agreement terms. This means the nomination should be checked against occupation, location, salary, guaranteed earnings, concessions, employment conditions, full-time and ongoing position requirements, business need, agreement limits and special conditions.', { size: 9.7 });
   writePara(doc, 'If the nomination is inconsistent with the Labour Agreement, the visa application may be exposed to refusal even if the applicant otherwise appears suitable.', { size: 9.7 });
 
-  writeSubheading(doc, '4.4 Salary, AMSR and employment conditions');
+  writeSubheading(doc, '6.4 Salary, AMSR and employment conditions');
   writePara(doc, 'The salary and employment terms must be supported by objective evidence. Bircan Migration should review the signed employment contract, guaranteed earnings, market salary or AMSR evidence, payroll records where available, tax and superannuation records where relevant, award or enterprise agreement coverage, Labour Agreement salary concessions and evidence that the proposed terms are lawful and consistent with the nomination.', { size: 9.7 });
   writePara(doc, 'If a salary concession is relied upon, the agreement must expressly permit that concession for this occupation and applicant. The concession should not be assumed.', { size: 9.7 });
 
-  writeSubheading(doc, '4.5 Concessions');
+  writeSubheading(doc, '6.5 Concessions');
   writePara(doc, 'Labour Agreement matters often involve concessions. However, a concession should only be relied upon if it is expressly permitted and properly evidenced. Each concession should be identified, legally mapped and supported by documentary evidence before final lodgement advice is issued.', { size: 9.7 });
   bmWriteBulletList(doc, ['age concession', 'English concession', 'skills or qualification concession', 'salary concession', 'location or occupation-specific concession', 'any DAMA-specific concession', 'any special condition attached to the agreement']);
 
-  writeSubheading(doc, '4.6 English, skills, qualifications and registration');
+  writeSubheading(doc, '6.6 English, skills, qualifications and registration');
   writePara(doc, 'The applicant’s English, skills, qualifications, experience and registration position must be verified before lodgement. This includes English test results or passport exemption evidence, any lawful Labour Agreement English concession, qualifications, employment references, skills evidence, registration or licensing evidence, occupation-specific requirements and proof that any concession relied upon applies to the applicant.', { size: 9.7 });
 }
 
@@ -2377,6 +2377,34 @@ function bmWriteExecutiveDecisionPanel(doc, pathwayLabel, overallRisk, position,
   ]);
 }
 
+
+function bmProfessionalFactText(rawFact, row) {
+  const raw = cleanText(rawFact, '');
+  const issue = cleanText(row && row.issue, '').toLowerCase();
+  const action = cleanText(row && row.action, '').toLowerCase();
+  const context = `${issue} ${action}`;
+  if (!raw) return 'The relevant intake fact has not been conclusively verified in the issued advice record.';
+  if (/^\d{4,9}(\.\d+)?$/.test(raw) && /(salary|amsr|remuneration|earnings|contract|employment terms)/i.test(context)) {
+    const n = Number(raw);
+    return `The intake records proposed remuneration of AUD ${n.toLocaleString('en-AU')}.`;
+  }
+  if (/^[A-D]$/i.test(raw) && /(english|language|ielts|pte|test|concession)/i.test(context)) {
+    return `The intake records an English-related response of “${raw.toUpperCase()}”; this must be mapped to the accepted evidence, exemption or Labour Agreement concession category before lodgement.`;
+  }
+  if (/^(yes|no)$/i.test(raw)) {
+    if (/concession/i.test(context)) {
+      return /^yes$/i.test(raw)
+        ? 'The intake indicates that a concession may be relied upon, but the exact Labour Agreement authority and evidence have not yet been verified.'
+        : 'The intake does not presently confirm a concession; standard eligibility evidence should be assumed unless the Labour Agreement proves otherwise.';
+    }
+    return /^yes$/i.test(raw)
+      ? 'The intake records this issue as present; it must be verified against original evidence before lodgement.'
+      : 'The intake does not presently identify this issue, but it should still be checked against original evidence before lodgement.';
+  }
+  return raw;
+}
+
+
 function bmWriteClientSpecificFindings(doc, rows) {
   writeTitle(doc, '3. Client-specific findings', { gold: true });
   writePara(doc, 'The following findings convert the intake material into a professional issue, risk and action plan. This section is intentionally fact-led: it identifies what is known or not yet verified, why it matters legally, and what must be done before final lodgement advice.', { size: 9.7 });
@@ -2384,7 +2412,7 @@ function bmWriteClientSpecificFindings(doc, rows) {
   for (const row of display) {
     const risk = cleanText(row.risk, 'Managed');
     const colour = riskColour(risk);
-    const fact = `Client fact / current record: ${cleanText(row.fact)}`;
+    const fact = `Client fact / current record: ${bmProfessionalFactText(row.fact, row)}`;
     const issue = `Professional issue: ${cleanText(row.issue)}`;
     const action = `Required action: ${cleanText(row.action)}`;
     const contentW = PAGE.WIDTH - 42;
@@ -2526,11 +2554,11 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       writeTitle(doc, '7. Applicant-side eligibility and public-interest issues', { gold: true });
       writePara(doc, 'Although the employer nomination and Labour Agreement issues are central, the applicant-side criteria must also be verified.', { size: 9.8 });
-      writeSubheading(doc, '5.1 Identity and biographical consistency');
+      writeSubheading(doc, '7.1 Identity and biographical consistency');
       writePara(doc, 'The applicant’s identity documents should be reviewed and reconciled against all prior Departmental records, including passports, birth records where relevant, name-change material, visa records, prior applications and any inconsistency in names, dates of birth or travel history.', { size: 9.6 });
-      writeSubheading(doc, '5.2 Current location and visa status');
+      writeSubheading(doc, '7.2 Current location and visa status');
       writePara(doc, 'The applicant’s current location and visa status must be confirmed before lodgement, including whether the applicant is onshore or offshore, the current visa held, visa expiry, bridging visa implications, visa conditions, work rights, any condition breach and whether the application can be validly made in the applicant’s circumstances.', { size: 9.6 });
-      writeSubheading(doc, '5.3 Health, character and integrity');
+      writeSubheading(doc, '7.3 Health, character and integrity');
       writePara(doc, 'Health, character, PIC 4020, document-integrity, Special Return Criteria and prior refusal, cancellation or compliance issues should be reviewed before final advice. A Subclass 186 application should not be filed until the evidence is internally consistent and public-interest risks are clear or manageable.', { size: 9.6 });
 
       bmWriteDocumentTable(doc, bmEvidenceRows(family));
