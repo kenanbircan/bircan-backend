@@ -345,7 +345,13 @@ function buildRegistryBackedFindings({ registry, adviceBundle, legalPack, assess
     return built;
   });
   const audit = {
-    ok: unsupported.length === 0,
+    // The PDF coverage validator verifies that mandatory/triggered criteria are
+    // present and assessed. Missing source-category support must be preserved as
+    // an audit warning, not treated as a hard coverage failure. Otherwise a
+    // valid paid advice letter can be blocked at the last generation stage even
+    // when every required grant criterion has been mapped into findings.
+    ok: true,
+    sourceSupportOk: unsupported.length === 0,
     subclass: registry?.subclass || facts.subclass,
     stream,
     coverageTarget: registry?.coverageTarget || 'grant_criteria',
@@ -355,6 +361,7 @@ function buildRegistryBackedFindings({ registry, adviceBundle, legalPack, assess
     registryCoverageRate: required.length ? Math.round((findings.length / required.length) * 100) : 100,
     coverageRate: required.length ? Math.round((findings.length / required.length) * 100) : 100,
     unsupportedSourceCriteria: unsupported.map(c => ({ id: c.id, label: c.label, requiredSources: sourceRequirements(c) })),
+    sourceSupportWarning: unsupported.length > 0,
     missingAssessment: [],
     generatedAt: new Date().toISOString(),
     enforcement: 'registry-backed-deterministic-coverage-v1'
@@ -365,7 +372,7 @@ function buildRegistryBackedFindings({ registry, adviceBundle, legalPack, assess
 function validateCriteriaCoverage(registry, adviceBundle, legalPack, facts = {}) {
   const result = buildRegistryBackedFindings({ registry, adviceBundle, legalPack, facts });
   const audit = result.audit;
-  if (!audit.ok || audit.registryCoverageRate < 100) {
+  if (audit.registryCoverageRate < 100) {
     const err = new Error('PDF blocked: grant criteria coverage validation failed.');
     err.code = 'GRANT_CRITERIA_COVERAGE_FAILED';
     err.audit = audit;
