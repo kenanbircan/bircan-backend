@@ -131,8 +131,11 @@ function buildFinalPdfUrl(id, token = '') {
 const BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH = 'public-start-never-reuse-paid-assessment-v1';
 
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
-// Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
-const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
+// Production safety: payment finalisation must never wait for PDF generation.
+// The PDF worker is queued/backgrounded after Stripe is verified so payment-complete
+// can return quickly and redirect to the dashboard. Do not read an environment flag
+// here; a stale Render variable must not make the return page block until PDF output.
+const VERIFY_PAYMENT_WAIT_FOR_PDF = false;
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -2821,7 +2824,6 @@ app.post('/api/assessment/create', requireAuth, asyncRoute(handleAssessmentSubmi
 app.post('/api/assessments/submit', requireAuth, asyncRoute(handleAssessmentSubmit));
 
 async function handlePublicVisaAssessmentStart(req, res) {
-  const startedAt = Date.now();
   const built = buildAssessmentPayload(req.body, null);
   const email = normaliseEmail(
     req.body.email ||
@@ -2831,11 +2833,9 @@ async function handlePublicVisaAssessmentStart(req, res) {
     req.body.applicant_email ||
     built.meta.applicantEmail
   );
-
   if (!email || !email.includes('@')) {
     return res.status(400).json({ ok: false, code: 'VALID_EMAIL_REQUIRED', error: 'Valid email is required before login.' });
   }
-
   if (!payloadLooksUsable(built)) {
     return res.status(400).json({
       ok: false,
@@ -2848,31 +2848,96 @@ async function handlePublicVisaAssessmentStart(req, res) {
   const visaType = built.meta.visaType;
   const plan = planFromAssessmentBody(req.body, built.meta.selectedPlan);
   const submissionFingerprint = visaSubmissionFingerprint({ email, visaType, plan, payload: built });
-  const assessmentId = makeAssessmentId(visaType);
-  const serviceSessionId = makeServiceSessionId('visa_assessment');
+  const newAssessmentId = makeAssessmentId(visaType);
+  const newServiceSessionId = makeServiceSessionId('visa_assessment');
 
-  let assessment;
-  let serviceSession;
-
+  let created;
   try {
-    // v7.14 permanent timeout fix:
-    // This public save endpoint is only an intake/handoff writer. It must not scan
-    // historical assessments, reuse paid matters, validate legalframes, create Stripe
-    // sessions, generate PDFs, or load dashboard records. Those steps belong to the
-    // checkout, payment-finalisation, dashboard, and PDF-worker routes respectively.
-    // The previous duplicate/reuse SELECT could hold the browser for >22 seconds when
-    // the database was cold or busy. This route now performs two keyed INSERTs only.
-    await tx(async (client) => {
+    created = await tx(async (client) => {
+      // v7.13: this public save route must be fast. It must not scan JSON payloads or wait indefinitely on DB locks.
+      // Permanent duplicate prevention:
+      // Re-clicks, browser retries, and Stripe-return loops may reuse only an unpaid/in-progress
+      // assessment. A paid assessment is a completed matter and must never be reused for a new
+      // checkout attempt, otherwise checkout returns alreadyPaid and sends the client to dashboard.
+      // This prevents two paid Subclass 186 cards for one assessment journey.
+      const existingRows = await client.query(
+        `SELECT a.*, ss.id AS service_session_id
+         FROM assessments a
+         LEFT JOIN LATERAL (
+           SELECT id FROM service_sessions s
+           WHERE s.service_type='visa_assessment' AND s.service_ref=a.id
+           ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST
+           LIMIT 1
+         ) ss ON true
+         WHERE (
+             lower(a.client_email)=lower($1)
+             OR lower(a.applicant_email)=lower($1)
+           )
+           AND a.visa_type=$2
+           AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
+           AND COALESCE(a.payment_status,'unpaid') <> 'paid'
+           AND a.created_at > now() - interval '48 hours'
+           -- Strict public handoff idempotency:
+           -- same email + same subclass + same plan must reuse the most recent matter
+           -- in this window, even if autofill/timestamps/random fields change the answer
+           -- fingerprint. This stops creating multiple paid assessment records from one
+           -- user journey.
+         ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
+                  a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
+         LIMIT 1`,
+        [email, visaType, plan]
+      );
+      let existing = existingRows.rows[0];
+      if (existing && String(existing.payment_status || '').toLowerCase() === 'paid') {
+        existing = null;
+      }
+      if (existing) {
+        let serviceSession = null;
+        if (existing.service_session_id) {
+          const sr = await client.query(`SELECT * FROM service_sessions WHERE id=$1 LIMIT 1`, [existing.service_session_id]);
+          serviceSession = sr.rows[0] || null;
+        }
+        if (!serviceSession) {
+          const serviceRows = await client.query(
+            `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
+             VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created',$6,$7,$8::jsonb)
+             ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
+             DO UPDATE SET client_id=COALESCE(service_sessions.client_id, EXCLUDED.client_id), client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, payment_status=COALESCE(service_sessions.payment_status, EXCLUDED.payment_status), stripe_session_id=COALESCE(service_sessions.stripe_session_id, EXCLUDED.stripe_session_id), metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
+             RETURNING *`,
+            [newServiceSessionId, existing.id, existing.client_id || null, email, plan, existing.payment_status || 'unpaid', existing.stripe_session_id || null, JSON.stringify({
+              visa_type: visaType,
+              assessment_id: existing.id,
+              submission_fingerprint: submissionFingerprint,
+              reused_existing_assessment: true,
+              duplicate_prevention: 'same_email_subclass_plan_answers_24h',
+              created_by: 'public_visa_assessment_start'
+            })]
+          );
+          serviceSession = serviceRows.rows[0];
+        }
+        return { assessment: existing, serviceSession, reusedExisting: true };
+      }
+
       const assessmentRows = await client.query(
         `INSERT INTO assessments (
            id, client_id, client_email, applicant_email, applicant_name,
            visa_type, selected_plan, active_plan, status, payment_status,
            form_payload, submission_fingerprint, pdf_bytes, pdf_generated_at, generation_error
          ) VALUES ($1,NULL,$2,$2,$3,$4,$5,$5,'submitted','unpaid',$6,$7,NULL,NULL,NULL)
+         ON CONFLICT (lower(client_email), visa_type, selected_plan, submission_fingerprint)
+         WHERE submission_fingerprint IS NOT NULL
+           AND client_email IS NOT NULL
+           AND COALESCE(payment_status, 'unpaid') <> 'paid'
+         DO UPDATE SET
+           applicant_email=COALESCE(assessments.applicant_email, EXCLUDED.applicant_email),
+           applicant_name=COALESCE(assessments.applicant_name, EXCLUDED.applicant_name),
+           active_plan=COALESCE(assessments.active_plan, EXCLUDED.active_plan),
+           form_payload=CASE WHEN COALESCE(assessments.payment_status,'unpaid')='paid' THEN assessments.form_payload ELSE EXCLUDED.form_payload END,
+           updated_at=now()
          RETURNING id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status, submission_fingerprint`,
-        [assessmentId, email, built.meta.applicantName || null, visaType, plan, built, submissionFingerprint]
+        [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, submissionFingerprint]
       );
-      assessment = assessmentRows.rows[0];
+      const assessment = assessmentRows.rows[0];
       if (!assessment) {
         throw Object.assign(new Error('The assessment record was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
@@ -2880,26 +2945,26 @@ async function handlePublicVisaAssessmentStart(req, res) {
       const serviceRows = await client.query(
         `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
          VALUES ($1,'visa_assessment',$2,NULL,$3,$4,'draft_created','unpaid',NULL,$5::jsonb)
+         ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
+         DO UPDATE SET client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
          RETURNING *`,
-        [serviceSessionId, assessment.id, email, plan, JSON.stringify({
+        [newServiceSessionId, assessment.id, email, plan, JSON.stringify({
           visa_type: visaType,
           assessment_id: assessment.id,
           submission_fingerprint: submissionFingerprint,
           require_fresh_login: true,
           login_required_before_payment: true,
           handoff_locked: true,
-          public_start_fast_save: true,
-          public_start_patch: 'v7.14-fast-insert-only-no-reuse-scan',
           created_by: 'public_visa_assessment_start'
         })]
       );
-      serviceSession = serviceRows.rows[0];
+      const serviceSession = serviceRows.rows[0];
       if (!serviceSession || serviceSession.service_ref !== assessment.id) {
         throw Object.assign(new Error('The checkout handoff session was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
+      return { assessment, serviceSession, reusedExisting: false };
     });
   } catch (err) {
-    console.error('Visa public start save failed:', err && err.stack ? err.stack : err);
     return res.status(err.statusCode || 500).json({
       ok: false,
       code: 'VISA_HANDOFF_NOT_SAVED',
@@ -2907,21 +2972,20 @@ async function handlePublicVisaAssessmentStart(req, res) {
     });
   }
 
-  const next = `/login.html?service=visa&next=service-checkout&service_session_id=${encodeURIComponent(serviceSession.id)}&assessment_id=${encodeURIComponent(assessment.id)}&plan=${encodeURIComponent(plan)}&email=${encodeURIComponent(email)}`;
-  return res.json({
+  const assessmentId = created.assessment.id;
+  const next = `/login.html?service=visa&next=service-checkout&service_session_id=${encodeURIComponent(created.serviceSession.id)}&assessment_id=${encodeURIComponent(assessmentId)}&plan=${encodeURIComponent(plan)}&email=${encodeURIComponent(email)}`;
+  res.json({
     ok: true,
     service: 'visa_assessment',
-    reusedExisting: false,
-    serviceSessionId: serviceSession.id,
-    service_session_id: serviceSession.id,
-    assessmentId: assessment.id,
-    assessment_id: assessment.id,
+    reusedExisting: !!created.reusedExisting,
+    serviceSessionId: created.serviceSession.id,
+    service_session_id: created.serviceSession.id,
+    assessmentId,
+    assessment_id: assessmentId,
     visaType,
     plan,
     payloadSaved: true,
     answerCount: payloadAnswerCount(built),
-    saveMode: 'fast_insert_only',
-    elapsedMs: Date.now() - startedAt,
     next
   });
 }
@@ -4396,7 +4460,7 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4428,7 +4492,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4931,7 +4995,7 @@ async function finaliseStripePayment(req, res) {
 
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
   // This restores the client session from the paid Stripe session email, so the dashboard opens cleanly.
@@ -6763,7 +6827,7 @@ async function queryDashboardV2Payments(email, sessionId) {
 function isRetryablePdfGenerationError(message) {
   const text = String(message || '').toLowerCase();
   if (!text) return false;
-  return /grant criteria|criteria registry|criteria coverage|coverage validation/.test(text);
+  return /(grant criteria|criteria registry|criteria coverage|coverage validation|legalframe incomplete|streamcriteria|stream criteria)/.test(text);
 }
 
 function dashboardV2ShouldKickPdf(service) {
