@@ -6110,71 +6110,30 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         throw new Error('Internal legal audit missing. PDF generation blocked.');
       }
 
-      // Registry coverage audit: build one visible finding per mandatory or
-      // triggered registry criterion where possible. This is deliberately an
-      // audit/quality-control gate, not a PDF-kill gate. A paid client must not
-      // be left with a failed dashboard card merely because the registry/advice
-      // bridge is incomplete. Incomplete registry coverage is disclosed inside
-      // the advice letter and recorded for agent review.
+      // Registry coverage enforcement: build one visible finding per mandatory or
+      // triggered registry criterion. This is the missing bridge between the 98%+
+      // criteriaRegistry JSON files and the actual client PDF.
       const registrySubclass = String(adviceBundle.subclass || adviceBundle.advice?.subclass || assessmentForAdvice.visa_type || assessment.visa_type || '').replace(/[^0-9]/g, '');
-      let registryResult = null;
-      let registryAudit = null;
-      try {
-        const registry = loadCriteriaRegistry(registrySubclass);
-        registryResult = buildRegistryBackedFindings({
-          registry,
-          adviceBundle,
-          legalPack: adviceBundle.legalSourcePack,
-          assessment: assessmentForAdvice
-        });
-        registryAudit = registryResult && registryResult.audit ? registryResult.audit : null;
-      } catch (registryErr) {
-        registryAudit = {
-          ok: false,
-          nonBlocking: true,
-          registryCoverageRate: 0,
-          registrySubclass,
-          error: registryErr && registryErr.message ? registryErr.message : String(registryErr || 'Registry coverage audit failed'),
-          generatedAt: new Date().toISOString()
-        };
-        registryResult = { findings: [], audit: registryAudit };
+      const registry = loadCriteriaRegistry(registrySubclass);
+      const registryResult = buildRegistryBackedFindings({
+        registry,
+        adviceBundle,
+        legalPack: adviceBundle.legalSourcePack,
+        assessment: assessmentForAdvice
+      });
+      if (!registryResult.audit.ok || registryResult.audit.registryCoverageRate < 100 || registryResult.audit.unsupportedSourceCriteria.length) {
+        const detail = JSON.stringify(registryResult.audit);
+        throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
       }
-
-      const existingFindings = Array.isArray(adviceBundle.advice && adviceBundle.advice.criterion_findings)
-        ? adviceBundle.advice.criterion_findings
-        : Array.isArray(adviceBundle.grantCriteriaFindings)
-          ? adviceBundle.grantCriteriaFindings
-          : [];
-      const registryFindings = Array.isArray(registryResult && registryResult.findings) ? registryResult.findings : [];
-      const shouldUseRegistryFindings = registryFindings.length >= Math.max(6, existingFindings.length);
-      const findingsForPdf = shouldUseRegistryFindings ? registryFindings : existingFindings;
-
-      const registryCoverageOk = !!(registryAudit && registryAudit.ok && Number(registryAudit.registryCoverageRate || 0) >= 100 && !(registryAudit.unsupportedSourceCriteria || []).length);
-      if (!registryCoverageOk) {
-        const warning = 'Grant criteria registry coverage is incomplete. PDF issued as preliminary professional advice with further agent review required.';
-        registryAudit = Object.assign({}, registryAudit || {}, {
-          ok: false,
-          nonBlocking: true,
-          pdfIssuedWithReviewWarning: true,
-          warning,
-          generatedAt: registryAudit && registryAudit.generatedAt ? registryAudit.generatedAt : new Date().toISOString()
-        });
-        adviceBundle.manualReviewRequired = true;
-        adviceBundle.reviewWarnings = Array.isArray(adviceBundle.reviewWarnings) ? adviceBundle.reviewWarnings : [];
-        if (!adviceBundle.reviewWarnings.includes(warning)) adviceBundle.reviewWarnings.push(warning);
-      }
-
-      adviceBundle.grantCriteriaFindings = findingsForPdf;
-      adviceBundle.criteriaRegistryAudit = registryAudit;
-      adviceBundle.grantCriteriaCoverageAudit = registryAudit;
-      adviceBundle.registryCoverageRate = registryAudit ? registryAudit.registryCoverageRate : null;
+      adviceBundle.grantCriteriaFindings = registryResult.findings;
+      adviceBundle.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
+      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
       adviceBundle.advice = adviceBundle.advice || {};
-      adviceBundle.advice.grantCriteriaFindings = findingsForPdf;
-      adviceBundle.advice.criterion_findings = findingsForPdf;
-      adviceBundle.advice.criteriaRegistryAudit = registryAudit;
-      adviceBundle.advice.manualReviewRequired = adviceBundle.manualReviewRequired === true;
-      adviceBundle.advice.reviewWarnings = adviceBundle.reviewWarnings || [];
-      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryAudit;
+      adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
+      adviceBundle.advice.criterion_findings = registryResult.findings;
+      adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
@@ -6403,41 +6362,6 @@ async function clientFromStripeDashboardSession(sessionId) {
   }
 }
 
-
-// v7.1: resolve Stripe-return dashboard access from local database first.
-// This avoids slow Stripe API calls during dashboard load and prevents AbortController timeouts.
-async function clientFromLocalDashboardSession(sessionId) {
-  const sid = String(sessionId || '').trim();
-  if (!sid || !/^cs_(test|live)_/i.test(sid)) return null;
-  const lookups = [
-    `SELECT client_id, client_email FROM payments WHERE stripe_session_id=$1 ORDER BY COALESCE(paid_at, created_at) DESC NULLS LAST LIMIT 1`,
-    `SELECT client_id, client_email FROM service_sessions WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`,
-    `SELECT client_id, COALESCE(client_email, applicant_email) AS client_email FROM assessments WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`,
-    `SELECT client_id, client_email FROM appeals_assessments WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`,
-    `SELECT client_id, client_email FROM citizenship_access WHERE stripe_session_id=$1 ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT 1`
-  ];
-  for (const sql of lookups) {
-    try {
-      const { rows } = await query(sql, [sid]);
-      const row = rows && rows[0];
-      if (!row) continue;
-      if (row.client_id) {
-        const byId = await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [row.client_id]);
-        if (byId.rows[0]) return byId.rows[0];
-      }
-      const email = normaliseEmail(row.client_email);
-      if (email) {
-        const byEmail = await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
-        if (byEmail.rows[0]) return byEmail.rows[0];
-      }
-    } catch (err) {
-      // Some older deployments may not have every table/column. Continue to the next local source.
-      console.warn('Dashboard local session lookup skipped:', err.message);
-    }
-  }
-  return null;
-}
-
 async function resolveDashboardAccess(req, res, next) {
   try {
     let client = null;
@@ -6449,11 +6373,9 @@ async function resolveDashboardAccess(req, res, next) {
     // 2) Dedicated signed dashboard access token.
     if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
 
-    // 3) Stripe return fallback: resolve from local paid/session records first, then Stripe only as a last resort.
-    // This solves cross-site cookie loss without delaying the dashboard on external Stripe API latency.
-    const sid = dashboardSessionId(req);
-    if (!client) client = await clientFromLocalDashboardSession(sid);
-    if (!client) client = await clientFromStripeDashboardSession(sid);
+    // 3) Stripe return fallback: verified checkout session email -> client account.
+    // This solves cross-site cookie loss when returning from Stripe to bircanmigration.au.
+    if (!client) client = await clientFromStripeDashboardSession(dashboardSessionId(req));
 
     if (!client) return res.status(401).json({
       ok: false,
@@ -6499,55 +6421,52 @@ app.post('/api/account/dashboard-access-token', resolveDashboardAccess, asyncRou
 // expensive payment joins. It returns lightweight metadata only so the dashboard can
 // render quickly; PDF bytes are generated/opened only on explicit PDF click.
 async function queryDashboardFastRows(email, clientId, sessionId = '') {
-  // v7.4 permanent dashboard fix:
-  // Never select pdf_bytes in dashboard list queries. The dashboard needs only
-  // metadata + a boolean has_pdf. Pulling PDF bytea values made the Stripe-return
-  // dashboard request slow enough to hit the browser timeout even though direct
-  // dashboard access later worked.
   const visaSql = `
     WITH paid_refs AS (
       SELECT DISTINCT service_ref AS id
       FROM payments
       WHERE service_type='visa_assessment'
-        AND (lower(COALESCE(client_email,''))=lower($1) OR stripe_session_id=$3)
+        AND (
+          lower(COALESCE(client_email,''))=lower($1)
+          OR stripe_session_id=$3
+        )
         AND COALESCE(status,'')='paid'
         AND service_ref IS NOT NULL
       UNION
       SELECT DISTINCT service_ref AS id
       FROM service_sessions
       WHERE service_type='visa_assessment'
-        AND (lower(COALESCE(client_email,''))=lower($1) OR stripe_session_id=$3)
+        AND (
+          lower(COALESCE(client_email,''))=lower($1)
+          OR stripe_session_id=$3
+          OR metadata->>'assessment_id' IS NOT NULL AND metadata->>'assessment_id'=$3
+        )
         AND (COALESCE(payment_status,'')='paid' OR stripe_session_id=$3)
         AND service_ref IS NOT NULL
-    ), match_ids AS (
-      SELECT id FROM assessments WHERE lower(COALESCE(client_email,''))=lower($1)
-      UNION
-      SELECT id FROM assessments WHERE lower(COALESCE(applicant_email,''))=lower($1) AND COALESCE(payment_status,'')='paid'
-      UNION
-      SELECT id FROM assessments WHERE client_id=$2
-      UNION
-      SELECT id FROM assessments WHERE $3 <> '' AND stripe_session_id=$3
-      UNION
-      SELECT id FROM paid_refs
+    ), matches AS (
+      SELECT a.* FROM assessments a WHERE lower(COALESCE(a.client_email,''))=lower($1)
+      UNION ALL
+      SELECT a.* FROM assessments a WHERE lower(COALESCE(a.applicant_email,''))=lower($1) AND COALESCE(a.payment_status,'')='paid'
+      UNION ALL
+      SELECT a.* FROM assessments a WHERE a.client_id=$2
+      UNION ALL
+      SELECT a.* FROM assessments a WHERE $3 <> '' AND a.stripe_session_id=$3
+      UNION ALL
+      SELECT a.* FROM assessments a JOIN paid_refs pr ON pr.id=a.id
     ), enriched AS (
       SELECT DISTINCT ON (a.id)
-             a.id, a.submission_fingerprint, a.visa_type, a.client_email, a.applicant_email, a.applicant_name,
+             a.id, a.submission_fingerprint, a.form_payload, a.visa_type, a.client_email, a.applicant_email, a.applicant_name,
              a.selected_plan, a.active_plan,
              CASE WHEN COALESCE(a.payment_status,'')='paid' OR p.status='paid' OR ss.payment_status='paid' THEN 'paid' ELSE COALESCE(a.payment_status,'unpaid') END AS effective_payment_status,
              COALESCE(a.amount_cents, p.amount_cents) AS effective_amount_cents,
              COALESCE(a.currency, p.currency, 'aud') AS effective_currency,
              COALESCE(a.stripe_session_id, p.stripe_session_id, ss.stripe_session_id) AS effective_stripe_session_id,
-             a.status, a.created_at, a.updated_at, a.release_at, a.pdf_generated_at, a.pdf_filename, a.pdf_sha256,
-             a.generation_error,
-             j.status AS pdf_job_status, j.last_error AS pdf_job_error, j.updated_at AS pdf_job_updated_at,
-             CASE WHEN a.pdf_bytes IS NOT NULL AND octet_length(a.pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
+             a.status, a.created_at, a.updated_at, a.release_at, a.pdf_generated_at, a.pdf_filename, a.pdf_sha256, a.pdf_bytes,
              COALESCE(p.plan, ss.selected_plan, a.active_plan, a.selected_plan, 'instant') AS effective_plan
-      FROM match_ids m
-      JOIN assessments a ON a.id=m.id
+      FROM matches a
       LEFT JOIN payments p ON p.service_type='visa_assessment' AND (p.service_ref=a.id OR p.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND p.stripe_session_id=$3))
       LEFT JOIN service_sessions ss ON ss.service_type='visa_assessment' AND (ss.service_ref=a.id OR ss.stripe_session_id=a.stripe_session_id OR ($3 <> '' AND ss.stripe_session_id=$3))
-      LEFT JOIN pdf_jobs j ON j.assessment_id=a.id
-      WHERE COALESCE(a.payment_status,'')='paid' OR p.status='paid' OR ss.payment_status='paid' OR ($3 <> '' AND COALESCE(a.stripe_session_id,'')=$3)
+      WHERE COALESCE(a.payment_status,'')='paid' OR p.status='paid' OR ss.payment_status='paid' OR $3 <> '' AND COALESCE(a.stripe_session_id,'')=$3
       ORDER BY a.id,
                CASE WHEN COALESCE(a.payment_status,'')='paid' THEN 4 WHEN p.status='paid' THEN 3 WHEN ss.payment_status='paid' THEN 2 ELSE 1 END DESC,
                COALESCE(a.updated_at, a.created_at) DESC NULLS LAST
@@ -6559,9 +6478,7 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            visa_type, applicant_email, applicant_name,
            effective_plan AS selected_plan,
            effective_plan AS active_plan,
-           CASE WHEN has_pdf THEN 'pdf_ready'
-                WHEN COALESCE(pdf_job_status,'')='failed' OR COALESCE(status,'') IN ('pdf_failed','failed') THEN 'pdf_failed'
-                WHEN COALESCE(pdf_job_status,'')='processing' OR COALESCE(status,'')='pdf_generating' THEN 'pdf_generating'
+           CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready'
                 WHEN effective_payment_status='paid' THEN COALESCE(NULLIF(status,''),'pdf_queued')
                 ELSE COALESCE(NULLIF(status,''),'submitted') END AS status,
            effective_payment_status AS payment_status,
@@ -6574,14 +6491,11 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
              WHEN lower(regexp_replace(COALESCE(effective_plan, 'instant'), '[\\s-]+', '', 'g')) IN ('24h','24hr','24hour','24hours') THEN COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '24 hours')
              ELSE COALESCE(release_at, COALESCE(updated_at, created_at, now()) + interval '72 hours')
            END AS release_at,
-           has_pdf,
+           CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf,
            CASE WHEN effective_payment_status='paid' THEN true ELSE false END AS release_ready,
-           0::integer AS release_seconds_remaining,
-           COALESCE(generation_error, pdf_job_error) AS generation_error,
-           pdf_job_status,
-           pdf_job_updated_at
+           0::integer AS release_seconds_remaining
     FROM enriched
-    ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST
+    ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
     LIMIT 20`;
 
   const citizenshipSql = `
@@ -6606,8 +6520,8 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            status, payment_status, stripe_session_id, amount_cents, currency, created_at, updated_at,
            now() AS release_at, true AS has_pdf, true AS release_ready, 0::integer AS release_seconds_remaining
     FROM ranked
-    WHERE COALESCE(payment_status,'')='paid' OR COALESCE(status,'')='active' OR ($3 <> '' AND COALESCE(stripe_session_id,'')=$3)
-    ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST
+    WHERE COALESCE(payment_status,'')='paid' OR COALESCE(status,'')='active' OR $3 <> '' AND COALESCE(stripe_session_id,'')=$3
+    ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST
     LIMIT 10`;
 
   const [visaResult, citizenshipResult] = await Promise.allSettled([
@@ -6804,64 +6718,12 @@ async function queryDashboardV2Payments(email, sessionId) {
   catch (err) { console.warn('Dashboard v2 payments query failed:', err.message); return []; }
 }
 
-
-function dashboardV2ShouldKickPdf(service) {
-  if (!service || service.type !== 'visa_assessment') return false;
-  if (service.documentStatus !== 'pdf_queued') return false;
-  if (service.paymentStatus !== 'paid') return false;
-  if (service.hasPdf || service.releaseSecondsRemaining > 0) return false;
-  if (service.generationError) return false;
-  return Boolean(service.id);
-}
-
-function scheduleDashboardV2PdfGeneration(services, email) {
-  const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 3);
-  if (!targets.length) return [];
-  const ids = targets.map(t => t.id);
-  setImmediate(async () => {
-    for (const service of targets) {
-      try {
-        await query(
-          `INSERT INTO pdf_jobs (assessment_id, status, run_after)
-           VALUES ($1,'queued',now())
-           ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
-          [service.id]
-        );
-        await generateAssessmentPdfNow(service.id, email);
-      } catch (err) {
-        console.error('Dashboard v2 PDF generation kick failed:', service.id, err && err.message ? err.message : err);
-      }
-    }
-  });
-  return ids;
-}
-
 app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
   const clientId = req.client.id;
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
-
-  // v7.7 permanent payment-link repair:
-  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
-  // paid Stripe session before the dashboard list query runs. This makes the dashboard
-  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
-  // The list query still returns metadata only; PDF bytes are never read here.
-  let paymentRepair = null;
-  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
-    try {
-      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
-      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
-      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
-      if (stripePaid) {
-        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-      }
-    } catch (err) {
-      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
-      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
-    }
-  }
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -6891,17 +6753,14 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   }));
 
   const documents = visa.concat(appeals).filter(s => s.type !== 'citizenship_test');
-  const pdfGenerationKick = scheduleDashboardV2PdfGeneration(documents, email);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
+    version: 'dashboard-v2-stable-contract-v1',
     loadMs: Date.now() - startedAt,
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
-    paymentRepair,
-    pdfGenerationKick,
     counts: {
       visa: visa.length,
       appeals: appeals.length,
