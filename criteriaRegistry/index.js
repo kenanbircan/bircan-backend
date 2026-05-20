@@ -83,11 +83,16 @@ function criteriaForStream(registry, stream = 'default') {
   if (Array.isArray(registry.criteria)) return registry.criteria;
   if (Array.isArray(registry.grantCriteria)) return registry.grantCriteria;
   if (registry.grantCriteria && Array.isArray(registry.grantCriteria.items)) return registry.grantCriteria.items;
+
   const streams = registry.streams || {};
   const selectedRaw = String(stream || 'default');
   const selected = selectedRaw.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  const direct = getCriteriaListFromStreamConfig(streams[selectedRaw] || streams.default);
+
+  // Exact/default first. Some v9 registries do not use a literal `default` stream.
+  const direct = getCriteriaListFromStreamConfig(streams[selectedRaw] || streams[selected] || streams.default);
   if (direct.length) return direct;
+
+  // Match against normalised stream names.
   for (const [name, cfg] of Object.entries(streams)) {
     const key = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
     if (key === selected || key.includes(selected) || selected.includes(key)) {
@@ -95,6 +100,34 @@ function criteriaForStream(registry, stream = 'default') {
       if (found.length) return found;
     }
   }
+
+  // If a subclass has only one active stream, use it as the safe default. This fixes
+  // Subclass 300 and other single-stream registries that use names such as
+  // `common_or_secondary` instead of `default`.
+  const streamEntries = Object.entries(streams);
+  if (streamEntries.length === 1) {
+    const only = getCriteriaListFromStreamConfig(streamEntries[0][1]);
+    if (only.length) return only;
+  }
+
+  // Final compatibility fallback for registries carrying enriched criteria under
+  // legacyOriginalRegistry.streams.default.criteria.
+  const legacyStreams = registry.legacyOriginalRegistry && registry.legacyOriginalRegistry.streams || {};
+  const legacyDirect = getCriteriaListFromStreamConfig(legacyStreams[selectedRaw] || legacyStreams[selected] || legacyStreams.default);
+  if (legacyDirect.length) return legacyDirect;
+  for (const [name, cfg] of Object.entries(legacyStreams)) {
+    const key = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    if (key === selected || key.includes(selected) || selected.includes(key)) {
+      const found = getCriteriaListFromStreamConfig(cfg);
+      if (found.length) return found;
+    }
+  }
+  const legacyEntries = Object.entries(legacyStreams);
+  if (legacyEntries.length === 1) {
+    const only = getCriteriaListFromStreamConfig(legacyEntries[0][1]);
+    if (only.length) return only;
+  }
+
   return [];
 }
 
