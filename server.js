@@ -3225,8 +3225,8 @@ app.post('/api/service/checkout-session', requireCheckoutAuth, asyncRoute(async 
         serviceSessionId: serviceSession.id,
         service_session_id: serviceSession.id,
         plan: assessment.active_plan || assessment.selected_plan || serviceSession.selected_plan || 'instant',
-        redirectUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${(assessment.stripe_session_id || serviceSession.stripe_session_id) ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id || serviceSession.stripe_session_id) : ''}`,
-        dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${(assessment.stripe_session_id || serviceSession.stripe_session_id) ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id || serviceSession.stripe_session_id) : ''}`
+        redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
+        dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
       });
     }
 
@@ -3974,8 +3974,8 @@ app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRo
       assessmentId: assessment.id,
       assessment_id: assessment.id,
       plan: assessment.active_plan || assessment.selected_plan,
-      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${assessment.stripe_session_id ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id) : ''}`,
-      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${assessment.stripe_session_id ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id) : ''}`
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
+      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
     });
   }
 
@@ -4013,8 +4013,8 @@ app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRo
       assessmentId: recentPaid.id,
       assessment_id: recentPaid.id,
       plan: recentPaid.active_plan || recentPaid.selected_plan || checkoutPlan,
-      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(recentPaid.id)}${recentPaid.stripe_session_id ? '&session_id=' + encodeURIComponent(recentPaid.stripe_session_id) : ''}`,
-      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(recentPaid.id)}${recentPaid.stripe_session_id ? '&session_id=' + encodeURIComponent(recentPaid.stripe_session_id) : ''}`
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`,
+      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`
     });
   }
   const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
@@ -6989,11 +6989,26 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v7.11 audited permanent dashboard timeout fix:
-  // Dashboard is a read-first endpoint. It must never wait for Stripe/network repair
-  // before returning local account records. Payment repair is queued after response.
+  // v10.1 payment-return identity fix:
+  // When Stripe returns with a session_id, repair/attach the paid session BEFORE the first dashboard query.
+  // Otherwise the dashboard can render a verified shell with no email and no linked services until a manual refresh.
   let paymentRepair = null;
-  let shouldQueuePaymentRepair = Boolean(sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe);
+  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
+    try {
+      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
+      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
+      if (stripePaid) {
+        const attached = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
+        paymentRepair = { repaired: true, mode: 'before_dashboard_query', sessionId, attached };
+      } else {
+        paymentRepair = { repaired: false, mode: 'stripe_not_paid_yet', sessionId, stripeStatus: stripeSession.status || null, paymentStatus: stripeSession.payment_status || null };
+      }
+    } catch (err) {
+      paymentRepair = { repaired: false, mode: 'repair_failed_before_dashboard_query', sessionId, error: err && err.message ? err.message : String(err) };
+      console.warn('Dashboard v2 payment-link repair failed before query:', paymentRepair.error);
+    }
+  }
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -7024,27 +7039,10 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
 
   const documents = visa.concat(appeals).filter(s => s.type !== 'citizenship_test');
   const pdfGenerationKick = scheduleDashboardV2PdfGeneration(documents, email);
-  if (shouldQueuePaymentRepair) {
-    paymentRepair = { queued: true, mode: 'background_after_dashboard_response', sessionId };
-    res.once('finish', () => {
-      setImmediate(async () => {
-        try {
-          let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
-          stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
-          const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
-          if (stripePaid) {
-            await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-          }
-        } catch (err) {
-          console.warn('Dashboard v2 background payment-link repair skipped:', err && err.message ? err.message : err);
-        }
-      });
-    });
-  }
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-read-first-background-payment-repair-v10',
+    version: 'dashboard-v2-payment-return-repair-before-query-v10-1',
     loadMs: Date.now() - startedAt,
     client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
