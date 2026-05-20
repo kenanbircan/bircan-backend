@@ -3225,8 +3225,8 @@ app.post('/api/service/checkout-session', requireCheckoutAuth, asyncRoute(async 
         serviceSessionId: serviceSession.id,
         service_session_id: serviceSession.id,
         plan: assessment.active_plan || assessment.selected_plan || serviceSession.selected_plan || 'instant',
-        redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
-        dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
+        redirectUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${(assessment.stripe_session_id || serviceSession.stripe_session_id) ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id || serviceSession.stripe_session_id) : ''}`,
+        dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${(assessment.stripe_session_id || serviceSession.stripe_session_id) ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id || serviceSession.stripe_session_id) : ''}`
       });
     }
 
@@ -3974,8 +3974,8 @@ app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRo
       assessmentId: assessment.id,
       assessment_id: assessment.id,
       plan: assessment.active_plan || assessment.selected_plan,
-      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`,
-      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(assessment.id)}`
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${assessment.stripe_session_id ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id) : ''}`,
+      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(assessment.id)}${assessment.stripe_session_id ? '&session_id=' + encodeURIComponent(assessment.stripe_session_id) : ''}`
     });
   }
 
@@ -4013,8 +4013,8 @@ app.post('/api/assessment/create-checkout-session', requireCheckoutAuth, asyncRo
       assessmentId: recentPaid.id,
       assessment_id: recentPaid.id,
       plan: recentPaid.active_plan || recentPaid.selected_plan || checkoutPlan,
-      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`,
-      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?assessment_id=${encodeURIComponent(recentPaid.id)}`
+      redirectUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(recentPaid.id)}${recentPaid.stripe_session_id ? '&session_id=' + encodeURIComponent(recentPaid.stripe_session_id) : ''}`,
+      dashboardUrl: `${APP_BASE_URL}/account-dashboard.html?paid=1&assessment_id=${encodeURIComponent(recentPaid.id)}${recentPaid.stripe_session_id ? '&session_id=' + encodeURIComponent(recentPaid.stripe_session_id) : ''}`
     });
   }
   const price = resolveVisaPriceId(assessment.visa_type, checkoutPlan);
@@ -6989,7 +6989,7 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v7.10 permanent dashboard timeout fix:
+  // v7.11 audited permanent dashboard timeout fix:
   // Dashboard is a read-first endpoint. It must never wait for Stripe/network repair
   // before returning local account records. Payment repair is queued after response.
   let paymentRepair = null;
