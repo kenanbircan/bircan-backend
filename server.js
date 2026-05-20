@@ -7085,6 +7085,35 @@ function scheduleDashboardV2PdfGeneration(services, email) {
 
 const dashboardV2PaymentRepairLocks = new Map();
 
+// Dashboard API hard-stop: never let slow record queries block the account identity response.
+// The dashboard must at least receive the authenticated client immediately; service/payment
+// records can be returned as partial and picked up by the next poll after Render/Postgres wakes.
+function dashboardSoftTimeout(promise, ms, fallback, label) {
+  let settled = false;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn(`${label || 'dashboard query'} exceeded ${ms}ms; returning partial dashboard data.`);
+      resolve(fallback);
+    }, ms);
+    Promise.resolve(promise)
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        console.warn(`${label || 'dashboard query'} failed:`, err && err.message ? err.message : err);
+        resolve(fallback);
+      });
+  });
+}
+
 function scheduleDashboardV2PaymentRepair({ sessionId, email, clientId }) {
   const cleanSessionIdValue = String(sessionId || '').trim();
   if (!cleanSessionIdValue || !/^cs_(test|live)_/i.test(cleanSessionIdValue)) {
@@ -7136,9 +7165,24 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const paymentRepair = scheduleDashboardV2PaymentRepair({ sessionId, email, clientId });
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
-    queryDashboardFastRows(email, clientId, sessionId),
-    queryDashboardV2Appeals(email, clientId, sessionId),
-    queryDashboardV2Payments(email, sessionId)
+    dashboardSoftTimeout(
+      queryDashboardFastRows(email, clientId, sessionId),
+      10000,
+      { visaRows: [], citizenshipRows: [], __partial: true },
+      'dashboard-v2 visa/citizenship query'
+    ),
+    dashboardSoftTimeout(
+      queryDashboardV2Appeals(email, clientId, sessionId),
+      7000,
+      [],
+      'dashboard-v2 appeals query'
+    ),
+    dashboardSoftTimeout(
+      queryDashboardV2Payments(email, sessionId),
+      7000,
+      [],
+      'dashboard-v2 payments query'
+    )
   ]);
 
   const visa = dedupeDashboardRows(fastRows.visaRows || [], ['duplicate_key', 'id'])
@@ -7167,8 +7211,9 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-v7-10-nonblocking-payment-repair-pdf-worker-self-heal',
+    version: 'dashboard-v2-v7-11-soft-timeout-identity-first',
     loadMs: Date.now() - startedAt,
+    partial: Boolean((fastRows && fastRows.__partial) || (appealRows && appealRows.__partial) || (paymentRows && paymentRows.__partial)),
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
