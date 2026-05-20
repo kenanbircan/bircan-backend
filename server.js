@@ -6110,30 +6110,71 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         throw new Error('Internal legal audit missing. PDF generation blocked.');
       }
 
-      // Registry coverage enforcement: build one visible finding per mandatory or
-      // triggered registry criterion. This is the missing bridge between the 98%+
-      // criteriaRegistry JSON files and the actual client PDF.
+      // Registry coverage audit: build one visible finding per mandatory or
+      // triggered registry criterion where possible. This is deliberately an
+      // audit/quality-control gate, not a PDF-kill gate. A paid client must not
+      // be left with a failed dashboard card merely because the registry/advice
+      // bridge is incomplete. Incomplete registry coverage is disclosed inside
+      // the advice letter and recorded for agent review.
       const registrySubclass = String(adviceBundle.subclass || adviceBundle.advice?.subclass || assessmentForAdvice.visa_type || assessment.visa_type || '').replace(/[^0-9]/g, '');
-      const registry = loadCriteriaRegistry(registrySubclass);
-      const registryResult = buildRegistryBackedFindings({
-        registry,
-        adviceBundle,
-        legalPack: adviceBundle.legalSourcePack,
-        assessment: assessmentForAdvice
-      });
-      if (!registryResult.audit.ok || registryResult.audit.registryCoverageRate < 100 || registryResult.audit.unsupportedSourceCriteria.length) {
-        const detail = JSON.stringify(registryResult.audit);
-        throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
+      let registryResult = null;
+      let registryAudit = null;
+      try {
+        const registry = loadCriteriaRegistry(registrySubclass);
+        registryResult = buildRegistryBackedFindings({
+          registry,
+          adviceBundle,
+          legalPack: adviceBundle.legalSourcePack,
+          assessment: assessmentForAdvice
+        });
+        registryAudit = registryResult && registryResult.audit ? registryResult.audit : null;
+      } catch (registryErr) {
+        registryAudit = {
+          ok: false,
+          nonBlocking: true,
+          registryCoverageRate: 0,
+          registrySubclass,
+          error: registryErr && registryErr.message ? registryErr.message : String(registryErr || 'Registry coverage audit failed'),
+          generatedAt: new Date().toISOString()
+        };
+        registryResult = { findings: [], audit: registryAudit };
       }
-      adviceBundle.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
-      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
+
+      const existingFindings = Array.isArray(adviceBundle.advice && adviceBundle.advice.criterion_findings)
+        ? adviceBundle.advice.criterion_findings
+        : Array.isArray(adviceBundle.grantCriteriaFindings)
+          ? adviceBundle.grantCriteriaFindings
+          : [];
+      const registryFindings = Array.isArray(registryResult && registryResult.findings) ? registryResult.findings : [];
+      const shouldUseRegistryFindings = registryFindings.length >= Math.max(6, existingFindings.length);
+      const findingsForPdf = shouldUseRegistryFindings ? registryFindings : existingFindings;
+
+      const registryCoverageOk = !!(registryAudit && registryAudit.ok && Number(registryAudit.registryCoverageRate || 0) >= 100 && !(registryAudit.unsupportedSourceCriteria || []).length);
+      if (!registryCoverageOk) {
+        const warning = 'Grant criteria registry coverage is incomplete. PDF issued as preliminary professional advice with further agent review required.';
+        registryAudit = Object.assign({}, registryAudit || {}, {
+          ok: false,
+          nonBlocking: true,
+          pdfIssuedWithReviewWarning: true,
+          warning,
+          generatedAt: registryAudit && registryAudit.generatedAt ? registryAudit.generatedAt : new Date().toISOString()
+        });
+        adviceBundle.manualReviewRequired = true;
+        adviceBundle.reviewWarnings = Array.isArray(adviceBundle.reviewWarnings) ? adviceBundle.reviewWarnings : [];
+        if (!adviceBundle.reviewWarnings.includes(warning)) adviceBundle.reviewWarnings.push(warning);
+      }
+
+      adviceBundle.grantCriteriaFindings = findingsForPdf;
+      adviceBundle.criteriaRegistryAudit = registryAudit;
+      adviceBundle.grantCriteriaCoverageAudit = registryAudit;
+      adviceBundle.registryCoverageRate = registryAudit ? registryAudit.registryCoverageRate : null;
       adviceBundle.advice = adviceBundle.advice || {};
-      adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.advice.criterion_findings = registryResult.findings;
-      adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.advice.grantCriteriaFindings = findingsForPdf;
+      adviceBundle.advice.criterion_findings = findingsForPdf;
+      adviceBundle.advice.criteriaRegistryAudit = registryAudit;
+      adviceBundle.advice.manualReviewRequired = adviceBundle.manualReviewRequired === true;
+      adviceBundle.advice.reviewWarnings = adviceBundle.reviewWarnings || [];
+      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryAudit;
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
