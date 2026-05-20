@@ -6817,6 +6817,44 @@ function scheduleDashboardV2PdfGeneration(services, email) {
   return ids;
 }
 
+const dashboardV2PaymentRepairLocks = new Map();
+
+function scheduleDashboardV2PaymentRepair({ sessionId, email, clientId }) {
+  const cleanSessionIdValue = String(sessionId || '').trim();
+  if (!cleanSessionIdValue || !/^cs_(test|live)_/i.test(cleanSessionIdValue)) {
+    return { queued: false, status: 'not_required' };
+  }
+  if (!stripe) {
+    return { queued: false, status: 'stripe_unavailable' };
+  }
+
+  const now = Date.now();
+  const lastQueuedAt = Number(dashboardV2PaymentRepairLocks.get(cleanSessionIdValue) || 0);
+  if (lastQueuedAt && now - lastQueuedAt < 90000) {
+    return { queued: false, status: 'already_queued', sessionId: cleanSessionIdValue };
+  }
+
+  dashboardV2PaymentRepairLocks.set(cleanSessionIdValue, now);
+  setImmediate(async () => {
+    try {
+      let stripeSession = await stripe.checkout.sessions.retrieve(cleanSessionIdValue);
+      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
+      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
+      if (!stripePaid) {
+        console.warn('Dashboard v2 background payment repair skipped: Stripe session is not paid/complete:', cleanSessionIdValue);
+        return;
+      }
+      await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
+    } catch (err) {
+      console.warn('Dashboard v2 background payment repair failed:', cleanSessionIdValue, err && err.message ? err.message : err);
+      // Allow a later dashboard poll/manual refresh to retry after a short cooldown.
+      dashboardV2PaymentRepairLocks.delete(cleanSessionIdValue);
+    }
+  });
+
+  return { queued: true, status: 'background_queued', sessionId: cleanSessionIdValue };
+}
+
 app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
@@ -6824,25 +6862,12 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v7.7 permanent payment-link repair:
-  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
-  // paid Stripe session before the dashboard list query runs. This makes the dashboard
-  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
-  // The list query still returns metadata only; PDF bytes are never read here.
-  let paymentRepair = null;
-  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
-    try {
-      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
-      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
-      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
-      if (stripePaid) {
-        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-      }
-    } catch (err) {
-      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
-      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
-    }
-  }
+  // v7.10 permanent dashboard rule:
+  // Never block the dashboard response while Stripe repair/payment finalisation runs.
+  // The dashboard must return the existing account records immediately; if a Stripe
+  // return session is present, payment repair is queued in the background and the
+  // frontend polling will pick up the attached paid service on the next refresh.
+  const paymentRepair = scheduleDashboardV2PaymentRepair({ sessionId, email, clientId });
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -6876,7 +6901,7 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
+    version: 'dashboard-v2-v7-10-nonblocking-payment-repair-pdf-worker-self-heal',
     loadMs: Date.now() - startedAt,
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
