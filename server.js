@@ -1984,7 +1984,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.5-pdf-advice-10-final-v7-12',
+    version: '12.2.5-pdf-advice-10-final-v7-12-merged-assessment-save-dashboard-timeout-v12',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2859,6 +2859,7 @@ app.post('/api/assessment/create', requireAuth, asyncRoute(handleAssessmentSubmi
 app.post('/api/assessments/submit', requireAuth, asyncRoute(handleAssessmentSubmit));
 
 async function handlePublicVisaAssessmentStart(req, res) {
+  const startedAt = Date.now();
   const built = buildAssessmentPayload(req.body, null);
   const email = normaliseEmail(
     req.body.email ||
@@ -2868,9 +2869,11 @@ async function handlePublicVisaAssessmentStart(req, res) {
     req.body.applicant_email ||
     built.meta.applicantEmail
   );
+
   if (!email || !email.includes('@')) {
     return res.status(400).json({ ok: false, code: 'VALID_EMAIL_REQUIRED', error: 'Valid email is required before login.' });
   }
+
   if (!payloadLooksUsable(built)) {
     return res.status(400).json({
       ok: false,
@@ -2889,68 +2892,32 @@ async function handlePublicVisaAssessmentStart(req, res) {
   let created;
   try {
     created = await tx(async (client) => {
-      // Permanent duplicate prevention:
-      // Re-clicks, browser retries, and Stripe-return loops may reuse only an unpaid/in-progress
-      // assessment. A paid assessment is a completed matter and must never be reused for a new
-      // checkout attempt, otherwise checkout returns alreadyPaid and sends the client to dashboard.
-      // This prevents two paid Subclass 186 cards for one assessment journey.
-      const existingRows = await client.query(
-        `SELECT a.*, ss.id AS service_session_id
-         FROM assessments a
-         LEFT JOIN LATERAL (
-           SELECT id FROM service_sessions s
-           WHERE s.service_type='visa_assessment' AND s.service_ref=a.id
-           ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST
-           LIMIT 1
-         ) ss ON true
-         WHERE (
-             lower(a.client_email)=lower($1)
-             OR lower(a.applicant_email)=lower($1)
-             OR lower(COALESCE(a.form_payload->'meta'->>'applicantEmail',''))=lower($1)
-             OR lower(COALESCE(a.form_payload->'meta'->>'clientEmail',''))=lower($1)
-           )
-           AND a.visa_type=$2
-           AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
-           AND a.created_at > now() - interval '48 hours'
-           -- Strict public handoff idempotency:
-           -- same email + same subclass + same plan must reuse the most recent matter
-           -- in this window, even if autofill/timestamps/random fields change the answer
-           -- fingerprint. This stops creating multiple paid assessment records from one
-           -- user journey.
-         ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
-                  a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
+      // Fast public handoff path:
+      // This route must only save the assessment and return the login handoff.
+      // Do not run broad duplicate searches here. Those can scan assessments/form_payload
+      // JSON and keep the browser waiting until its request timeout expires.
+      await client.query(`SET LOCAL statement_timeout = '12000ms'`).catch(() => null);
+      await client.query(`SET LOCAL lock_timeout = '4000ms'`).catch(() => null);
+
+      let effectiveFingerprint = submissionFingerprint;
+
+      // Only perform a narrow fingerprint lookup. If the same unpaid matter exists,
+      // reuse it. If the matching matter is already paid, create a fresh unpaid matter
+      // by using a new fingerprint variant so a new client journey is not blocked.
+      const exactRows = await client.query(
+        `SELECT id, payment_status
+         FROM assessments
+         WHERE submission_fingerprint=$1
+           AND visa_type=$2
+           AND COALESCE(active_plan, selected_plan, 'instant')=$3
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
          LIMIT 1`,
-        [email, visaType, plan]
+        [submissionFingerprint, visaType, plan]
       );
-      let existing = existingRows.rows[0];
-      if (existing && String(existing.payment_status || '').toLowerCase() === 'paid') {
-        existing = null;
-      }
-      if (existing) {
-        let serviceSession = null;
-        if (existing.service_session_id) {
-          const sr = await client.query(`SELECT * FROM service_sessions WHERE id=$1 LIMIT 1`, [existing.service_session_id]);
-          serviceSession = sr.rows[0] || null;
-        }
-        if (!serviceSession) {
-          const serviceRows = await client.query(
-            `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
-             VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created',$6,$7,$8::jsonb)
-             ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
-             DO UPDATE SET client_id=COALESCE(service_sessions.client_id, EXCLUDED.client_id), client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, payment_status=COALESCE(service_sessions.payment_status, EXCLUDED.payment_status), stripe_session_id=COALESCE(service_sessions.stripe_session_id, EXCLUDED.stripe_session_id), metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
-             RETURNING *`,
-            [newServiceSessionId, existing.id, existing.client_id || null, email, plan, existing.payment_status || 'unpaid', existing.stripe_session_id || null, JSON.stringify({
-              visa_type: visaType,
-              assessment_id: existing.id,
-              submission_fingerprint: submissionFingerprint,
-              reused_existing_assessment: true,
-              duplicate_prevention: 'same_email_subclass_plan_answers_24h',
-              created_by: 'public_visa_assessment_start'
-            })]
-          );
-          serviceSession = serviceRows.rows[0];
-        }
-        return { assessment: existing, serviceSession, reusedExisting: true };
+
+      const exact = exactRows.rows[0] || null;
+      if (exact && String(exact.payment_status || '').toLowerCase() === 'paid') {
+        effectiveFingerprint = `${submissionFingerprint}:${newAssessmentId}`;
       }
 
       const assessmentRows = await client.query(
@@ -2967,11 +2934,12 @@ async function handlePublicVisaAssessmentStart(req, res) {
            active_plan=COALESCE(assessments.active_plan, EXCLUDED.active_plan),
            form_payload=CASE WHEN COALESCE(assessments.payment_status,'unpaid')='paid' THEN assessments.form_payload ELSE EXCLUDED.form_payload END,
            updated_at=now()
-         RETURNING id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status, submission_fingerprint`,
-        [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, submissionFingerprint]
+         RETURNING id, client_id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status, submission_fingerprint`,
+        [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, effectiveFingerprint]
       );
+
       const assessment = assessmentRows.rows[0];
-      if (!assessment || assessment.id !== newAssessmentId) {
+      if (!assessment || !assessment.id) {
         throw Object.assign(new Error('The assessment record was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
 
@@ -2979,34 +2947,67 @@ async function handlePublicVisaAssessmentStart(req, res) {
         `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
          VALUES ($1,'visa_assessment',$2,NULL,$3,$4,'draft_created','unpaid',NULL,$5::jsonb)
          ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
-         DO UPDATE SET client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
+         DO UPDATE SET
+           client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email),
+           selected_plan=EXCLUDED.selected_plan,
+           payment_status=CASE WHEN service_sessions.payment_status='paid' THEN service_sessions.payment_status ELSE EXCLUDED.payment_status END,
+           metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata,
+           updated_at=now()
          RETURNING *`,
         [newServiceSessionId, assessment.id, email, plan, JSON.stringify({
           visa_type: visaType,
           assessment_id: assessment.id,
-          submission_fingerprint: submissionFingerprint,
+          submission_fingerprint: effectiveFingerprint,
+          original_submission_fingerprint: submissionFingerprint,
           require_fresh_login: true,
           login_required_before_payment: true,
           handoff_locked: true,
+          backend_fast_handoff_patch: 'public-visa-start-no-wide-duplicate-scan-v1',
           created_by: 'public_visa_assessment_start'
         })]
       );
+
       const serviceSession = serviceRows.rows[0];
       if (!serviceSession || serviceSession.service_ref !== assessment.id) {
         throw Object.assign(new Error('The checkout handoff session was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
-      return { assessment, serviceSession, reusedExisting: false };
+
+      return {
+        assessment,
+        serviceSession,
+        reusedExisting: assessment.id !== newAssessmentId,
+        effectiveFingerprint
+      };
     });
   } catch (err) {
+    console.error('Public visa assessment start failed:', {
+      code: err.code,
+      message: err.message,
+      durationMs: Date.now() - startedAt,
+      visaType,
+      plan,
+      email
+    });
     return res.status(err.statusCode || 500).json({
       ok: false,
-      code: 'VISA_HANDOFF_NOT_SAVED',
+      code: err.code || 'VISA_HANDOFF_NOT_SAVED',
       error: err.message || 'Visa assessment could not be saved before login. Checkout was not started.'
     });
   }
 
   const assessmentId = created.assessment.id;
-  const next = `/login.html?service=visa&next=service-checkout&service_session_id=${encodeURIComponent(created.serviceSession.id)}&assessment_id=${encodeURIComponent(assessmentId)}&plan=${encodeURIComponent(plan)}&email=${encodeURIComponent(email)}`;
+  const next = `/login.html?service=visa&next=service-checkout&payment=required&handoff=checkout&service_session_id=${encodeURIComponent(created.serviceSession.id)}&assessment_id=${encodeURIComponent(assessmentId)}&plan=${encodeURIComponent(plan)}&email=${encodeURIComponent(email)}`;
+
+  if (Date.now() - startedAt > 2500) {
+    console.warn('Public visa assessment start was slow:', {
+      durationMs: Date.now() - startedAt,
+      assessmentId,
+      serviceSessionId: created.serviceSession.id,
+      visaType,
+      plan
+    });
+  }
+
   res.json({
     ok: true,
     service: 'visa_assessment',
@@ -3019,6 +3020,7 @@ async function handlePublicVisaAssessmentStart(req, res) {
     plan,
     payloadSaved: true,
     answerCount: payloadAnswerCount(built),
+    backendPatch: 'public-visa-start-no-wide-duplicate-scan-v1',
     next
   });
 }
@@ -7058,7 +7060,7 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-hard-timeout-local-first-v11',
+    version: 'dashboard-v2-hard-timeout-local-first-v11-merged',
     loadMs: Date.now() - startedAt,
     client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
