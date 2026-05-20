@@ -6068,8 +6068,12 @@ function enforceRegistryKnowledgebaseAdviceControls({ assessment, adviceBundle, 
   adviceBundle.advice.registryControlledPathway = pathwayControl;
   adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
   adviceBundle.advice.criterion_findings = registryResult.findings;
+  adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
   adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
 
+  adviceBundle.fullCriteriaRegistryMatrix = registryResult.findings;
+  adviceBundle.fullCriteriaRegistryMatrixCount = registryResult.findings.length;
+  adviceBundle.visibleCriteriaMatrixRequired = true;
   adviceBundle.grantCriteriaFindings = registryResult.findings;
   adviceBundle.criteriaRegistryAudit = registryResult.audit;
   adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
@@ -6401,6 +6405,9 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         registryResult.audit.sourceSupportWarning = true;
         registryResult.audit.sourceSupportWarningMessage = 'One or more registry criteria requested additional source-category support. This is recorded for agent audit but does not block issue of the preliminary advice letter.';
       }
+      adviceBundle.fullCriteriaRegistryMatrix = registryResult.findings;
+      adviceBundle.fullCriteriaRegistryMatrixCount = registryResult.findings.length;
+      adviceBundle.visibleCriteriaMatrixRequired = true;
       adviceBundle.grantCriteriaFindings = registryResult.findings;
       adviceBundle.criteriaRegistryAudit = registryResult.audit;
       adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
@@ -6408,6 +6415,7 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       adviceBundle.advice = adviceBundle.advice || {};
       adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
       adviceBundle.advice.criterion_findings = registryResult.findings;
+      adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
       adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
       adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
 

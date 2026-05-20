@@ -408,48 +408,27 @@ function extractFactsObject(assessment, adviceBundle) {
   };
 }
 
+function registryControlledPathwayFromBundle(adviceBundle, advice) {
+  const candidates = [
+    adviceBundle && adviceBundle.registryControlledPathway,
+    advice && advice.registryControlledPathway,
+    adviceBundle && adviceBundle.legalSourcePack && adviceBundle.legalSourcePack.registryControlledPathway,
+    adviceBundle && adviceBundle.advice && adviceBundle.advice.registryControlledPathway
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    if (typeof c === 'string' && c.trim()) return { label: c.trim(), registryControlled: true };
+    if (typeof c === 'object' && c.registryControlled !== false && cleanText(c.label || c.name || c.key, '')) {
+      return { ...c, label: cleanText(c.label || c.name || c.key), registryControlled: true };
+    }
+  }
+  return null;
+}
+
 function inferStream(assessment, adviceBundle, advice) {
-  // Registry/knowledgebase-controlled PDFs must never infer stream by scanning
-  // stale assessment payload text. The previous implementation scanned the whole
-  // object blob, so a stale value such as "Labour Agreement" inside
-  // registryControlledPathway.requestedPathway could override the registry label.
-  const controlled =
-    adviceBundle?.registryControlledPathway?.label ||
-    advice?.registryControlledPathway?.label ||
-    adviceBundle?.legalSourcePack?.registryControlledPathway?.label ||
-    adviceBundle?.legalSourcePack?.selectedStream ||
-    advice?.selectedStream ||
-    advice?.stream ||
-    advice?.pathway ||
-    adviceBundle?.selectedStream ||
-    adviceBundle?.stream ||
-    adviceBundle?.pathway ||
-    '';
-  const clean = cleanText(controlled, '').replace(/\s+Stream$/i, '').trim();
-  if (clean) return clean;
-
-  const subclass = cleanText(advice?.subclass || adviceBundle?.subclass || assessment?.visa_type || '');
-  const sc = String(subclass || '').replace(/[^0-9]/g, '');
-  const defaults = {
-    '300': 'Prospective Marriage',
-    '309': 'Partner',
-    '820': 'Partner',
-    '801': 'Partner',
-    '100': 'Partner',
-    '866': 'Protection',
-    '785': 'Temporary Protection',
-    '790': 'Safe Haven Enterprise',
-    '189': 'Skilled Independent',
-    '190': 'Skilled Nominated',
-    '491': 'Skilled Work Regional',
-    '500': 'Student',
-    '590': 'Student Guardian',
-    '600': 'Visitor',
-    '602': 'Medical Treatment'
-  };
-  if (defaults[sc]) return defaults[sc];
-
-  return 'To be confirmed';
+  const controlled = registryControlledPathwayFromBundle(adviceBundle || {}, advice || {});
+  if (controlled && controlled.label) return controlled.label.replace(/\s+Stream$/i, '').trim();
+  throw new Error('PDF blocked: registry-controlled pathway missing before rendering. The PDF renderer will not infer subclass stream/pathway from stale assessment text.');
 }
 
 function inferApplicantName(assessment, adviceBundle, facts) {
@@ -568,11 +547,18 @@ function positionLabel(tone) {
 }
 
 function normaliseCriterionFinding(item) {
+  item = item && typeof item === 'object' ? item : {};
+  const criterionId = item.criterion_id || item.criterionId || item.registryCriterionId || item.id || item.clause || item.regulation || '';
+  const criterionText = item.criterion || item.heading || item.title || item.label || item.name || criterionId || 'Criterion';
   return {
-    criterion: item.criterion || item.heading || item.title || 'Criterion',
-    finding: item.finding || item.status || item.evidenceStatus || item.body || '',
+    ...item,
+    criterion_id: criterionId,
+    criterionId,
+    registryCriterionId: item.registryCriterionId || criterionId,
+    criterion: criterionText,
+    finding: item.finding || item.status || item.evidenceStatus || item.body || item.position || '',
     legal_consequence: item.legal_consequence || item.legalConsequence || item.legalEffect || '',
-    recommendation: item.actionRequired || item.recommendation || item.requiredAction || item.missingEvidence || ''
+    recommendation: item.actionRequired || item.recommendation || item.requiredAction || item.missingEvidence || item.action || ''
   };
 }
 
@@ -973,18 +959,6 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
       const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], '186'));
       const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
-      if (adviceBundle && adviceBundle.genericFallbackAllowed !== false) {
-        throw new Error('PDF blocked: registry-controlled advice bundle was not enforced before rendering.');
-      }
-      if (!adviceBundle.registryControlledPathway && !(advice && advice.registryControlledPathway)) {
-        throw new Error('PDF blocked: registry-controlled pathway missing before rendering.');
-      }
-      if (adviceBundle && adviceBundle.genericFallbackAllowed !== false) {
-        throw new Error('PDF blocked: registry-controlled advice bundle was not enforced before rendering.');
-      }
-      if (!adviceBundle.registryControlledPathway && !(advice && advice.registryControlledPathway)) {
-        throw new Error('PDF blocked: registry-controlled pathway missing before rendering.');
-      }
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const title = `Subclass ${subclass} Employer Nomination Scheme professional advice letter`;
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
@@ -1317,27 +1291,37 @@ function v13IssuePhrase(value) {
 
 function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
   const raw = ensureArray(
+    adviceBundle.fullCriteriaRegistryMatrix ||
     adviceBundle.grantCriteriaFindings ||
     adviceBundle.criteriaRegistryFindings ||
     advice.grantCriteriaFindings ||
     advice.criterion_findings ||
+    advice.fullCriteriaRegistryMatrix ||
     adviceBundle.criterionFindings ||
     adviceBundle.findings ||
     []
   );
-  const items = (raw.length ? raw : v10DefaultCriteria(subclass, stream)).map(normaliseCriterionFinding);
+  if (!raw.length && adviceBundle.genericFallbackAllowed === false) {
+    throw new Error(`PDF blocked: criteriaRegistry produced no visible criterion matrix for Subclass ${cleanText(subclass)}.`);
+  }
+  const sourceItems = raw.length ? raw : v10DefaultCriteria(subclass, stream);
+  const items = sourceItems.map(normaliseCriterionFinding);
   const seen = new Set();
   const out = [];
-  for (const item of items) {
+  items.forEach((item, idx) => {
     const built = buildMatterFinding(item);
-    const name = v13PolishCriterionLabel(niceCriterionName(built.criterion || item.criterion || item.heading || 'Criterion'));
-    const key = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    if (!key || seen.has(key)) continue;
+    const criterionId = cleanText(item.criterion_id || item.criterionId || item.registryCriterionId || item.id || item.clause || item.regulation || '');
+    let name = v13PolishCriterionLabel(niceCriterionName(built.criterion || item.criterion || item.heading || criterionId || 'Criterion'));
+    if (criterionId && !name.toLowerCase().includes(criterionId.toLowerCase())) name = `${criterionId} — ${name}`;
+    const key = criterionId ? `id:${criterionId}` : `idx:${idx}:${name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+    if (seen.has(key)) return;
     seen.add(key);
     const risk = v10RiskLevel(name, item);
     const finding = v10ProfessionalFinding(name, item, built);
     out.push({
-      criterionId: item.criterion_id || item.criterionId || item.registryCriterionId || item.id || '',
+      criterionId,
+      registryCriterionId: item.registryCriterionId || criterionId,
+      criterion_id: criterionId,
       criterion: name,
       risk,
       currentPosition: v10StatusFromText(item.position || item.outcome || item.finding || built.position),
@@ -1347,14 +1331,15 @@ function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
       actionRequired: sanitizeSubclassStreamText(v10ActionRequired(name, item, built), subclass, stream, name),
       evidence: built.evidence,
       timing: item.timing || '',
-      sourceCategory: item.sourceCategory || item.source_category || '',
-      pdfSection: item.pdfSection || item.pdf_section || item.section || inferGrantCriteriaSection(name, String(subclass || ''), String(stream || '')),
+      sourceCategory: item.sourceCategory || item.source_category || item.category || '',
+      pdfSection: item.pdfSection || item.pdf_section || item.section || item.sourceCategory || item.source_category || item.category || inferGrantCriteriaSection(name, String(subclass || ''), String(stream || '')),
       factsRequired: item.factsRequired || item.facts_required || [],
       evidenceRequired: item.evidenceRequired || item.evidence_required || [],
       mandatory: item.mandatory === true || item.triggeredMandatory === true
     });
-    if (out.length >= 80) break;
-  }
+  });
+  const expected = raw.length;
+  if (expected && out.length < expected) throw new Error(`PDF blocked: criteriaRegistry rendering dropped criteria. Expected ${expected}, rendered ${out.length}.`);
   return out;
 }
 
@@ -1959,8 +1944,8 @@ function bmWriteDocumentTable(doc, rows) {
   }
 }
 
-function bmWriteActionPlanTable(doc, rows) {
-  writeTitle(doc, '11. Lodgement-readiness action plan', { gold: true });
+function bmWriteActionPlanTable(doc, rows, sectionNumber = 11) {
+  writeTitle(doc, `${sectionNumber}. Lodgement-readiness action plan`, { gold: true });
   writePara(doc, 'Before this matter is treated as ready for lodgement, I recommend the following steps.', { size: 9.7 });
   for (const row of rows) {
     const step = cleanText(row.step);
@@ -2102,68 +2087,66 @@ function bmShortAppendixPosition(row) {
 }
 
 function bmDeduplicateAppendixRows(rows) {
-  const riskRank = { Critical: 4, High: 3, Managed: 2, 'Standard preparation': 1 };
-  const canonicalKey = row => {
-    const text = `${row.area || ''} ${row.issue || ''}`.toLowerCase();
-    if (/english/.test(text)) return 'applicant::english';
-    if (/skill|qualification|experience/.test(text)) return 'applicant::skills-qualifications-experience';
-    if (/salary|amsr|guaranteed earnings|market salary/.test(text)) return 'salary::salary-amsr';
-    if (/employment terms|contract|nes|award|enterprise/.test(text)) return 'salary::employment-terms';
-    if (/labou?r agreement.*current|executed labou?r agreement|agreement.*applies/.test(text)) return 'labour-agreement::currency-coverage';
-    if (/occupation.*covered|occupation coverage/.test(text)) return 'labour-agreement::occupation-coverage';
-    if (/concession/.test(text)) return `${row.area || 'criteria'}::concessions`;
-    if (/nomination.*support|valid employer nomination|nomination exists/.test(text)) return 'nomination::valid-supporting-nomination';
-    if (/identity|biographical/.test(text)) return 'applicant::identity';
-    if (/health/.test(text)) return 'public-interest::health';
-    if (/character|police|court/.test(text)) return 'public-interest::character';
-    if (/pic 4020|integrity|false|misleading/.test(text)) return 'public-interest::integrity';
-    return `${cleanText(row.area).toLowerCase()}::${cleanText(row.issue).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
-  };
-  const merged = new Map();
-  for (const row of ensureArray(rows)) {
-    const key = canonicalKey(row);
-    const existing = merged.get(key);
-    if (!existing) {
-      merged.set(key, { ...row });
-      continue;
-    }
-    const existingRank = riskRank[existing.risk] || 0;
-    const newRank = riskRank[row.risk] || 0;
-    if (newRank > existingRank) {
-      existing.risk = row.risk;
-      existing.position = row.position;
-    }
-    const action = cleanText(row.action);
-    if (action && !cleanText(existing.action).toLowerCase().includes(action.toLowerCase())) {
-      existing.action = `${cleanText(existing.action)} ${action}`.trim();
-    }
-  }
-  return [...merged.values()].map(row => {
+  const normalisedRows = ensureArray(rows).map(row => {
+    row = { ...row };
     row.risk = bmNormaliseAppendixRisk(row);
     row.position = bmShortAppendixPosition(row);
     return row;
   });
+  // Registry-backed rows must not be merged away. Each criterion in the registry
+  // must remain visible in Appendix A, even if several rows have similar labels.
+  if (normalisedRows.some(r => r.registryCriterionId || r.criterionId || r.criterion_id)) return normalisedRows;
+
+  const riskRank = { Critical: 4, High: 3, Managed: 2, 'Standard preparation': 1 };
+  const canonicalKey = row => `${cleanText(row.area).toLowerCase()}::${cleanText(row.issue).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
+  const merged = new Map();
+  for (const row of normalisedRows) {
+    const key = canonicalKey(row);
+    const existing = merged.get(key);
+    if (!existing) { merged.set(key, { ...row }); continue; }
+    const existingRank = riskRank[existing.risk] || 0;
+    const newRank = riskRank[row.risk] || 0;
+    if (newRank > existingRank) { existing.risk = row.risk; existing.position = row.position; }
+    const action = cleanText(row.action);
+    if (action && !cleanText(existing.action).toLowerCase().includes(action.toLowerCase())) existing.action = `${cleanText(existing.action)} ${action}`.trim();
+  }
+  return [...merged.values()].map(row => { row.risk = bmNormaliseAppendixRisk(row); row.position = bmShortAppendixPosition(row); return row; });
 }
 
-
-function bmAppendixAreaLabel(section, issue) {
-  const text = cleanText(`${section || ''} ${issue || ''}`).toLowerCase();
-  if (/valid|schedule 1|application method|visa application charge|stream|pathway|time-of-application|time of application|time-of-decision|time of decision/.test(text)) return 'Validity';
+function bmAppendixAreaLabel(section, issue, item = {}) {
+  const rawSection = cleanText(section || item.sourceCategory || item.source_category || item.category || '', 'Criteria');
+  const text = `${rawSection} ${issue || ''} ${item.criterionId || item.criterion_id || item.registryCriterionId || ''}`.toLowerCase();
+  const m = String(item.criterionId || item.criterion_id || item.registryCriterionId || '').match(/^(\d{3})/);
+  const family = m ? v11VisaFamily(m[1]) : '';
+  if (/valid|schedule\s*1|application charge|time of application|form|visa application requirement/.test(text)) return 'Validity';
+  if (/health|character|police|court|pic 4020|4020|integrity|false|misleading|special return|src|refusal|cancellation|compliance|debt|removal|deportation|exclusion|public interest/.test(text)) return 'Public interest';
+  if (/family|secondary|dependent|child|member of family unit/.test(text)) return 'Family members';
+  if (family === 'partner') return /relationship|marriage|prospective marriage|sponsor|sponsorship|partner|fianc/.test(text) ? 'Relationship and sponsorship' : 'Applicant and relationship criteria';
+  if (family === 'protection') return /protection|refugee|complementary|persecution|claims|country|harm/.test(text) ? 'Protection claims' : 'Protection visa criteria';
+  if (family === 'skilled') return /points|invitation|nomination|state|territory|occupation|skills|anzsco|english|age/.test(text) ? 'Skilled visa criteria' : 'Applicant skilled criteria';
+  if (family === 'student') return /enrol|course|genuine student|gs|genuine temporary|guardian|welfare|oshc|funds|english/.test(text) ? 'Study and welfare criteria' : 'Student visa criteria';
+  if (family === 'visitor') return 'Visitor pathway criteria';
+  if (family === 'family') return 'Family visa criteria';
+  if (family === 'business') return 'Business and investment criteria';
+  if (family === 'temporary') return 'Temporary visa criteria';
   if (/labou?r agreement|dama|agreement terms|agreement ceiling|ceiling|location limit|occupation list|concession schedule/.test(text)) return 'Labour Agreement';
   if (/nomination|nominating employer|employer|sponsor|business|genuine position|full-time|full time|created primarily|operational|adverse information/.test(text)) return 'Nomination';
   if (/salary|amsr|market salary|guaranteed earnings|employment contract|employment terms|nes|award|enterprise agreement|income/.test(text)) return 'Salary';
   if (/identity|biographical|age|english|skills|qualification|experience|registration|licens|applicant work|work-rights|work rights|employment history|lawful status|visa status|current location/.test(text)) return 'Applicant';
-  if (/health|character|police|court|pic 4020|4020|integrity|false|misleading|special return|src|refusal|cancellation|compliance|debt|removal|deportation|exclusion/.test(text)) return 'Public interest';
-  if (/family|secondary|dependent|partner|child|relationship/.test(text)) return 'Family';
   if (/translation|certification|document quality|evidence sufficiency|lodgement readiness|final migration-agent review|final agent review|consistency across forms|file control|evidence index/.test(text)) return 'File control';
-  return 'Criteria';
+  return rawSection || 'Criteria';
 }
 
 function bmAppendixRows(criteria) {
   const rows = ensureArray(criteria).filter(Boolean).map(item => {
-    const issue = sentenceCase(clientFriendlyCriterionLabel(item.criterion || 'Grant criterion'));
+    const criterionId = cleanText(item.criterionId || item.criterion_id || item.registryCriterionId || '', '');
+    const label = clientFriendlyCriterionLabel(item.criterion || item.title || item.heading || 'Grant criterion');
+    const issue = criterionId && !label.toLowerCase().includes(criterionId.toLowerCase()) ? `${criterionId} — ${sentenceCase(label)}` : sentenceCase(label);
     const row = {
-      area: bmAppendixAreaLabel(item.pdfSection || inferGrantCriteriaSection(item.criterion, '', ''), issue),
+      registryCriterionId: item.registryCriterionId || criterionId,
+      criterionId,
+      criterion_id: criterionId,
+      area: bmAppendixAreaLabel(item.pdfSection || item.sourceCategory || item.source_category || item.category || inferGrantCriteriaSection(item.criterion, '', ''), issue, item),
       issue,
       risk: v12RiskLabel(item),
       position: v12CompactPosition(item),
@@ -2186,7 +2169,7 @@ function bmWriteAppendixSchedule(doc, criteria) {
   // Permanent Appendix layout: group criteria by proper legal category and render
   // full-width schedule cards. This avoids false "Nomination" labels for public
   // interest/family rows and prevents any table-column overflow or ellipsis.
-  const groupOrder = ['Validity', 'Nomination', 'Labour Agreement', 'Applicant', 'Salary', 'Public interest', 'Family', 'File control', 'Criteria'];
+  const groupOrder = ['Validity', 'Relationship and sponsorship', 'Applicant and relationship criteria', 'Protection claims', 'Protection visa criteria', 'Skilled visa criteria', 'Applicant skilled criteria', 'Study and welfare criteria', 'Student visa criteria', 'Visitor pathway criteria', 'Family visa criteria', 'Business and investment criteria', 'Temporary visa criteria', 'Nomination', 'Labour Agreement', 'Applicant', 'Salary', 'Public interest', 'Family members', 'Family', 'File control', 'Criteria'];
   const grouped = new Map();
   for (const row of rows) {
     const area = cleanText(row.area, 'File control');
@@ -2489,16 +2472,13 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
   return new Promise((resolve, reject) => {
     try {
       const legalPack = assertKnowledgebaseEnforcedAdviceBundle(adviceBundle);
+      if (adviceBundle.genericFallbackAllowed !== false || adviceBundle.subclassSpecificAdviceRequired !== true || adviceBundle.knowledgebaseFirstAdvice !== true) {
+        throw new Error('PDF blocked: registry-controlled, knowledgebase-first advice bundle was not enforced before rendering.');
+      }
       const advice = getAdvice(adviceBundle) || {};
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
       const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], 'Visa'));
       const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
-      if (adviceBundle && adviceBundle.genericFallbackAllowed !== false) {
-        throw new Error('PDF blocked: registry-controlled advice bundle was not enforced before rendering.');
-      }
-      if (!adviceBundle.registryControlledPathway && !(advice && advice.registryControlledPathway)) {
-        throw new Error('PDF blocked: registry-controlled pathway missing before rendering.');
-      }
       const family = v11VisaFamily(subclass);
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const pathwayLabel = bmPathwayLabel(subclass, stream);
@@ -2520,10 +2500,13 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
           if (registryResult.audit && registryResult.audit.ok) {
             bundleForPdf = {
               ...bundleForPdf,
+              fullCriteriaRegistryMatrix: registryResult.findings,
+              fullCriteriaRegistryMatrixCount: registryResult.findings.length,
+              visibleCriteriaMatrixRequired: true,
               grantCriteriaFindings: registryResult.findings,
               criteriaRegistryAudit: registryResult.audit,
               grantCriteriaCoverageAudit: registryResult.audit,
-              advice: { ...(bundleForPdf.advice || advice || {}), criterion_findings: registryResult.findings, grantCriteriaFindings: registryResult.findings }
+              advice: { ...(bundleForPdf.advice || advice || {}), criterion_findings: registryResult.findings, grantCriteriaFindings: registryResult.findings, fullCriteriaRegistryMatrix: registryResult.findings }
             };
           }
         } catch (_registryErr) {}
@@ -2531,6 +2514,10 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       const effectiveAdvice = getAdvice(bundleForPdf) || advice;
       const criteria = v10BuildCriteria(effectiveAdvice, bundleForPdf || {}, subclass, stream);
+      const expectedVisibleCriteria = ensureArray(bundleForPdf.fullCriteriaRegistryMatrix || bundleForPdf.grantCriteriaFindings || effectiveAdvice.fullCriteriaRegistryMatrix || effectiveAdvice.grantCriteriaFindings || effectiveAdvice.criterion_findings || []).length;
+      if (expectedVisibleCriteria && criteria.length < expectedVisibleCriteria) {
+        throw new Error(`PDF blocked: Appendix criteria matrix incomplete. Registry produced ${expectedVisibleCriteria}, renderer produced ${criteria.length}.`);
+      }
       const position = v11ProfessionalPosition(effectiveAdvice || {}, bundleForPdf || {}, criteria);
       const overallRisk = v10OverallRisk(criteria);
 
@@ -2565,7 +2552,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
 
       bmWriteRiskAssessment(doc, pathwayLabel, family);
       bmWriteEvidencePlan(doc, family);
-      bmWriteActionPlanTable(doc, bmActionRows(subclass, stream, family));
+      bmWriteActionPlanTable(doc, bmActionRows(subclass, stream, family), family === 'employer' ? 11 : 8);
       bmWriteFinalRecommendation(doc, pathwayLabel, subclass, stream, family, effectiveAdvice);
       bmWriteAppendixSchedule(doc, criteria);
 
