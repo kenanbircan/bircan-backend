@@ -4447,26 +4447,26 @@ async function attachPaidSession(session, options = {}) {
     const assessmentRes = await client.query('SELECT * FROM assessments WHERE id=$1 FOR UPDATE', [assessmentId]);
     const assessment = assessmentRes.rows[0];
     if (!assessment) throw new Error(`Assessment not found for Stripe session ${session.id}`);
-    // Stripe-paid recovery rule:
-    // Checkout is created only after the portal account has paid. If an older/public
-    // assessment still carries the form/applicant email, do not lose the paid matter
-    // from the dashboard. Preserve applicant_email, but attach the account owner from
-    // the paid Stripe session/customer email to client_email.
-    if (normaliseEmail(assessment.client_email) !== email) {
-      const accountRows = await client.query('SELECT id, email FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
-      const account = accountRows.rows[0] || null;
-      await client.query(
-        `UPDATE assessments
-         SET client_id=COALESCE($1, client_id),
-             client_email=$2,
-             applicant_email=COALESCE(applicant_email, client_email, $2),
-             updated_at=now()
-         WHERE id=$3`,
-        [account && account.id ? account.id : null, email, assessmentId]
-      );
-      assessment.client_email = email;
-      if (account && account.id) assessment.client_id = account.id;
-    }
+    // Permanent form-email preservation rule:
+    // Stripe/customer email is the portal/account email. It must attach the paid matter
+    // by client_id, but it must not overwrite the email captured in the assessment form.
+    // The assessment/form email remains in client_email/applicant_email so dashboard cards
+    // and PDF matter details do not show the last logged-in portal email by mistake.
+    const accountRows = await client.query('SELECT id, email FROM clients WHERE lower(email)=lower($1) LIMIT 1', [email]);
+    const account = accountRows.rows[0] || null;
+    const formEmail = normaliseEmail(assessment.applicant_email || assessment.client_email || email);
+    await client.query(
+      `UPDATE assessments
+       SET client_id=COALESCE($1, client_id),
+           client_email=COALESCE(NULLIF(client_email,''), $2),
+           applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
+           updated_at=now()
+       WHERE id=$3`,
+      [account && account.id ? account.id : null, formEmail, assessmentId]
+    );
+    assessment.client_email = formEmail;
+    assessment.applicant_email = assessment.applicant_email || formEmail;
+    if (account && account.id) assessment.client_id = account.id;
 
     const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
     if (!paid) throw new Error(`Stripe session is not paid yet. Current status: ${session.payment_status || session.status || 'unknown'}`);
@@ -6989,25 +6989,14 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v7.7 permanent payment-link repair:
-  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
-  // paid Stripe session before the dashboard list query runs. This makes the dashboard
-  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
-  // The list query still returns metadata only; PDF bytes are never read here.
-  let paymentRepair = null;
-  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
-    try {
-      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
-      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
-      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
-      if (stripePaid) {
-        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-      }
-    } catch (err) {
-      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
-      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
-    }
-  }
+  // Permanent dashboard timeout fix:
+  // The dashboard is a read-first endpoint. Never wait for Stripe/payment repair before
+  // returning local DB records, because Render cold starts and Stripe calls can exceed
+  // the browser timeout. Queue the repair after the response and let polling/refresh show
+  // updated records once the repair completes.
+  const paymentRepair = (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe)
+    ? { queued: true, mode: 'background-after-response' }
+    : null;
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -7066,6 +7055,21 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
       documentAccess: documents.some(d => d.canOpenPdf)
     }
   });
+
+  if (paymentRepair && paymentRepair.queued) {
+    setImmediate(async () => {
+      try {
+        let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+        stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
+        const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
+        if (stripePaid) {
+          await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
+        }
+      } catch (err) {
+        console.warn('Dashboard v2 background payment-link repair failed:', err && err.message ? err.message : err);
+      }
+    });
+  }
 }));
 
 app.get('/api/account/dashboard-open', resolveDashboardAccess, asyncRoute(handleDashboardFast));
