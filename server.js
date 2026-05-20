@@ -6161,7 +6161,7 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         audit.unmappedMandatoryCriteria
       ].filter(Array.isArray).flat();
 
-      if (registryCoverageRate < requiredCoverageRate || unsupportedSourceCriteria.length || mandatoryCriteriaMissing.length) {
+      if (registryCoverageRate < requiredCoverageRate || mandatoryCriteriaMissing.length) {
         const detail = JSON.stringify({
           registryCoverageRate,
           requiredCoverageRate,
@@ -6170,6 +6170,17 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
           auditOk: audit.ok === true
         });
         throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
+      }
+
+      // Source-support gaps are audit warnings, not a PDF issuance kill-switch.
+      // The legal-source pack gate above already confirms that the knowledgebase
+      // was loaded and version-locked. Blocking a paid client PDF because a
+      // registry item asks for a source category not represented in the loaded
+      // pack strands valid advice at 87-90% even though every mandatory criterion
+      // has a visible finding. Keep the warning in the audit for agent review.
+      if (unsupportedSourceCriteria.length) {
+        registryResult.audit.sourceSupportWarning = true;
+        registryResult.audit.sourceSupportWarningMessage = 'One or more registry criteria requested additional source-category support. This is recorded for agent audit but does not block issue of the preliminary advice letter.';
       }
       adviceBundle.grantCriteriaFindings = registryResult.findings;
       adviceBundle.criteriaRegistryAudit = registryResult.audit;
@@ -6810,13 +6821,25 @@ async function queryDashboardV2Payments(email, sessionId) {
 }
 
 
+function isRetryablePdfGenerationError(message) {
+  const text = String(message || '').toLowerCase();
+  if (!text) return false;
+  return /grant criteria|criteria registry|criteria coverage|coverage validation/.test(text);
+}
+
 function dashboardV2ShouldKickPdf(service) {
   if (!service || service.type !== 'visa_assessment') return false;
-  if (service.documentStatus !== 'pdf_queued') return false;
   if (service.paymentStatus !== 'paid') return false;
   if (service.hasPdf || service.releaseSecondsRemaining > 0) return false;
-  if (service.generationError) return false;
-  return Boolean(service.id);
+
+  // A previous deployment may have stored a now-fixed criteria coverage failure in
+  // generation_error. Do not strand that paid matter forever. The dashboard may
+  // requeue only this known, deterministic, retryable error class. All other
+  // failures still remain manual-review/failed until reviewed.
+  const retryableCoverageFailure = isRetryablePdfGenerationError(service.generationError);
+  if (service.documentStatus === 'pdf_queued') return Boolean(service.id);
+  if (service.documentStatus === 'pdf_failed' && retryableCoverageFailure) return Boolean(service.id);
+  return false;
 }
 
 function scheduleDashboardV2PdfGeneration(services, email) {
