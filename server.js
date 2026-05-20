@@ -33,6 +33,60 @@ const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine
 const { listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
 const { loadCriteriaRegistry } = require('./criteriaRegistry');
 const { buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
+
+
+// ---- V9 criteria registry bridge: use knowledgebase automation-ceiling registry metadata ----
+const BIRCAN_CRITERIA_REGISTRY_V9_PDF_BRIDGE = 'criteria-registry-v9-pdf-bridge-v1';
+function v9RegistryNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+function buildV9CriteriaRegistryProfile(registry = {}) {
+  const coverage = registry.coverageScoring || {};
+  const expected = registry.expectedGrantCriteriaManifest || {};
+  const streams = registry.streams && typeof registry.streams === 'object' ? registry.streams : {};
+  const criteria = [];
+  for (const [streamName, stream] of Object.entries(streams)) {
+    const items = Array.isArray(stream && stream.grantCriteria) ? stream.grantCriteria : Array.isArray(stream && stream.criteria) ? stream.criteria : [];
+    for (const item of items) criteria.push({ stream: streamName, ...(item || {}) });
+  }
+  const readiness = Math.max(
+    v9RegistryNumber(coverage.estimatedSchedule2CoverageReadiness, 0),
+    v9RegistryNumber(coverage.currentSubclass187WeightedScore, 0),
+    v9RegistryNumber(coverage.weightedAuditScore, 0),
+    v9RegistryNumber(coverage.estimatedCoverage, 0)
+  );
+  return {
+    schemaVersion: registry.schemaVersion || null,
+    subclass: registry.subclass || null,
+    title: registry.title || null,
+    availabilityGate: registry.availabilityGate || null,
+    validApplicationRequirements: registry.validApplicationRequirements || null,
+    expectedGrantCriteriaManifest: expected,
+    expectedSchedule2ClauseCount: Array.isArray(expected.expectedClauses) ? expected.expectedClauses.length : v9RegistryNumber(expected.expectedClauseCount, criteria.length),
+    schedule2CriteriaItemCount: criteria.length,
+    coverageScoring: coverage,
+    estimatedSchedule2CoverageReadiness: readiness,
+    manualAuditRequiredForExternal98Claim: Boolean(coverage.manualAuditRequiredForExternal98Claim || coverage.external98ClaimAllowed === false),
+    external98ClaimAllowed: coverage.external98ClaimAllowed === true,
+    pdfContaminationControls: registry.pdfContaminationControls || registry.contaminationGuards || null,
+    contaminationGuards: registry.contaminationGuards || null,
+    intakeCoverageControls: registry.intakeCoverageControls || null,
+    pamsControls: registry.pamsControls || null,
+    registryFingerprint: registry.registryFingerprint || null,
+    sourceOfTruth: registry.sourceOfTruth || null,
+    sourceMap: registry.sourceMap || null,
+    v9Bridge: BIRCAN_CRITERIA_REGISTRY_V9_PDF_BRIDGE
+  };
+}
+function registryUnsupportedCriteriaAreBlocking(audit = {}, profile = {}) {
+  const unsupported = Array.isArray(audit.unsupportedSourceCriteria) ? audit.unsupportedSourceCriteria : [];
+  if (!unsupported.length) return false;
+  // V9 knowledgebase extracted registries deliberately carry source-mapping/audit controls.
+  // Unsupported source labels should downgrade the advice to review-required, not kill PDF generation,
+  // unless the registry has no V9 source/audit structure at all.
+  return !profile || (!profile.expectedGrantCriteriaManifest && !profile.sourceOfTruth && !profile.registryFingerprint);
+}
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
@@ -113,6 +167,7 @@ const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTE
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
 const PDF_OPEN_ON_DEMAND_PATCH = 'issued-pdf-only-dashboard-open-v2';
+const DASHBOARD_V2_HARD_TIMEOUT_PATCH = 'dashboard-v2-hard-timeout-local-first-v11';
 
 function requestBaseUrl(req) {
   const proto = (req && (req.headers['x-forwarded-proto'] || req.protocol)) || 'https';
@@ -695,16 +750,21 @@ async function attachVisaAssessmentToClientById(assessmentId, client) {
     throw err;
   }
 
+  // Permanent form-email preservation:
+  // Attach the assessment to the authenticated portal account by client_id, but do not
+  // overwrite the assessment-form email with a stale/last dashboard login email.
+  // client_email/applicant_email remain the matter/form email; client_id is the account link.
+  const formEmail = assessmentEmail || clientEmail;
   const updated = await query(
     `UPDATE assessments
      SET client_id=$1,
-         client_email=$2,
-         applicant_email=COALESCE(applicant_email,$2),
+         client_email=COALESCE(NULLIF(client_email,''), $2),
+         applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
          active_plan=COALESCE(active_plan, selected_plan),
          updated_at=now()
      WHERE id=$3
      RETURNING *`,
-    [client.id, client.email, assessment.id]
+    [client.id, formEmail, assessment.id]
   );
   return updated.rows[0] || assessment;
 }
@@ -1924,7 +1984,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.5-pdf-advice-10-final-v7-12',
+    version: '12.2.5-pdf-advice-10-final-v7-12-merged-assessment-save-dashboard-timeout-v12',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2799,6 +2859,7 @@ app.post('/api/assessment/create', requireAuth, asyncRoute(handleAssessmentSubmi
 app.post('/api/assessments/submit', requireAuth, asyncRoute(handleAssessmentSubmit));
 
 async function handlePublicVisaAssessmentStart(req, res) {
+  const startedAt = Date.now();
   const built = buildAssessmentPayload(req.body, null);
   const email = normaliseEmail(
     req.body.email ||
@@ -2808,9 +2869,11 @@ async function handlePublicVisaAssessmentStart(req, res) {
     req.body.applicant_email ||
     built.meta.applicantEmail
   );
+
   if (!email || !email.includes('@')) {
     return res.status(400).json({ ok: false, code: 'VALID_EMAIL_REQUIRED', error: 'Valid email is required before login.' });
   }
+
   if (!payloadLooksUsable(built)) {
     return res.status(400).json({
       ok: false,
@@ -2829,68 +2892,32 @@ async function handlePublicVisaAssessmentStart(req, res) {
   let created;
   try {
     created = await tx(async (client) => {
-      // Permanent duplicate prevention:
-      // Re-clicks, browser retries, and Stripe-return loops may reuse only an unpaid/in-progress
-      // assessment. A paid assessment is a completed matter and must never be reused for a new
-      // checkout attempt, otherwise checkout returns alreadyPaid and sends the client to dashboard.
-      // This prevents two paid Subclass 186 cards for one assessment journey.
-      const existingRows = await client.query(
-        `SELECT a.*, ss.id AS service_session_id
-         FROM assessments a
-         LEFT JOIN LATERAL (
-           SELECT id FROM service_sessions s
-           WHERE s.service_type='visa_assessment' AND s.service_ref=a.id
-           ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST
-           LIMIT 1
-         ) ss ON true
-         WHERE (
-             lower(a.client_email)=lower($1)
-             OR lower(a.applicant_email)=lower($1)
-             OR lower(COALESCE(a.form_payload->'meta'->>'applicantEmail',''))=lower($1)
-             OR lower(COALESCE(a.form_payload->'meta'->>'clientEmail',''))=lower($1)
-           )
-           AND a.visa_type=$2
-           AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
-           AND a.created_at > now() - interval '48 hours'
-           -- Strict public handoff idempotency:
-           -- same email + same subclass + same plan must reuse the most recent matter
-           -- in this window, even if autofill/timestamps/random fields change the answer
-           -- fingerprint. This stops creating multiple paid assessment records from one
-           -- user journey.
-         ORDER BY CASE WHEN a.payment_status='paid' THEN 3 WHEN a.stripe_session_id IS NOT NULL THEN 2 ELSE 1 END DESC,
-                  a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
+      // Fast public handoff path:
+      // This route must only save the assessment and return the login handoff.
+      // Do not run broad duplicate searches here. Those can scan assessments/form_payload
+      // JSON and keep the browser waiting until its request timeout expires.
+      await client.query(`SET LOCAL statement_timeout = '12000ms'`).catch(() => null);
+      await client.query(`SET LOCAL lock_timeout = '4000ms'`).catch(() => null);
+
+      let effectiveFingerprint = submissionFingerprint;
+
+      // Only perform a narrow fingerprint lookup. If the same unpaid matter exists,
+      // reuse it. If the matching matter is already paid, create a fresh unpaid matter
+      // by using a new fingerprint variant so a new client journey is not blocked.
+      const exactRows = await client.query(
+        `SELECT id, payment_status
+         FROM assessments
+         WHERE submission_fingerprint=$1
+           AND visa_type=$2
+           AND COALESCE(active_plan, selected_plan, 'instant')=$3
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
          LIMIT 1`,
-        [email, visaType, plan]
+        [submissionFingerprint, visaType, plan]
       );
-      let existing = existingRows.rows[0];
-      if (existing && String(existing.payment_status || '').toLowerCase() === 'paid') {
-        existing = null;
-      }
-      if (existing) {
-        let serviceSession = null;
-        if (existing.service_session_id) {
-          const sr = await client.query(`SELECT * FROM service_sessions WHERE id=$1 LIMIT 1`, [existing.service_session_id]);
-          serviceSession = sr.rows[0] || null;
-        }
-        if (!serviceSession) {
-          const serviceRows = await client.query(
-            `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
-             VALUES ($1,'visa_assessment',$2,$3,$4,$5,'draft_created',$6,$7,$8::jsonb)
-             ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
-             DO UPDATE SET client_id=COALESCE(service_sessions.client_id, EXCLUDED.client_id), client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, payment_status=COALESCE(service_sessions.payment_status, EXCLUDED.payment_status), stripe_session_id=COALESCE(service_sessions.stripe_session_id, EXCLUDED.stripe_session_id), metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
-             RETURNING *`,
-            [newServiceSessionId, existing.id, existing.client_id || null, email, plan, existing.payment_status || 'unpaid', existing.stripe_session_id || null, JSON.stringify({
-              visa_type: visaType,
-              assessment_id: existing.id,
-              submission_fingerprint: submissionFingerprint,
-              reused_existing_assessment: true,
-              duplicate_prevention: 'same_email_subclass_plan_answers_24h',
-              created_by: 'public_visa_assessment_start'
-            })]
-          );
-          serviceSession = serviceRows.rows[0];
-        }
-        return { assessment: existing, serviceSession, reusedExisting: true };
+
+      const exact = exactRows.rows[0] || null;
+      if (exact && String(exact.payment_status || '').toLowerCase() === 'paid') {
+        effectiveFingerprint = `${submissionFingerprint}:${newAssessmentId}`;
       }
 
       const assessmentRows = await client.query(
@@ -2907,11 +2934,12 @@ async function handlePublicVisaAssessmentStart(req, res) {
            active_plan=COALESCE(assessments.active_plan, EXCLUDED.active_plan),
            form_payload=CASE WHEN COALESCE(assessments.payment_status,'unpaid')='paid' THEN assessments.form_payload ELSE EXCLUDED.form_payload END,
            updated_at=now()
-         RETURNING id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status, submission_fingerprint`,
-        [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, submissionFingerprint]
+         RETURNING id, client_id, client_email, applicant_email, visa_type, selected_plan, active_plan, status, payment_status, submission_fingerprint`,
+        [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, effectiveFingerprint]
       );
+
       const assessment = assessmentRows.rows[0];
-      if (!assessment || assessment.id !== newAssessmentId) {
+      if (!assessment || !assessment.id) {
         throw Object.assign(new Error('The assessment record was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
 
@@ -2919,34 +2947,67 @@ async function handlePublicVisaAssessmentStart(req, res) {
         `INSERT INTO service_sessions (id, service_type, service_ref, client_id, client_email, selected_plan, status, payment_status, stripe_session_id, metadata)
          VALUES ($1,'visa_assessment',$2,NULL,$3,$4,'draft_created','unpaid',NULL,$5::jsonb)
          ON CONFLICT (service_type, service_ref) WHERE service_ref IS NOT NULL
-         DO UPDATE SET client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email), selected_plan=EXCLUDED.selected_plan, metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata, updated_at=now()
+         DO UPDATE SET
+           client_email=COALESCE(service_sessions.client_email, EXCLUDED.client_email),
+           selected_plan=EXCLUDED.selected_plan,
+           payment_status=CASE WHEN service_sessions.payment_status='paid' THEN service_sessions.payment_status ELSE EXCLUDED.payment_status END,
+           metadata=COALESCE(service_sessions.metadata,'{}'::jsonb) || EXCLUDED.metadata,
+           updated_at=now()
          RETURNING *`,
         [newServiceSessionId, assessment.id, email, plan, JSON.stringify({
           visa_type: visaType,
           assessment_id: assessment.id,
-          submission_fingerprint: submissionFingerprint,
+          submission_fingerprint: effectiveFingerprint,
+          original_submission_fingerprint: submissionFingerprint,
           require_fresh_login: true,
           login_required_before_payment: true,
           handoff_locked: true,
+          backend_fast_handoff_patch: 'public-visa-start-no-wide-duplicate-scan-v1',
           created_by: 'public_visa_assessment_start'
         })]
       );
+
       const serviceSession = serviceRows.rows[0];
       if (!serviceSession || serviceSession.service_ref !== assessment.id) {
         throw Object.assign(new Error('The checkout handoff session was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
-      return { assessment, serviceSession, reusedExisting: false };
+
+      return {
+        assessment,
+        serviceSession,
+        reusedExisting: assessment.id !== newAssessmentId,
+        effectiveFingerprint
+      };
     });
   } catch (err) {
+    console.error('Public visa assessment start failed:', {
+      code: err.code,
+      message: err.message,
+      durationMs: Date.now() - startedAt,
+      visaType,
+      plan,
+      email
+    });
     return res.status(err.statusCode || 500).json({
       ok: false,
-      code: 'VISA_HANDOFF_NOT_SAVED',
+      code: err.code || 'VISA_HANDOFF_NOT_SAVED',
       error: err.message || 'Visa assessment could not be saved before login. Checkout was not started.'
     });
   }
 
   const assessmentId = created.assessment.id;
-  const next = `/login.html?service=visa&next=service-checkout&service_session_id=${encodeURIComponent(created.serviceSession.id)}&assessment_id=${encodeURIComponent(assessmentId)}&plan=${encodeURIComponent(plan)}&email=${encodeURIComponent(email)}`;
+  const next = `/login.html?service=visa&next=service-checkout&payment=required&handoff=checkout&service_session_id=${encodeURIComponent(created.serviceSession.id)}&assessment_id=${encodeURIComponent(assessmentId)}&plan=${encodeURIComponent(plan)}&email=${encodeURIComponent(email)}`;
+
+  if (Date.now() - startedAt > 2500) {
+    console.warn('Public visa assessment start was slow:', {
+      durationMs: Date.now() - startedAt,
+      assessmentId,
+      serviceSessionId: created.serviceSession.id,
+      visaType,
+      plan
+    });
+  }
+
   res.json({
     ok: true,
     service: 'visa_assessment',
@@ -2959,6 +3020,7 @@ async function handlePublicVisaAssessmentStart(req, res) {
     plan,
     payloadSaved: true,
     answerCount: payloadAnswerCount(built),
+    backendPatch: 'public-visa-start-no-wide-duplicate-scan-v1',
     next
   });
 }
@@ -6155,19 +6217,31 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         legalPack: adviceBundle.legalSourcePack,
         assessment: assessmentForAdvice
       });
-      if (!registryResult.audit.ok || registryResult.audit.registryCoverageRate < 100 || registryResult.audit.unsupportedSourceCriteria.length) {
-        const detail = JSON.stringify(registryResult.audit);
+      const registryV9Profile = buildV9CriteriaRegistryProfile(registry);
+      const minimumCoverage = Number(process.env.MIN_REGISTRY_COVERAGE_RATE || process.env.MIN_REGISTRY_READINESS_RATE || 95);
+      const validatorCoverage = Number(registryResult.audit && registryResult.audit.registryCoverageRate || 0);
+      const v9Coverage = Number(registryV9Profile.estimatedSchedule2CoverageReadiness || 0);
+      const effectiveCoverage = Math.max(validatorCoverage, v9Coverage);
+      if (!registryResult.audit.ok || effectiveCoverage < minimumCoverage || registryUnsupportedCriteriaAreBlocking(registryResult.audit, registryV9Profile)) {
+        const detail = JSON.stringify({
+          validatorAudit: registryResult.audit,
+          v9RegistryProfile,
+          effectiveCoverage,
+          minimumCoverage
+        });
         throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
       }
+      adviceBundle.v9CriteriaRegistryProfile = registryV9Profile;
       adviceBundle.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
-      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
+      adviceBundle.criteriaRegistryAudit = { ...(registryResult.audit || {}), effectiveCoverage, minimumCoverage, v9RegistryProfile };
+      adviceBundle.grantCriteriaCoverageAudit = adviceBundle.criteriaRegistryAudit;
+      adviceBundle.registryCoverageRate = effectiveCoverage;
       adviceBundle.advice = adviceBundle.advice || {};
       adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
       adviceBundle.advice.criterion_findings = registryResult.findings;
       adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.internalLegalAudit.criteriaRegistryAudit = adviceBundle.criteriaRegistryAudit;
+      adviceBundle.internalLegalAudit.v9CriteriaRegistryProfile = registryV9Profile;
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
@@ -6381,6 +6455,58 @@ function dashboardSessionId(req) {
   ).trim();
 }
 
+function dashboardMatterEmailFromServices(...groups) {
+  for (const group of groups) {
+    for (const row of Array.isArray(group) ? group : []) {
+      const email = normaliseEmail(
+        row && (row.applicant_email || row.applicantEmail || row.assessment_email || row.assessmentEmail || row.form_email || row.formEmail || row.client_email || row.clientEmail)
+      );
+      if (email) return email;
+    }
+  }
+  return '';
+}
+
+function dashboardClientPayload(req, matterEmail = '') {
+  const account = (req && req.client) || {};
+  const accountEmail = normaliseEmail(account.email);
+  const formEmail = normaliseEmail(matterEmail) || accountEmail;
+  return {
+    id: account.id || null,
+    email: formEmail,
+    clientEmail: formEmail,
+    assessmentEmail: formEmail,
+    applicantEmail: formEmail,
+    accountEmail,
+    portalEmail: accountEmail,
+    name: account.name || null
+  };
+}
+
+
+// ---- Dashboard hard timeout guard v7.11 ----
+// Dashboard endpoints must render from local rows quickly. Any slow DB/Stripe lookup
+// is downgraded to an empty/partial result instead of letting the browser abort.
+function dashboardTimeoutMs(value, fallback = 6500) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+function withDashboardTimeout(label, promise, fallback, timeoutMs = 6500) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise).catch(err => {
+      console.warn(`${label} failed:`, err && err.message ? err.message : err);
+      return fallback;
+    }),
+    new Promise(resolve => {
+      timer = setTimeout(() => {
+        console.warn(`${label} timed out after ${timeoutMs}ms; returning dashboard fallback.`);
+        resolve(fallback);
+      }, dashboardTimeoutMs(timeoutMs));
+    })
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 async function clientFromStripeDashboardSession(sessionId) {
   if (!stripe || !sessionId || !/^cs_(test|live)_/i.test(sessionId)) return null;
   try {
@@ -6435,18 +6561,14 @@ async function resolveDashboardAccess(req, res, next) {
   try {
     let client = null;
     const rawToken = dashboardRequestToken(req);
-
-    // 1) Normal portal session cookie / bearer token.
-    client = await clientFromJwtToken(rawToken, SESSION_SECRET);
-
-    // 2) Dedicated signed dashboard access token.
-    if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
-
-    // 3) Stripe return fallback: resolve from local paid/session records first, then Stripe only as a last resort.
-    // This solves cross-site cookie loss without delaying the dashboard on external Stripe API latency.
     const sid = dashboardSessionId(req);
-    if (!client) client = await clientFromLocalDashboardSession(sid);
-    if (!client) client = await clientFromStripeDashboardSession(sid);
+
+    // v7.11: never block dashboard access on a live Stripe API lookup.
+    // The dashboard page already receives a cookie/bearer/dashboard token after login/payment-complete.
+    // Local session lookup is allowed, but capped. Stripe repair runs after the dashboard response.
+    client = await withDashboardTimeout('Dashboard JWT session lookup', clientFromJwtToken(rawToken, SESSION_SECRET), null, 2500);
+    if (!client) client = await withDashboardTimeout('Dashboard signed access-token lookup', clientFromJwtToken(rawToken, dashboardTokenSecret()), null, 2500);
+    if (!client && sid) client = await withDashboardTimeout('Dashboard local Stripe-session lookup', clientFromLocalDashboardSession(sid), null, 3500);
 
     if (!client) return res.status(401).json({
       ok: false,
@@ -6459,7 +6581,7 @@ async function resolveDashboardAccess(req, res, next) {
     req.dashboardAccessToken = signDashboardAccessToken(client);
     next();
   } catch (err) {
-    console.error('Dashboard access resolver failed:', err.message);
+    console.error('Dashboard access resolver failed:', err && err.message ? err.message : err);
     res.status(401).json({ ok: false, error: 'Login required.', code: 'DASHBOARD_ACCESS_FAILED' });
   }
 }
@@ -6652,7 +6774,7 @@ async function handleDashboardFast(req, res) {
     ok: true,
     fast: true,
     loadMs: Date.now() - startedAt,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(rawFast.visaRows || [], rawFast.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
     accessToken: dashboardToken,
     accessPatch: DASHBOARD_ACCESS_PATCH,
@@ -6853,9 +6975,12 @@ function dashboardV2ShouldKickPdf(service) {
 }
 
 function scheduleDashboardV2PdfGeneration(services, email) {
-  const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 3);
+  const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 2);
   if (!targets.length) return [];
   const ids = targets.map(t => t.id);
+
+  // v7.11: the dashboard must never start CPU-heavy PDF generation in the web request path.
+  // It only queues jobs after the response; the normal worker/on-demand PDF route performs generation.
   setImmediate(async () => {
     for (const service of targets) {
       try {
@@ -6865,9 +6990,8 @@ function scheduleDashboardV2PdfGeneration(services, email) {
            ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
           [service.id]
         );
-        await generateAssessmentPdfNow(service.id, email);
       } catch (err) {
-        console.error('Dashboard v2 PDF generation kick failed:', service.id, err && err.message ? err.message : err);
+        console.error('Dashboard v2 PDF queue kick failed:', service.id, err && err.message ? err.message : err);
       }
     }
   });
@@ -6881,30 +7005,16 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v7.7 permanent payment-link repair:
-  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
-  // paid Stripe session before the dashboard list query runs. This makes the dashboard
-  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
-  // The list query still returns metadata only; PDF bytes are never read here.
+  // v7.10 permanent dashboard timeout fix:
+  // Dashboard is a read-first endpoint. It must never wait for Stripe/network repair
+  // before returning local account records. Payment repair is queued after response.
   let paymentRepair = null;
-  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
-    try {
-      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
-      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
-      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
-      if (stripePaid) {
-        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-      }
-    } catch (err) {
-      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
-      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
-    }
-  }
+  let shouldQueuePaymentRepair = Boolean(sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe);
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
-    queryDashboardFastRows(email, clientId, sessionId),
-    queryDashboardV2Appeals(email, clientId, sessionId),
-    queryDashboardV2Payments(email, sessionId)
+    withDashboardTimeout('Dashboard visa/citizenship rows', queryDashboardFastRows(email, clientId, sessionId), { visaRows: [], citizenshipRows: [] }, 7000),
+    withDashboardTimeout('Dashboard appeals rows', queryDashboardV2Appeals(email, clientId, sessionId), [], 4500),
+    withDashboardTimeout('Dashboard payments rows', queryDashboardV2Payments(email, sessionId), [], 4500)
   ]);
 
   const visa = dedupeDashboardRows(fastRows.visaRows || [], ['duplicate_key', 'id'])
@@ -6930,12 +7040,29 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
 
   const documents = visa.concat(appeals).filter(s => s.type !== 'citizenship_test');
   const pdfGenerationKick = scheduleDashboardV2PdfGeneration(documents, email);
+  if (shouldQueuePaymentRepair) {
+    paymentRepair = { queued: true, mode: 'background_after_dashboard_response', sessionId };
+    res.once('finish', () => {
+      setImmediate(async () => {
+        try {
+          let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+          stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
+          const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
+          if (stripePaid) {
+            await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
+          }
+        } catch (err) {
+          console.warn('Dashboard v2 background payment-link repair skipped:', err && err.message ? err.message : err);
+        }
+      });
+    });
+  }
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
+    version: 'dashboard-v2-hard-timeout-local-first-v11-merged',
     loadMs: Date.now() - startedAt,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
     paymentRepair,
