@@ -409,10 +409,46 @@ function extractFactsObject(assessment, adviceBundle) {
 }
 
 function inferStream(assessment, adviceBundle, advice) {
-  const blob = JSON.stringify({ assessment, adviceBundle, advice }).toLowerCase();
-  if (/labour agreement|labor agreement|la stream|agreement concession/.test(blob)) return 'Labour Agreement';
-  if (/direct entry|de stream|skills assessment/.test(blob)) return 'Direct Entry';
-  if (/temporary residence transition|\btrt\b|457|482/.test(blob)) return 'Temporary Residence Transition';
+  // Registry/knowledgebase-controlled PDFs must never infer stream by scanning
+  // stale assessment payload text. The previous implementation scanned the whole
+  // object blob, so a stale value such as "Labour Agreement" inside
+  // registryControlledPathway.requestedPathway could override the registry label.
+  const controlled =
+    adviceBundle?.registryControlledPathway?.label ||
+    advice?.registryControlledPathway?.label ||
+    adviceBundle?.legalSourcePack?.registryControlledPathway?.label ||
+    adviceBundle?.legalSourcePack?.selectedStream ||
+    advice?.selectedStream ||
+    advice?.stream ||
+    advice?.pathway ||
+    adviceBundle?.selectedStream ||
+    adviceBundle?.stream ||
+    adviceBundle?.pathway ||
+    '';
+  const clean = cleanText(controlled, '').replace(/\s+Stream$/i, '').trim();
+  if (clean) return clean;
+
+  const subclass = cleanText(advice?.subclass || adviceBundle?.subclass || assessment?.visa_type || '');
+  const sc = String(subclass || '').replace(/[^0-9]/g, '');
+  const defaults = {
+    '300': 'Prospective Marriage',
+    '309': 'Partner',
+    '820': 'Partner',
+    '801': 'Partner',
+    '100': 'Partner',
+    '866': 'Protection',
+    '785': 'Temporary Protection',
+    '790': 'Safe Haven Enterprise',
+    '189': 'Skilled Independent',
+    '190': 'Skilled Nominated',
+    '491': 'Skilled Work Regional',
+    '500': 'Student',
+    '590': 'Student Guardian',
+    '600': 'Visitor',
+    '602': 'Medical Treatment'
+  };
+  if (defaults[sc]) return defaults[sc];
+
   return 'To be confirmed';
 }
 
@@ -937,6 +973,18 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
       const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], '186'));
       const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
+      if (adviceBundle && adviceBundle.genericFallbackAllowed !== false) {
+        throw new Error('PDF blocked: registry-controlled advice bundle was not enforced before rendering.');
+      }
+      if (!adviceBundle.registryControlledPathway && !(advice && advice.registryControlledPathway)) {
+        throw new Error('PDF blocked: registry-controlled pathway missing before rendering.');
+      }
+      if (adviceBundle && adviceBundle.genericFallbackAllowed !== false) {
+        throw new Error('PDF blocked: registry-controlled advice bundle was not enforced before rendering.');
+      }
+      if (!adviceBundle.registryControlledPathway && !(advice && advice.registryControlledPathway)) {
+        throw new Error('PDF blocked: registry-controlled pathway missing before rendering.');
+      }
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const title = `Subclass ${subclass} Employer Nomination Scheme professional advice letter`;
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
@@ -1860,8 +1908,12 @@ If the evidence remains consistent after review, the matter may progress to fina
 // structure instead of the former criteria-engine/report layout.
 function bmPathwayLabel(subclass, stream) {
   const s = cleanText(subclass || '');
-  const st = cleanText(stream || '');
-  return `Subclass ${s}${st ? ' — ' + st + ' Stream' : ''}`;
+  const st = cleanText(stream || '').replace(/\s+Stream$/i, '').trim();
+  if (!st) return `Subclass ${s}`;
+  const sc = String(s || '').replace(/[^0-9]/g, '');
+  const family = v11VisaFamily(sc);
+  const suffix = family === 'employer' ? ' Stream' : '';
+  return `Subclass ${s} — ${st}${suffix}`;
 }
 
 function bmAgreementMatter(subclass, stream) {
@@ -2340,14 +2392,36 @@ function bmWriteNominationEmployerAssessment(doc) {
 function bmWriteApplicantEligibilityAssessment(doc, family) {
   writeTitle(doc, family === 'employer' ? '6. Applicant-side eligibility assessment' : '4. Applicant-side eligibility assessment', { gold: true });
   writePara(doc, 'The applicant-side criteria must be verified independently. A supportable pathway does not remove the need to verify identity, lawful status, personal eligibility, evidence consistency and public-interest matters.', { size: 9.5 });
-  bmWriteCompactTable(doc, ['Area', 'Assessment required', 'Required evidence'], [
-    ['Identity', 'Reconcile names, date of birth, passports and prior Department records.', 'Passport, birth record where relevant, name-change documents and visa records.'],
-    ['Age', 'Confirm the standard age position or a lawful concession where relevant.', 'Passport and concession evidence if relied upon.'],
-    ['English', 'Verify English test, passport exemption or lawful concession where relevant.', 'Original test results, passport evidence or concession evidence.'],
-    ['Skills / qualifications', 'Verify qualifications, experience and any lawful skills concession.', 'Qualifications, references, contracts, payslips, tax/super records and concession evidence.'],
-    ['Registration / licensing', 'Confirm any registration, licence or professional membership required for the role.', 'Registration certificate, licence, membership evidence and occupation-specific records.'],
-    ['Visa status', 'Confirm current location, current visa, expiry, bridging visa implications and conditions.', 'VEVO, grant notices, visa history and condition records.']
-  ], [110, 205, 180]);
+
+  let rows;
+  if (family === 'partner') {
+    rows = [
+      ['Identity', 'Reconcile names, date of birth, passports and prior Department records.', 'Passport, birth record where relevant, name-change documents and visa records.'],
+      ['Relationship evidence', 'Verify the claimed relationship history, commitment, contact, future intention and consistency of statements.', 'Relationship statements, communication records, photographs, travel records and supporting witness material where relevant.'],
+      ['Sponsor eligibility', 'Confirm sponsor identity, status, prior sponsorship limitations and any relevant character/sponsorship issues.', 'Sponsor passport/citizenship or residence evidence, sponsorship history and police/character material where required.'],
+      ['Marriage timing / intention', 'For Subclass 300, confirm the intention and legal capacity to marry within the required period.', 'Notice/booking evidence if available, divorce/death certificates if relevant and evidence of genuine intention.'],
+      ['Visa status and location', 'Confirm current location, current visa, expiry, bridging visa implications and conditions.', 'VEVO, grant notices, visa history and condition records.'],
+      ['Public interest', 'Check health, character, integrity, prior refusals/cancellations and family-member issues.', 'Health examinations, police certificates, Department records and family-member documents where relevant.']
+    ];
+  } else if (family === 'employer') {
+    rows = [
+      ['Identity', 'Reconcile names, date of birth, passports and prior Department records.', 'Passport, birth record where relevant, name-change documents and visa records.'],
+      ['Age', 'Confirm the standard age position or a lawful concession where relevant.', 'Passport and concession evidence if relied upon.'],
+      ['English', 'Verify English test, passport exemption or lawful concession where relevant.', 'Original test results, passport evidence or concession evidence.'],
+      ['Skills / qualifications', 'Verify qualifications, experience and any lawful skills concession.', 'Qualifications, references, contracts, payslips, tax/super records and concession evidence.'],
+      ['Registration / licensing', 'Confirm any registration, licence or professional membership required for the role.', 'Registration certificate, licence, membership evidence and occupation-specific records.'],
+      ['Visa status', 'Confirm current location, current visa, expiry, bridging visa implications and conditions.', 'VEVO, grant notices, visa history and condition records.']
+    ];
+  } else {
+    rows = [
+      ['Identity', 'Reconcile names, date of birth, passports and prior Department records.', 'Passport, birth record where relevant, name-change documents and visa records.'],
+      ['Pathway eligibility', 'Verify the subclass-specific threshold criteria identified in the criteria registry.', 'Original documents mapped to each Schedule 1 and Schedule 2 criterion.'],
+      ['Visa status', 'Confirm current location, current visa, expiry, bridging visa implications and conditions.', 'VEVO, grant notices, visa history and condition records.'],
+      ['Public interest', 'Check health, character, integrity, prior refusals/cancellations and family-member issues.', 'Health examinations, police certificates and Department records where relevant.']
+    ];
+  }
+
+  bmWriteCompactTable(doc, ['Area', 'Assessment required', 'Required evidence'], rows, [110, 205, 180]);
 }
 
 function bmWriteSalaryAmsrEmploymentConditions(doc) {
@@ -2419,6 +2493,12 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
       const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], 'Visa'));
       const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
+      if (adviceBundle && adviceBundle.genericFallbackAllowed !== false) {
+        throw new Error('PDF blocked: registry-controlled advice bundle was not enforced before rendering.');
+      }
+      if (!adviceBundle.registryControlledPathway && !(advice && advice.registryControlledPathway)) {
+        throw new Error('PDF blocked: registry-controlled pathway missing before rendering.');
+      }
       const family = v11VisaFamily(subclass);
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
       const pathwayLabel = bmPathwayLabel(subclass, stream);
