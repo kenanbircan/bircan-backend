@@ -1364,6 +1364,7 @@ async function runPostgresIdempotencyRepair() {
           AND COALESCE(client_email, applicant_email, '') <> ''
           AND visa_type IS NOT NULL
           AND selected_plan IS NOT NULL
+          AND COALESCE(payment_status, 'unpaid') <> 'paid'
       )
       UPDATE assessments keep
          SET payment_status = CASE WHEN dup.payment_status='paid' THEN 'paid' ELSE keep.payment_status END,
@@ -1410,6 +1411,7 @@ async function runPostgresIdempotencyRepair() {
           AND COALESCE(client_email, applicant_email, '') <> ''
           AND visa_type IS NOT NULL
           AND selected_plan IS NOT NULL
+          AND COALESCE(payment_status, 'unpaid') <> 'paid'
       )
       UPDATE service_sessions ss SET service_ref=r.keep_id, updated_at=now()
       FROM ranked r
@@ -1439,6 +1441,7 @@ async function runPostgresIdempotencyRepair() {
           AND COALESCE(client_email, applicant_email, '') <> ''
           AND visa_type IS NOT NULL
           AND selected_plan IS NOT NULL
+          AND COALESCE(payment_status, 'unpaid') <> 'paid'
       )
       UPDATE payments p SET service_ref=r.keep_id, updated_at=now()
       FROM ranked r
@@ -1468,6 +1471,7 @@ async function runPostgresIdempotencyRepair() {
           AND COALESCE(client_email, applicant_email, '') <> ''
           AND visa_type IS NOT NULL
           AND selected_plan IS NOT NULL
+          AND COALESCE(payment_status, 'unpaid') <> 'paid'
       )
       UPDATE pdf_jobs j SET assessment_id=r.keep_id, updated_at=now()
       FROM ranked r
@@ -1517,6 +1521,7 @@ async function runPostgresIdempotencyRepair() {
           AND COALESCE(client_email, applicant_email, '') <> ''
           AND visa_type IS NOT NULL
           AND selected_plan IS NOT NULL
+          AND COALESCE(payment_status, 'unpaid') <> 'paid'
       )
       DELETE FROM assessments a USING ranked r WHERE a.id=r.id AND r.rn > 1
     `);
@@ -1527,11 +1532,20 @@ async function runPostgresIdempotencyRepair() {
 
 async function installPostgresIdempotencyConstraints() {
   await runPostgresIdempotencyRepair();
+
+  // v7.12 permanent handoff rule:
+  // Idempotency must stop duplicate unpaid/draft submissions, but it must not make a
+  // completed paid assessment globally unique forever. The old index blocked a new
+  // checkout when the same email/subclass/plan/fingerprint had already been paid.
+  await query(`DROP INDEX IF EXISTS idx_assessments_idempotency_unique`);
   await query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_idempotency_unique
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_idempotency_unpaid_unique
     ON assessments (lower(client_email), visa_type, selected_plan, submission_fingerprint)
-    WHERE submission_fingerprint IS NOT NULL AND client_email IS NOT NULL
+    WHERE submission_fingerprint IS NOT NULL
+      AND client_email IS NOT NULL
+      AND COALESCE(payment_status, 'unpaid') <> 'paid'
   `);
+
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_unique_service_ref
     ON service_sessions (service_type, service_ref)
@@ -1924,7 +1938,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.3-production-email-lock-admin-route-removed',
+    version: '12.2.5-v7-12-paid-idempotency-handoff-final',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2764,7 +2778,9 @@ async function handleAssessmentSubmit(req, res) {
       `INSERT INTO assessments (id, client_id, client_email, applicant_email, applicant_name, visa_type, selected_plan, active_plan, status, payment_status, form_payload, submission_fingerprint, pdf_bytes, pdf_generated_at, generation_error)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'submitted','unpaid',$8,$9,NULL,NULL,NULL)
        ON CONFLICT (lower(client_email), visa_type, selected_plan, submission_fingerprint)
-       WHERE submission_fingerprint IS NOT NULL AND client_email IS NOT NULL
+       WHERE submission_fingerprint IS NOT NULL
+         AND client_email IS NOT NULL
+         AND COALESCE(payment_status, 'unpaid') <> 'paid'
        DO UPDATE SET
          client_id=COALESCE(assessments.client_id, EXCLUDED.client_id),
          applicant_email=COALESCE(assessments.applicant_email, EXCLUDED.applicant_email),
@@ -2900,7 +2916,9 @@ async function handlePublicVisaAssessmentStart(req, res) {
            form_payload, submission_fingerprint, pdf_bytes, pdf_generated_at, generation_error
          ) VALUES ($1,NULL,$2,$2,$3,$4,$5,$5,'submitted','unpaid',$6,$7,NULL,NULL,NULL)
          ON CONFLICT (lower(client_email), visa_type, selected_plan, submission_fingerprint)
-         WHERE submission_fingerprint IS NOT NULL AND client_email IS NOT NULL
+         WHERE submission_fingerprint IS NOT NULL
+           AND client_email IS NOT NULL
+           AND COALESCE(payment_status, 'unpaid') <> 'paid'
          DO UPDATE SET
            applicant_email=COALESCE(assessments.applicant_email, EXCLUDED.applicant_email),
            applicant_name=COALESCE(assessments.applicant_name, EXCLUDED.applicant_name),
@@ -2911,7 +2929,7 @@ async function handlePublicVisaAssessmentStart(req, res) {
         [newAssessmentId, email, built.meta.applicantName || null, visaType, plan, built, submissionFingerprint]
       );
       const assessment = assessmentRows.rows[0];
-      if (!assessment || assessment.id !== newAssessmentId) {
+      if (!assessment) {
         throw Object.assign(new Error('The assessment record was not saved. Checkout has been stopped.'), { statusCode: 500 });
       }
 
