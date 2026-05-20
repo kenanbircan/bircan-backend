@@ -6252,207 +6252,217 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
   const requestedId = String(assessmentId || '').trim();
   const force = Boolean(options && options.force);
 
-  return tx(async (client) => {
-    let rows = (await client.query(
-      `SELECT * FROM assessments WHERE id=$1 ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} FOR UPDATE`,
-      accountEmail ? [requestedId, accountEmail] : [requestedId]
+  async function markPdfGenerationFailed(id, message) {
+    if (!id) return;
+    await query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [message, id]).catch(() => null);
+    await query(
+      `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
+       VALUES ($1,'failed',$2,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status='failed', last_error=$2, updated_at=now()`,
+      [id, message]
+    ).catch(() => null);
+  }
+
+  // v7.12 PDF worker hardening:
+  // Do not hold a Postgres transaction or row lock while legal advice, registry,
+  // knowledgebase and PDF rendering work is performed. Long rendering work under
+  // FOR UPDATE was the cause of "PDF generation failed: Query read timeout".
+  let rows = (await query(
+    `SELECT * FROM assessments WHERE id=$1 ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} LIMIT 1`,
+    accountEmail ? [requestedId, accountEmail] : [requestedId]
+  )).rows;
+
+  if (!rows[0] && /^sub_\d+_[a-z0-9]+$/i.test(requestedId)) {
+    const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\_%';
+    rows = (await query(
+      `SELECT * FROM assessments WHERE id LIKE $1 ESCAPE '\\' ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} ORDER BY created_at DESC LIMIT 1`,
+      accountEmail ? [likePattern, accountEmail] : [likePattern]
     )).rows;
+  }
 
-    // Older dashboard guards sometimes extracted only a partial reference such as
-    // sub_1777591587924_186 instead of sub_1777591587924_186_078247b3.
-    // Resolve that safely inside the same logged-in account.
-    if (!rows[0] && /^sub_\d+_[a-z0-9]+$/i.test(requestedId)) {
-      const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\_%';
-      rows = (await client.query(
-        `SELECT * FROM assessments WHERE id LIKE $1 ESCAPE '\\' ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-        accountEmail ? [likePattern, accountEmail] : [likePattern]
-      )).rows;
-    }
+  const assessment = rows[0];
+  if (!assessment) throw new Error(`Assessment was not found for reference ${requestedId}.`);
+  assessmentId = assessment.id;
 
-    const assessment = rows[0];
-    if (!assessment) throw new Error(`Assessment was not found for reference ${requestedId}.`);
-    assessmentId = assessment.id;
-    if (assessment.payment_status !== 'paid') throw new Error('Payment is not verified for this assessment.');
-    if (assessment.release_at && new Date(assessment.release_at).getTime() > Date.now() && !force) {
-      const seconds = Math.max(0, Math.ceil((new Date(assessment.release_at).getTime() - Date.now()) / 1000));
-      const msg = `This ${normalisePlanLabel(assessment.selected_plan || assessment.active_plan)} assessment is locked until release. Time remaining: ${formatDurationSeconds(seconds)}.`;
-      await client.query(`UPDATE pdf_jobs SET status='queued', run_after=$1, last_error=NULL, updated_at=now() WHERE assessment_id=$2`, [assessment.release_at, assessmentId]);
-      throw new Error(msg);
-    }
-    if (hasIssuedPdfBytes(assessment.pdf_bytes) && !force) {
-      const verified = await verifyIssuedPdfSaved(client, assessmentId);
-      await client.query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]);
-      return toPublicAssessment(verified);
-    }
+  if (assessment.payment_status !== 'paid') throw new Error('Payment is not verified for this assessment.');
 
-    if (assessment.pdf_bytes && !hasIssuedPdfBytes(assessment.pdf_bytes)) {
-      await client.query(
-        `UPDATE assessments
-         SET status='pdf_queued', pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL,
-             pdf_sha256=NULL, pdf_generated_at=NULL,
-             generation_error='Stored PDF was empty or invalid and has been cleared.', updated_at=now()
-         WHERE id=$1`,
-        [assessmentId]
-      );
-      assessment.pdf_bytes = null;
-    }
+  if (assessment.release_at && new Date(assessment.release_at).getTime() > Date.now() && !force) {
+    const seconds = Math.max(0, Math.ceil((new Date(assessment.release_at).getTime() - Date.now()) / 1000));
+    const msg = `This ${normalisePlanLabel(assessment.selected_plan || assessment.active_plan)} assessment is locked until release. Time remaining: ${formatDurationSeconds(seconds)}.`;
+    await query(
+      `INSERT INTO pdf_jobs (assessment_id, status, run_after, last_error, created_at, updated_at)
+       VALUES ($1,'queued',$2,NULL,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=$2, last_error=NULL, updated_at=now()`,
+      [assessmentId, assessment.release_at]
+    ).catch(() => null);
+    throw new Error(msg);
+  }
 
-    if (force && assessment.pdf_bytes) {
-      await client.query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
-      assessment.pdf_bytes = null;
-    }
-    // Permanent grant-criteria enforcement fix:
-    // paid/released matters must not use the former fast/preliminary PDF shortcut.
-    // Every issued visa assessment PDF must pass through generateMigrationAdvice(),
-    // the knowledgebase legal pack, the criteria registry, and the registry-backed
-    // grant criteria coverage audit before pdf_bytes are saved.
+  if (hasIssuedPdfBytes(assessment.pdf_bytes) && !force) {
+    const verified = await verifyIssuedPdfSaved({ query }, assessmentId);
+    await query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]).catch(() => null);
+    return toPublicAssessment(verified);
+  }
 
-    if (!payloadLooksUsable(assessment.form_payload)) {
-      const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
-      await client.query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [msg, assessmentId]);
-      await client.query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [msg, assessmentId]);
-      throw new Error(msg);
-    }
-
-    await client.query(
-      `UPDATE assessments SET status='pdf_generating', generation_attempts=COALESCE(generation_attempts,0)+1, generation_locked_at=now(), generation_error=NULL, updated_at=now() WHERE id=$1`,
+  if (assessment.pdf_bytes && !hasIssuedPdfBytes(assessment.pdf_bytes)) {
+    await query(
+      `UPDATE assessments
+       SET status='pdf_queued', pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL,
+           pdf_sha256=NULL, pdf_generated_at=NULL,
+           generation_error='Stored PDF was empty or invalid and has been cleared.', updated_at=now()
+       WHERE id=$1`,
       [assessmentId]
     );
+    assessment.pdf_bytes = null;
+  }
 
-    let pdf;
-    try {
-      // Knowledgebase enforcement gate:
-      // Every migration advice PDF must be generated from generateMigrationAdvice().
-      // That function loads the local knowledgebase, applies the subclass matrix and
-      // returns an adviceBundle containing legalSourcePack. The older delegate/pdf
-      // shortcut is intentionally not used here because it can produce a polished
-      // narrative PDF without proving that the knowledgebase was applied.
-      const assessmentForAdvice = attachEvidenceValidation(assessment);
-      const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
+  if (force && assessment.pdf_bytes) {
+    await query(`UPDATE assessments SET pdf_bytes=NULL, pdf_mime=NULL, pdf_filename=NULL, pdf_sha256=NULL, pdf_generated_at=NULL, updated_at=now() WHERE id=$1`, [assessmentId]);
+    assessment.pdf_bytes = null;
+  }
 
-      if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
-        throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
-      }
-      if (!adviceBundle.subclassFirstGate || !adviceBundle.legalSourcePack.subclass) {
-        throw new Error('Subclass-first legal gate missing. PDF generation blocked.');
-      }
-      if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) {
-        throw new Error('Legal authority hierarchy was not enforced. PDF generation blocked.');
-      }
-      if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
-        throw new Error('Legal version lock missing. PDF generation blocked.');
-      }
-      if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
-        throw new Error('Evidence sufficiency matrix missing. PDF generation blocked.');
-      }
-      if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
-        throw new Error('Internal legal audit missing. PDF generation blocked.');
-      }
+  if (!payloadLooksUsable(assessment.form_payload)) {
+    const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
+    await markPdfGenerationFailed(assessmentId, msg);
+    throw new Error(msg);
+  }
 
-      // Registry coverage enforcement: build one visible finding per mandatory or
-      // triggered registry criterion. This is the missing bridge between the 98%+
-      // criteriaRegistry JSON files and the actual client PDF.
-      const registrySubclass = String(adviceBundle.subclass || adviceBundle.advice?.subclass || assessmentForAdvice.visa_type || assessment.visa_type || '').replace(/[^0-9]/g, '');
-      const registry = loadCriteriaRegistry(registrySubclass);
-      const registryResult = buildRegistryBackedFindings({
-        registry,
-        adviceBundle,
-        legalPack: adviceBundle.legalSourcePack,
-        assessment: assessmentForAdvice
-      });
+  await query(
+    `UPDATE assessments
+     SET status='pdf_generating',
+         generation_attempts=COALESCE(generation_attempts,0)+1,
+         generation_locked_at=now(),
+         generation_error=NULL,
+         updated_at=now()
+     WHERE id=$1`,
+    [assessmentId]
+  );
 
-      enforceRegistryKnowledgebaseAdviceControls({
-        assessment: assessmentForAdvice,
-        adviceBundle,
-        registry,
-        registryResult
-      });
+  let pdf;
+  try {
+    const assessmentForAdvice = attachEvidenceValidation(assessment);
+    const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
 
-      // Professional issue gate, not an impossible perfection gate.
-      // The registry project target is 98%+ grant-criteria coverage. The former
-      // condition treated anything below 100% as a failed PDF, which blocked paid
-      // matters even where the advice bundle, legal-source pack and visible
-      // criterion findings were otherwise present.
-      const audit = registryResult.audit || {};
-      const registryCoverageRate = Number(audit.registryCoverageRate || 0);
-      const requiredCoverageRate = Math.max(0, Math.min(100, Number(process.env.GRANT_CRITERIA_COVERAGE_THRESHOLD || 98)));
-      const unsupportedSourceCriteria = Array.isArray(audit.unsupportedSourceCriteria) ? audit.unsupportedSourceCriteria : [];
-      const mandatoryCriteriaMissing = [
-        audit.mandatoryCriteriaMissing,
-        audit.missingMandatoryCriteria,
-        audit.uncoveredMandatoryCriteria,
-        audit.unmappedMandatoryCriteria
-      ].filter(Array.isArray).flat();
-
-      if (registryCoverageRate < requiredCoverageRate || mandatoryCriteriaMissing.length) {
-        const detail = JSON.stringify({
-          registryCoverageRate,
-          requiredCoverageRate,
-          unsupportedSourceCriteria,
-          mandatoryCriteriaMissing,
-          auditOk: audit.ok === true
-        });
-        throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
-      }
-
-      // Source-support gaps are audit warnings, not a PDF issuance kill-switch.
-      // The legal-source pack gate above already confirms that the knowledgebase
-      // was loaded and version-locked. Blocking a paid client PDF because a
-      // registry item asks for a source category not represented in the loaded
-      // pack strands valid advice at 87-90% even though every mandatory criterion
-      // has a visible finding. Keep the warning in the audit for agent review.
-      if (unsupportedSourceCriteria.length) {
-        registryResult.audit.sourceSupportWarning = true;
-        registryResult.audit.sourceSupportWarningMessage = 'One or more registry criteria requested additional source-category support. This is recorded for agent audit but does not block issue of the preliminary advice letter.';
-      }
-      adviceBundle.fullCriteriaRegistryMatrix = registryResult.findings;
-      adviceBundle.fullCriteriaRegistryMatrixCount = registryResult.findings.length;
-      adviceBundle.visibleCriteriaMatrixRequired = true;
-      adviceBundle.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
-      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
-      adviceBundle.advice = adviceBundle.advice || {};
-      adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.advice.criterion_findings = registryResult.findings;
-      adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
-      adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
-
-      try {
-        const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
-        fs.mkdirSync(auditDir, { recursive: true });
-        fs.writeFileSync(path.join(auditDir, `${assessmentForAdvice.id || assessmentId}-legal-audit.json`), JSON.stringify(adviceBundle.internalLegalAudit, null, 2));
-      } catch (auditErr) {
-        if (String(process.env.REQUIRE_LEGAL_AUDIT_FILE || 'false').toLowerCase() === 'true') throw auditErr;
-        console.warn('Internal legal audit file write skipped safely:', auditErr.message);
-      }
-
-      const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
-      pdf = await buildAssessmentPdfBuffer(
-        assessmentForAdvice,
-        enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
-      );
-    } catch (err) {
-      await client.query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [err.message, assessmentId]);
-      await client.query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [err.message, assessmentId]);
-      throw err;
+    if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
+      throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
+    }
+    if (!adviceBundle.subclassFirstGate || !adviceBundle.legalSourcePack.subclass) {
+      throw new Error('Subclass-first legal gate missing. PDF generation blocked.');
+    }
+    if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) {
+      throw new Error('Legal authority hierarchy was not enforced. PDF generation blocked.');
+    }
+    if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
+      throw new Error('Legal version lock missing. PDF generation blocked.');
+    }
+    if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
+      throw new Error('Evidence sufficiency matrix missing. PDF generation blocked.');
+    }
+    if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
+      throw new Error('Internal legal audit missing. PDF generation blocked.');
     }
 
-    const filename = `Bircan-${assessment.visa_type}-${assessment.id}-grant-criteria-advice.pdf`;
-    const hash = sha256(pdf);
+    const registrySubclass = String(adviceBundle.subclass || adviceBundle.advice?.subclass || assessmentForAdvice.visa_type || assessment.visa_type || '').replace(/[^0-9]/g, '');
+    const registry = loadCriteriaRegistry(registrySubclass);
+    const registryResult = buildRegistryBackedFindings({
+      registry,
+      adviceBundle,
+      legalPack: adviceBundle.legalSourcePack,
+      assessment: assessmentForAdvice
+    });
+
+    enforceRegistryKnowledgebaseAdviceControls({
+      assessment: assessmentForAdvice,
+      adviceBundle,
+      registry,
+      registryResult
+    });
+
+    const audit = registryResult.audit || {};
+    const registryCoverageRate = Number(audit.registryCoverageRate || 0);
+    const requiredCoverageRate = Math.max(0, Math.min(100, Number(process.env.GRANT_CRITERIA_COVERAGE_THRESHOLD || 98)));
+    const unsupportedSourceCriteria = Array.isArray(audit.unsupportedSourceCriteria) ? audit.unsupportedSourceCriteria : [];
+    const mandatoryCriteriaMissing = [
+      audit.mandatoryCriteriaMissing,
+      audit.missingMandatoryCriteria,
+      audit.uncoveredMandatoryCriteria,
+      audit.unmappedMandatoryCriteria
+    ].filter(Array.isArray).flat();
+
+    if (registryCoverageRate < requiredCoverageRate || mandatoryCriteriaMissing.length) {
+      const detail = JSON.stringify({
+        registryCoverageRate,
+        requiredCoverageRate,
+        unsupportedSourceCriteria,
+        mandatoryCriteriaMissing,
+        auditOk: audit.ok === true
+      });
+      throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
+    }
+
+    if (unsupportedSourceCriteria.length) {
+      registryResult.audit.sourceSupportWarning = true;
+      registryResult.audit.sourceSupportWarningMessage = 'One or more registry criteria requested additional source-category support. This is recorded for agent audit but does not block issue of the preliminary advice letter.';
+    }
+
+    adviceBundle.fullCriteriaRegistryMatrix = registryResult.findings;
+    adviceBundle.fullCriteriaRegistryMatrixCount = registryResult.findings.length;
+    adviceBundle.visibleCriteriaMatrixRequired = true;
+    adviceBundle.grantCriteriaFindings = registryResult.findings;
+    adviceBundle.criteriaRegistryAudit = registryResult.audit;
+    adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
+    adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
+    adviceBundle.advice = adviceBundle.advice || {};
+    adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
+    adviceBundle.advice.criterion_findings = registryResult.findings;
+    adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
+    adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
+    adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
+
+    try {
+      const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
+      fs.mkdirSync(auditDir, { recursive: true });
+      fs.writeFileSync(path.join(auditDir, `${assessmentForAdvice.id || assessmentId}-legal-audit.json`), JSON.stringify(adviceBundle.internalLegalAudit, null, 2));
+    } catch (auditErr) {
+      if (String(process.env.REQUIRE_LEGAL_AUDIT_FILE || 'false').toLowerCase() === 'true') throw auditErr;
+      console.warn('Internal legal audit file write skipped safely:', auditErr.message);
+    }
+
+    const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
+    pdf = await buildAssessmentPdfBuffer(
+      assessmentForAdvice,
+      enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
+    );
+  } catch (err) {
+    await markPdfGenerationFailed(assessmentId, err.message);
+    throw err;
+  }
+
+  const filename = `Bircan-${assessment.visa_type}-${assessment.id}-grant-criteria-advice.pdf`;
+  const hash = sha256(pdf);
+
+  const saved = await tx(async (client) => {
     const { rows: updatedRows } = await client.query(
       `UPDATE assessments
        SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
            pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
        WHERE id=$4
-       RETURNING id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan, status, payment_status, pdf_filename, pdf_sha256, pdf_generated_at, created_at, updated_at, true AS has_pdf`,
+       RETURNING id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan,
+                 status, payment_status, pdf_bytes, pdf_filename, pdf_sha256, pdf_generated_at, created_at, updated_at,
+                 true AS has_pdf`,
       [pdf, filename, hash, assessmentId]
     );
-    const saved = await verifyIssuedPdfSaved(client, assessmentId);
-    await client.query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]);
-    return toPublicAssessment(saved);
+    await client.query(
+      `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
+       VALUES ($1,'completed',NULL,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status='completed', last_error=NULL, locked_at=NULL, updated_at=now()`,
+      [assessmentId]
+    ).catch(() => null);
+    return updatedRows[0];
   });
+
+  const verified = await verifyIssuedPdfSaved({ query }, assessmentId);
+  return toPublicAssessment(verified || saved);
 }
 
 function toPublicAssessment(a) {
