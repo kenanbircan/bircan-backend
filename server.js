@@ -131,11 +131,8 @@ function buildFinalPdfUrl(id, token = '') {
 const BIRCAN_PAYMENT_CHECKOUT_REUSE_PATCH = 'public-start-never-reuse-paid-assessment-v1';
 
 // Payment finalisation must be fast. By default it only records payment and queues PDF generation.
-// Production safety: payment finalisation must never wait for PDF generation.
-// The PDF worker is queued/backgrounded after Stripe is verified so payment-complete
-// can return quickly and redirect to the dashboard. Do not read an environment flag
-// here; a stale Render variable must not make the return page block until PDF output.
-const VERIFY_PAYMENT_WAIT_FOR_PDF = false;
+// Set VERIFY_PAYMENT_WAIT_FOR_PDF=true only for local debugging.
+const VERIFY_PAYMENT_WAIT_FOR_PDF = String(process.env.VERIFY_PAYMENT_WAIT_FOR_PDF || 'false').toLowerCase() === 'true';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || [
   'https://bircanmigration.au',
@@ -4460,7 +4457,7 @@ app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4492,7 +4489,7 @@ app.get('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
   if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   const email = normaliseEmail((session.metadata || {}).client_email || session.customer_email);
   let client = null;
@@ -4995,7 +4992,7 @@ async function finaliseStripePayment(req, res) {
 
   let session = await stripe.checkout.sessions.retrieve(sessionId);
   session = await normalisePaidStripeSessionForAttachment(session);
-  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: false });
+  const result = await attachPaidSession(session, { triggerGeneration: true, waitForPdf: VERIFY_PAYMENT_WAIT_FOR_PDF });
 
   // Important: Stripe redirects sometimes return without the browser still holding the cross-site cookie.
   // This restores the client session from the paid Stripe session email, so the dashboard opens cleanly.
@@ -5879,6 +5876,214 @@ function buildCriterionFindingFromProfile(profile, context) {
   };
 }
 
+
+// ---- Universal registry/knowledgebase-controlled advice gate ----
+// The PDF must not accept stale frontend stream/pathway labels or generic
+// employer-sponsored wording. The criteriaRegistry and knowledgebase pack are
+// the controlling legal source for every subclass before a client PDF is issued.
+const REGISTRY_CONTROLLED_ADVICE_PATCH = 'registry-knowledgebase-controls-all-visa-pdf-v1';
+
+function normalisePathwayKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function prettyPathwayLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+    .replace(/\bAnd\b/g, 'and')
+    .replace(/\bOr\b/g, 'or');
+}
+
+function pushRegistryPathway(out, value, sourceKey = '') {
+  if (value === undefined || value === null) return;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const label = String(value).trim();
+    const key = normalisePathwayKey(label);
+    if (key && key.length <= 80 && !['true','false','yes','no','required','optional','mandatory','criteria','criterion'].includes(key)) {
+      out.set(key, { key, label: prettyPathwayLabel(label), sourceKey });
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) pushRegistryPathway(out, item, sourceKey);
+    return;
+  }
+  if (typeof value === 'object') {
+    const direct = value.label || value.name || value.title || value.stream || value.pathway || value.pathwayName || value.streamName || value.code;
+    if (direct) pushRegistryPathway(out, direct, sourceKey);
+    for (const [k, v] of Object.entries(value)) {
+      const nk = normalisePathwayKey(k);
+      if (/(stream|pathway|route|category|branch|visa_stream|assessment_stream)/i.test(k)) {
+        if (typeof v === 'object') pushRegistryPathway(out, v, k);
+        else pushRegistryPathway(out, v, k);
+      } else if ((typeof v === 'object') && ['streams','pathways','routes','branches'].includes(nk)) {
+        pushRegistryPathway(out, v, k);
+      }
+    }
+  }
+}
+
+function collectRegistryPathways(registry) {
+  const out = new Map();
+  if (!registry || typeof registry !== 'object') return [];
+  const topLevelKeys = [
+    'streams','stream','pathways','pathway','routes','route','branches','branch',
+    'visaStreams','visa_streams','assessmentStreams','assessment_streams','availableStreams','available_streams',
+    'allowedStreams','allowed_streams','streamRules','stream_rules','pathwayRules','pathway_rules'
+  ];
+  for (const key of topLevelKeys) {
+    if (registry[key] !== undefined) pushRegistryPathway(out, registry[key], key);
+    if (registry.metadata && registry.metadata[key] !== undefined) pushRegistryPathway(out, registry.metadata[key], `metadata.${key}`);
+    if (registry.subclass && registry.subclass[key] !== undefined) pushRegistryPathway(out, registry.subclass[key], `subclass.${key}`);
+  }
+  // Some registry files put stream on each criterion. Use those only when the key
+  // is clearly a stream/pathway marker; do not mine arbitrary criterion text.
+  const criteriaArrays = [registry.criteria, registry.grantCriteria, registry.schedule2, registry.items].filter(Array.isArray);
+  for (const arr of criteriaArrays) {
+    for (const item of arr) {
+      if (!item || typeof item !== 'object') continue;
+      for (const key of ['stream','streams','pathway','pathways','route','routes','appliesToStream','applies_to_stream']) {
+        if (item[key] !== undefined) pushRegistryPathway(out, item[key], `criteria.${key}`);
+      }
+    }
+  }
+  return Array.from(out.values());
+}
+
+function assessmentRequestedPathway(assessment) {
+  const payload = (assessment && assessment.form_payload) || {};
+  const answers = payload.answers || payload.formPayload || payload.rawSubmission || payload || {};
+  const flat = flattenObject(answers || {});
+  const directValues = [
+    assessment && assessment.selected_stream,
+    assessment && assessment.stream,
+    assessment && assessment.pathway,
+    payload && payload.selectedStream,
+    payload && payload.selected_stream,
+    payload && payload.stream,
+    payload && payload.pathway
+  ];
+  for (const v of directValues) {
+    const text = String(v || '').trim();
+    if (text) return text;
+  }
+  const wanted = ['selectedstream','selected_stream','stream','nominationstream','nomination_stream','pathway','visa_stream','visastream'];
+  for (const [k, v] of Object.entries(flat || {})) {
+    const nk = normalisePathwayKey(k).replace(/_/g, '');
+    if (wanted.includes(nk)) {
+      const text = String(v || '').replace(/\s+/g, ' ').trim();
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function registryDefaultPathwayLabel(subclass, registry, allowed) {
+  if (allowed && allowed.length === 1) return allowed[0].label;
+  const sc = String(subclass || '').replace(/\D/g, '');
+  const titleText = JSON.stringify({ title: registry && (registry.title || registry.name || registry.description || (registry.metadata && registry.metadata.title)) }).toLowerCase();
+  if (sc === '300' || /prospective\s+marriage/.test(titleText)) return 'Prospective Marriage';
+  if (['309','820','801','100'].includes(sc) || /partner/.test(titleText)) return 'Partner';
+  if (['866','785','790'].includes(sc) || /protection/.test(titleText)) return 'Protection';
+  if (['189','190','491'].includes(sc) || /points/.test(titleText)) return sc === '491' ? 'Skilled Work Regional' : 'Points Tested';
+  if (['500','590'].includes(sc) || /student/.test(titleText)) return sc === '590' ? 'Student Guardian' : 'Student';
+  if (['600','601','602','870'].includes(sc) || /visitor|medical|parent/.test(titleText)) return 'Standard pathway';
+  return 'Registry-controlled pathway';
+}
+
+function assertRegistryControlledPathway({ subclass, registry, requestedPathway }) {
+  const sc = String(subclass || '').replace(/\D/g, '');
+  if (!sc) throw Object.assign(new Error('Assessment subclass is missing. PDF generation blocked before advice letter creation.'), { statusCode: 400, code: 'SUBCLASS_MISSING' });
+  if (!registry || typeof registry !== 'object') throw Object.assign(new Error(`No criteriaRegistry loaded for Subclass ${sc}. PDF generation blocked.`), { statusCode: 500, code: 'CRITERIA_REGISTRY_MISSING' });
+
+  const allowed = collectRegistryPathways(registry)
+    .filter(x => x && x.key && !['standard','standard_pathway','to_be_confirmed'].includes(x.key));
+  const requestedKey = normalisePathwayKey(requestedPathway);
+
+  if (allowed.length) {
+    if (!requestedKey && allowed.length > 1) {
+      throw Object.assign(new Error(`Subclass ${sc} has multiple registry pathways. The selected stream/pathway is missing, so PDF generation is blocked.`), { statusCode: 400, code: 'REGISTRY_PATHWAY_REQUIRED', allowedPathways: allowed.map(x => x.label) });
+    }
+    if (requestedKey) {
+      const matched = allowed.find(x => x.key === requestedKey || x.key.includes(requestedKey) || requestedKey.includes(x.key));
+      if (!matched) {
+        throw Object.assign(new Error(`Invalid stream/pathway for Subclass ${sc}: ${requestedPathway}. This pathway is not allowed by criteriaRegistry/subclass${sc}.json.`), { statusCode: 400, code: 'INVALID_SUBCLASS_PATHWAY', allowedPathways: allowed.map(x => x.label), requestedPathway });
+      }
+      return { key: matched.key, label: matched.label, requestedPathway, allowedPathways: allowed.map(x => x.label), registryControlled: true };
+    }
+    return { key: allowed[0].key, label: allowed[0].label, requestedPathway, allowedPathways: allowed.map(x => x.label), registryControlled: true };
+  }
+
+  // If the registry has no explicit pathway list, stale frontend labels must not
+  // control the letter. Use a neutral registry-derived/default subclass label.
+  return {
+    key: normalisePathwayKey(registryDefaultPathwayLabel(sc, registry, allowed)),
+    label: registryDefaultPathwayLabel(sc, registry, allowed),
+    requestedPathway,
+    allowedPathways: [],
+    registryControlled: true,
+    stalePathwayIgnored: Boolean(requestedKey)
+  };
+}
+
+function enforceRegistryKnowledgebaseAdviceControls({ assessment, adviceBundle, registry, registryResult }) {
+  const subclass = String((adviceBundle && (adviceBundle.subclass || (adviceBundle.advice && adviceBundle.advice.subclass))) || (assessment && assessment.visa_type) || '').replace(/\D/g, '');
+  const requestedPathway = assessmentRequestedPathway(assessment);
+  const pathwayControl = assertRegistryControlledPathway({ subclass, registry, requestedPathway });
+
+  if (!registryResult || !Array.isArray(registryResult.findings) || registryResult.findings.length < 1) {
+    throw Object.assign(new Error(`criteriaRegistry produced no criterion findings for Subclass ${subclass}. PDF generation blocked.`), { statusCode: 500, code: 'REGISTRY_FINDINGS_EMPTY' });
+  }
+  if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
+    throw Object.assign(new Error(`Knowledgebase legal-source pack missing for Subclass ${subclass}. PDF generation blocked.`), { statusCode: 500, code: 'KNOWLEDGEBASE_PACK_MISSING' });
+  }
+
+  adviceBundle.subclass = subclass;
+  adviceBundle.selectedStream = pathwayControl.label;
+  adviceBundle.stream = pathwayControl.label;
+  adviceBundle.registryControlledPathway = pathwayControl;
+  adviceBundle.genericFallbackAllowed = false;
+  adviceBundle.subclassSpecificAdviceRequired = true;
+  adviceBundle.knowledgebaseFirstAdvice = true;
+
+  adviceBundle.legalSourcePack.subclass = subclass;
+  adviceBundle.legalSourcePack.selectedStream = pathwayControl.label;
+  adviceBundle.legalSourcePack.registryControlledPathway = pathwayControl;
+
+  adviceBundle.advice = adviceBundle.advice || {};
+  adviceBundle.advice.subclass = subclass;
+  adviceBundle.advice.stream = pathwayControl.label;
+  adviceBundle.advice.selectedStream = pathwayControl.label;
+  adviceBundle.advice.pathway = pathwayControl.label;
+  adviceBundle.advice.title = `Professional Migration Advice – Subclass ${subclass}${pathwayControl.label ? ' — ' + pathwayControl.label : ''}`;
+  adviceBundle.advice.registryControlledPathway = pathwayControl;
+  adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
+  adviceBundle.advice.criterion_findings = registryResult.findings;
+  adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
+
+  adviceBundle.grantCriteriaFindings = registryResult.findings;
+  adviceBundle.criteriaRegistryAudit = registryResult.audit;
+  adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
+  adviceBundle.registryCoverageRate = registryResult.audit && registryResult.audit.registryCoverageRate;
+
+  adviceBundle.internalLegalAudit = adviceBundle.internalLegalAudit || { auditGeneratedAt: new Date().toISOString() };
+  adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
+  adviceBundle.internalLegalAudit.registryControlledPathway = pathwayControl;
+  adviceBundle.internalLegalAudit.genericFallbackAllowed = false;
+  adviceBundle.internalLegalAudit.patch = REGISTRY_CONTROLLED_ADVICE_PATCH;
+
+  return adviceBundle;
+}
+
 async function buildFastLegalAdviceBundle(assessment) {
   const subclass = String(assessment && assessment.visa_type || '186').replace(/[^0-9A-Za-z]/g, '') || '186';
   const payload = (assessment && assessment.form_payload) || {};
@@ -5896,7 +6101,10 @@ async function buildFastLegalAdviceBundle(assessment) {
     return fallback;
   }
 
-  const stream = pickValue(['selectedStream', 'selected stream', 'stream', 'nominationStream'], assessment.selected_stream || 'To be confirmed');
+  const requestedStream = pickValue(['selectedStream', 'selected stream', 'stream', 'nominationStream', 'pathway'], assessment.selected_stream || '');
+  const registry = loadCriteriaRegistry(String(subclass).replace(/[^0-9]/g, ''));
+  const pathwayControl = assertRegistryControlledPathway({ subclass, registry, requestedPathway: requestedStream });
+  const stream = pathwayControl.label;
   const employer = pickValue(['employerName', 'employer name', 'currentEmployer', 'current employer'], 'the sponsoring employer');
 
   const legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
@@ -5928,7 +6136,7 @@ async function buildFastLegalAdviceBundle(assessment) {
   const riskSignals = JSON.stringify(findings).toLowerCase();
   const riskLevel = /refused|cancelled|criminal|false|misleading|unlawful|section 48|8503|not resolved|not available/.test(riskSignals) ? 'HIGH' : 'MEDIUM';
   const position = riskLevel === 'HIGH' ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'PROCEED_AFTER_EVIDENCE_REVIEW';
-  const primaryIssue = `Whether the Subclass ${subclass}${stream && stream !== 'To be confirmed' ? ' ' + stream : ''} pathway can be supported by criterion-by-criterion evidence for ${employer}, including nomination, occupation, employment, salary, English, health, character and migration-history requirements.`;
+  const primaryIssue = `Whether the Subclass ${subclass}${stream ? ' — ' + stream : ''} pathway can be supported by criterion-by-criterion evidence from the applicable criteriaRegistry and knowledgebase legal-source pack, including validity, pathway-specific criteria, public-interest criteria and evidence consistency requirements.`;
   const sourceHash = crypto.createHash('sha256').update(JSON.stringify((legalSourcePack.sources || []).map(s => [s.authority, s.path, s.sha256]))).digest('hex');
 
   const evidenceRows = findings.map(f => ({
@@ -5963,9 +6171,9 @@ async function buildFastLegalAdviceBundle(assessment) {
       evidence_required: findings.map(f => f.evidence_gap).filter(Boolean),
       client_next_steps: [
         'Provide all identity, passport and current visa-status documents.',
-        'Provide sponsor, nomination, employment contract, position description and business evidence.',
-        'Provide employment continuity records, including payslips, tax, superannuation and leave records where relevant.',
-        'Provide English, health, character and prior migration-history documents for review.',
+        'Provide the subclass-specific documents identified by the criteriaRegistry and evidence matrix.',
+        'Provide public-interest, health, character and prior migration-history documents for review.',
+        'Provide pathway-specific evidence required for the selected subclass and registry-controlled pathway.',
         'Allow Bircan Migration to reconcile each criterion against original documents before any final lodgement recommendation is made.'
       ],
       quality_flags: [],
@@ -6148,6 +6356,14 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         legalPack: adviceBundle.legalSourcePack,
         assessment: assessmentForAdvice
       });
+
+      enforceRegistryKnowledgebaseAdviceControls({
+        assessment: assessmentForAdvice,
+        adviceBundle,
+        registry,
+        registryResult
+      });
+
       // Professional issue gate, not an impossible perfection gate.
       // The registry project target is 98%+ grant-criteria coverage. The former
       // condition treated anything below 100% as a failed PDF, which blocked paid
@@ -6827,7 +7043,7 @@ async function queryDashboardV2Payments(email, sessionId) {
 function isRetryablePdfGenerationError(message) {
   const text = String(message || '').toLowerCase();
   if (!text) return false;
-  return /(grant criteria|criteria registry|criteria coverage|coverage validation|legalframe incomplete|streamcriteria|stream criteria)/.test(text);
+  return /grant criteria|criteria registry|criteria coverage|coverage validation/.test(text);
 }
 
 function dashboardV2ShouldKickPdf(service) {
