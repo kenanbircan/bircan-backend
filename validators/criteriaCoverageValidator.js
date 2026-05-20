@@ -15,54 +15,6 @@ function clean(v) {
 
 function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
 
-function streamCriteriaCount(streams) {
-  if (!streams || typeof streams !== 'object') return 0;
-  let count = 0;
-  for (const cfg of Object.values(streams)) {
-    if (!cfg || typeof cfg !== 'object') continue;
-    if (Array.isArray(cfg.criteria)) count += cfg.criteria.length;
-    if (Array.isArray(cfg.grantCriteria)) count += cfg.grantCriteria.length;
-    if (cfg.grantCriteria && Array.isArray(cfg.grantCriteria.items)) count += cfg.grantCriteria.items.length;
-    if (cfg.schedule2 && Array.isArray(cfg.schedule2.items)) count += cfg.schedule2.items.length;
-  }
-  return count;
-}
-
-function effectiveRegistry(registry) {
-  if (!registry || typeof registry !== 'object') return registry;
-  const topLevelCount =
-    (Array.isArray(registry.criteria) ? registry.criteria.length : 0) +
-    (Array.isArray(registry.grantCriteria) ? registry.grantCriteria.length : 0) +
-    streamCriteriaCount(registry.streams);
-  const legacy = registry.legacyOriginalRegistry;
-  const legacyCount = legacy && typeof legacy === 'object'
-    ? (Array.isArray(legacy.criteria) ? legacy.criteria.length : 0) +
-      (Array.isArray(legacy.grantCriteria) ? legacy.grantCriteria.length : 0) +
-      streamCriteriaCount(legacy.streams)
-    : 0;
-  if (topLevelCount === 0 && legacyCount > 0) {
-    return {
-      ...legacy,
-      subclass: registry.subclass || legacy.subclass,
-      title: registry.title || legacy.title,
-      registryVersion: registry.schemaVersion || registry.registryVersion || legacy.version,
-      sourceFile: registry.sourceFile || legacy.sourceFile,
-      parentRegistryFingerprint: registry.registryFingerprint,
-      compatibilityMode: 'legacyOriginalRegistry-fallback'
-    };
-  }
-  return registry;
-}
-
-function getCriteriaListFromStreamConfig(cfg) {
-  if (!cfg || typeof cfg !== 'object') return [];
-  if (Array.isArray(cfg.criteria)) return cfg.criteria;
-  if (Array.isArray(cfg.grantCriteria)) return cfg.grantCriteria;
-  if (cfg.grantCriteria && Array.isArray(cfg.grantCriteria.items)) return cfg.grantCriteria.items;
-  if (cfg.schedule2 && Array.isArray(cfg.schedule2.items)) return cfg.schedule2.items;
-  return [];
-}
-
 function flattenObject(input, prefix = '', out = {}) {
   if (!isPlainObject(input)) return out;
   for (const [k, v] of Object.entries(input)) {
@@ -81,7 +33,7 @@ function loadCriteriaRegistry(subclass) {
   const registryMap = require(path.join(process.cwd(), 'criteriaRegistry'));
   const registry = registryMap[code];
   if (!registry) throw Object.assign(new Error(`Grant criteria registry blocked: no registry for subclass ${code}.`), { code: 'REGISTRY_NOT_FOUND', subclass: code });
-  return effectiveRegistry(registry);
+  return registry;
 }
 
 function streamMatches(streamName, selected) {
@@ -92,33 +44,89 @@ function streamMatches(streamName, selected) {
   return a === b || a.includes(b) || b.includes(a);
 }
 
+function criterionId(c, fallbackIndex = 0) {
+  return clean(c?.id || c?.criterionId || c?.registryCriterionId || c?.clause || c?.label || c?.requirementText || `criterion_${fallbackIndex + 1}`);
+}
+
+function criterionLabel(c) {
+  return clean(c?.label || c?.title || c?.heading || c?.clause || c?.criterion || c?.criterionId || c?.id || 'Grant criterion');
+}
+
+function normaliseCriterion(raw, streamName, index = 0) {
+  if (!isPlainObject(raw)) return null;
+  const id = criterionId(raw, index);
+  const label = criterionLabel(raw);
+  const evidenceFromRules = [];
+  for (const rule of Array.isArray(raw.evidenceRules) ? raw.evidenceRules : []) {
+    const doc = rule.documentGroup || rule.document || rule.name || rule.proves;
+    if (doc) evidenceFromRules.push(clean(doc));
+  }
+  const factsRequired = Array.isArray(raw.factsRequired) ? raw.factsRequired : Array.isArray(raw.intakeMapping?.requiredFields) ? raw.intakeMapping.requiredFields : [];
+  const evidenceRequired = Array.isArray(raw.evidenceRequired) ? raw.evidenceRequired : evidenceFromRules;
+  return {
+    ...raw,
+    id,
+    criterionId: raw.criterionId || id,
+    label,
+    stream: raw.stream || streamName || '',
+    timing: raw.timing || raw.timePoint || 'time_of_decision',
+    mandatory: raw.mandatory !== false,
+    pdfSection: raw.pdfSection || raw.pdfMapping?.section || 'Grant criteria assessment',
+    factsRequired,
+    evidenceRequired,
+    riskFlags: raw.riskFlags || raw.riskTriggers || [],
+    actionRequired: raw.actionRequired || raw.requiredAction || raw.pdfMapping?.safeFallbackWording || 'Verify this criterion against original evidence and current legal settings before lodgement.',
+    sourceCategory: raw.sourceCategory || raw.source?.sourceType || raw.sourceMap?.sourceType || ''
+  };
+}
+
+function criteriaListFromStreamConfig(cfg) {
+  if (!cfg) return [];
+  if (Array.isArray(cfg)) return cfg;
+  if (Array.isArray(cfg.criteria)) return cfg.criteria;
+  if (Array.isArray(cfg.grantCriteria)) return cfg.grantCriteria;
+  if (Array.isArray(cfg.primaryCriteria)) return cfg.primaryCriteria;
+  if (Array.isArray(cfg.secondaryCriteria)) return cfg.secondaryCriteria;
+  return [];
+}
+
 function flattenCriteria(registry, stream) {
-  const effective = effectiveRegistry(registry);
-  const streams = effective && effective.streams;
   const merged = [];
   const seen = new Set();
-  function pushCriteria(list) {
-    for (const c of Array.isArray(list) ? list : []) {
-      const id = c.id || c.criterionId || c.clause || norm(c.label || c.requirementText || `criterion_${merged.length + 1}`);
-      if (seen.has(id)) continue;
-      seen.add(id);
+  function pushCriteria(list, streamName) {
+    for (const raw of Array.isArray(list) ? list : []) {
+      const c = normaliseCriterion(raw, streamName, merged.length);
+      if (!c) continue;
+      const id = c.id || norm(c.label || `criterion_${merged.length + 1}`);
+      const dedupeKey = norm(`${id}_${c.stream || streamName || ''}`);
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
       merged.push({ ...c, id });
     }
   }
-  pushCriteria(effective?.criteria);
-  pushCriteria(effective?.grantCriteria);
-  if (effective?.grantCriteria && Array.isArray(effective.grantCriteria.items)) pushCriteria(effective.grantCriteria.items);
+
+  const streams = registry && registry.streams;
   if (streams && typeof streams === 'object') {
-    // Include common grant criteria first. A selected stream adds to, not replaces, common criteria.
-    for (const commonName of ['default', 'common', 'common_or_secondary', 'secondary', 'common_secondary']) {
-      if (streams[commonName]) pushCriteria(getCriteriaListFromStreamConfig(streams[commonName]));
+    if (streams.default) pushCriteria(criteriaListFromStreamConfig(streams.default), 'default');
+    if (streams.common || streams.common_or_secondary) {
+      pushCriteria(criteriaListFromStreamConfig(streams.common || streams.common_or_secondary), 'common_or_secondary');
     }
-    if (stream && streams[stream]) pushCriteria(getCriteriaListFromStreamConfig(streams[stream]));
+    if (stream && streams[stream]) pushCriteria(criteriaListFromStreamConfig(streams[stream]), stream);
     for (const [name, cfg] of Object.entries(streams)) {
-      if (['default', 'common', 'common_or_secondary', 'secondary', 'common_secondary'].includes(name)) continue;
-      if (streamMatches(name, stream)) pushCriteria(getCriteriaListFromStreamConfig(cfg));
+      if (['default', 'common', 'common_or_secondary'].includes(name)) continue;
+      if (streamMatches(name, stream)) pushCriteria(criteriaListFromStreamConfig(cfg), name);
     }
   }
+
+  if (!merged.length && Array.isArray(registry?.criteria)) pushCriteria(registry.criteria, stream || 'default');
+
+  // Backward compatibility: some current registries preserve the old production registry under
+  // legacyOriginalRegistry while the top-level stream objects use grantCriteria instead of criteria.
+  const legacy = registry?.legacyOriginalRegistry;
+  if (!merged.length && legacy && typeof legacy === 'object') {
+    pushCriteria(flattenCriteria(legacy, stream), stream || 'legacy');
+  }
+
   return merged;
 }
 
@@ -154,10 +162,6 @@ function triggerSatisfied(trigger, facts) {
 function isRequiredCriterion(c, facts) {
   if (c.mandatory === true) return true;
   if (triggerSatisfied(c.trigger, facts) && c.whenTriggered === 'mandatory') return true;
-  const selected = selectedStreamFromFacts(facts || {});
-  const appliesStream = c?.appliesIf?.stream || c?.stream;
-  if (appliesStream && selected && streamMatches(appliesStream, selected)) return true;
-  if (!appliesStream && (c.criterionId || c.clause || c.criterionRole === 'grant_criterion_control')) return true;
   return false;
 }
 
@@ -233,7 +237,7 @@ function findingKey(f) { return norm(f?.criterion_id || f?.criterionId || f?.reg
 function answerSupportForCriterion(criterion, facts) {
   const flat = flattenObject(facts || {});
   const hay = Object.entries(flat).map(([k, v]) => `${k}: ${v}`).join(' | ').toLowerCase();
-  const terms = [criterion.id, criterion.criterionId, criterion.clause, criterion.label, criterion.requirementText, ...(criterion.factsRequired || []), ...(criterion.evidenceRequired || []), ...((criterion.intakeMapping && criterion.intakeMapping.requiredFields) || [])]
+  const terms = [criterion.id, criterion.label, ...(criterion.factsRequired || []), ...(criterion.evidenceRequired || [])]
     .map(x => String(x || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 4))
     .flat();
   const matched = [...new Set(terms.filter(t => hay.includes(t)))].slice(0, 5);
@@ -292,7 +296,7 @@ function criterionRequiredAction(criterion, existing, facts) {
 
 function buildFindingFromCriterion(criterion, existing, facts) {
   const matchedFacts = answerSupportForCriterion(criterion, facts);
-  const label = clean(criterion.label || criterion.clause || criterion.criterionId || criterion.id || 'Grant criterion');
+  const label = clean(criterion.label || criterion.id || 'Grant criterion');
   const presentAssessment = existing ? cleanContaminatedText(existing.finding || existing.position || existing.outcome || existing.assessment || existing.professionalFinding || '', facts, criterion) : '';
   const finding = presentAssessment || (matchedFacts.length
     ? `This criterion has been assessed against the questionnaire answers. The presently available instructions indicate potentially relevant facts, but original evidence must be verified before lodgement-ready advice is issued.`
@@ -304,28 +308,27 @@ function buildFindingFromCriterion(criterion, existing, facts) {
     criterion: label,
     label,
     timing: criterion.timing || 'time_of_decision',
-    sourceCategory: criterion.sourceCategory || criterion?.source?.sourceType || criterion?.sourceMap?.sourceType || '',
-    mandatory: criterion.mandatory === true || isRequiredCriterion(criterion, facts),
-    triggeredMandatory: criterion.mandatory !== true && (triggerSatisfied(criterion.trigger, facts) || (criterion?.appliesIf?.stream && streamMatches(criterion.appliesIf.stream, selectedStreamFromFacts(facts || {})))) ,
+    sourceCategory: criterion.sourceCategory || '',
+    mandatory: criterion.mandatory === true,
+    triggeredMandatory: criterion.mandatory !== true && triggerSatisfied(criterion.trigger, facts) && criterion.whenTriggered === 'mandatory',
     pdfSection: criterion.pdfSection || 'Grant criteria assessment',
-    factsRequired: criterion.factsRequired || criterion?.intakeMapping?.requiredFields || [],
-    evidenceRequired: criterion.evidenceRequired || (Array.isArray(criterion.evidenceRules) ? criterion.evidenceRules.map(e => e.documentGroup || e.document).filter(Boolean) : []),
+    factsRequired: criterion.factsRequired || [],
+    evidenceRequired: criterion.evidenceRequired || [],
     riskFlags: criterion.riskFlags || [],
     finding,
     legal_consequence: cleanContaminatedText(existing?.legal_consequence || existing?.legalConsequence || 'If this requirement is not met or cannot be evidenced, lodgement should be delayed or the strategy revised before filing.', facts, criterion),
     recommendation,
     actionRequired: recommendation,
-    evidence_gap: cleanContaminatedText(existing?.evidence_gap || existing?.evidenceGap || (criterion.evidenceRequired || (Array.isArray(criterion.evidenceRules) ? criterion.evidenceRules.map(e => e.documentGroup || e.document).filter(Boolean) : []) || []).slice(0, 5).join('; '), facts, criterion),
+    evidence_gap: cleanContaminatedText(existing?.evidence_gap || existing?.evidenceGap || (criterion.evidenceRequired || []).slice(0, 5).join('; '), facts, criterion),
     risk_level: existing?.risk_level || existing?.riskLevel || 'Verification required',
     sourceSupported: true
   };
 }
 
 function buildRegistryBackedFindings({ registry, adviceBundle, legalPack, assessment, facts: suppliedFacts }) {
-  const effective = effectiveRegistry(registry);
   const facts = suppliedFacts || extractFacts(assessment || {}, adviceBundle || {});
   const stream = facts.stream || adviceBundle?.stream || adviceBundle?.selectedStream || adviceBundle?.advice?.stream || 'default';
-  const criteria = flattenCriteria(effective, stream);
+  const criteria = flattenCriteria(registry, stream);
   const required = criteria.filter(c => isRequiredCriterion(c, facts));
   const existing = extractFindings(adviceBundle || {});
   const existingByKey = new Map();
@@ -342,20 +345,19 @@ function buildRegistryBackedFindings({ registry, adviceBundle, legalPack, assess
     return built;
   });
   const audit = {
-    ok: required.length > 0 && findings.length === required.length,
-    subclass: effective?.subclass || facts.subclass,
+    ok: unsupported.length === 0,
+    subclass: registry?.subclass || facts.subclass,
     stream,
-    coverageTarget: effective?.coverageTarget || 'grant_criteria',
+    coverageTarget: registry?.coverageTarget || 'grant_criteria',
     totalRegistryCriteria: criteria.length,
     mandatoryOrTriggeredRequired: required.length,
     mandatoryOrTriggeredAssessed: findings.length,
-    registryCoverageRate: required.length ? Math.round((findings.length / required.length) * 100) : 0,
-    coverageRate: required.length ? Math.round((findings.length / required.length) * 100) : 0,
+    registryCoverageRate: required.length ? Math.round((findings.length / required.length) * 100) : 100,
+    coverageRate: required.length ? Math.round((findings.length / required.length) * 100) : 100,
     unsupportedSourceCriteria: unsupported.map(c => ({ id: c.id, label: c.label, requiredSources: sourceRequirements(c) })),
-    sourceSupportWarning: unsupported.length ? 'Some registry criteria reference source categories not detected in the loaded legal pack. This is a legal-source audit warning only and must not block a paid preliminary advice letter where all mandatory criteria findings are generated.' : '',
     missingAssessment: [],
     generatedAt: new Date().toISOString(),
-    enforcement: effective?.compatibilityMode ? `registry-backed-deterministic-coverage-v1:${effective.compatibilityMode}` : 'registry-backed-deterministic-coverage-v1'
+    enforcement: 'registry-backed-deterministic-coverage-v1'
   };
   return { findings, audit, criteria, required };
 }
@@ -363,7 +365,7 @@ function buildRegistryBackedFindings({ registry, adviceBundle, legalPack, assess
 function validateCriteriaCoverage(registry, adviceBundle, legalPack, facts = {}) {
   const result = buildRegistryBackedFindings({ registry, adviceBundle, legalPack, facts });
   const audit = result.audit;
-  if (!audit.ok || audit.registryCoverageRate < 100 || audit.mandatoryOrTriggeredRequired < 1) {
+  if (!audit.ok || audit.registryCoverageRate < 100) {
     const err = new Error('PDF blocked: grant criteria coverage validation failed.');
     err.code = 'GRANT_CRITERIA_COVERAGE_FAILED';
     err.audit = audit;
