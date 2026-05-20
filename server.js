@@ -33,60 +33,6 @@ const { generateMigrationAdvice, supportedSubclasses } = require('./adviceEngine
 const { listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
 const { loadCriteriaRegistry } = require('./criteriaRegistry');
 const { buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
-
-
-// ---- V9 criteria registry bridge: use knowledgebase automation-ceiling registry metadata ----
-const BIRCAN_CRITERIA_REGISTRY_V9_PDF_BRIDGE = 'criteria-registry-v9-pdf-bridge-v1';
-function v9RegistryNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-function buildV9CriteriaRegistryProfile(registry = {}) {
-  const coverage = registry.coverageScoring || {};
-  const expected = registry.expectedGrantCriteriaManifest || {};
-  const streams = registry.streams && typeof registry.streams === 'object' ? registry.streams : {};
-  const criteria = [];
-  for (const [streamName, stream] of Object.entries(streams)) {
-    const items = Array.isArray(stream && stream.grantCriteria) ? stream.grantCriteria : Array.isArray(stream && stream.criteria) ? stream.criteria : [];
-    for (const item of items) criteria.push({ stream: streamName, ...(item || {}) });
-  }
-  const readiness = Math.max(
-    v9RegistryNumber(coverage.estimatedSchedule2CoverageReadiness, 0),
-    v9RegistryNumber(coverage.currentSubclass187WeightedScore, 0),
-    v9RegistryNumber(coverage.weightedAuditScore, 0),
-    v9RegistryNumber(coverage.estimatedCoverage, 0)
-  );
-  return {
-    schemaVersion: registry.schemaVersion || null,
-    subclass: registry.subclass || null,
-    title: registry.title || null,
-    availabilityGate: registry.availabilityGate || null,
-    validApplicationRequirements: registry.validApplicationRequirements || null,
-    expectedGrantCriteriaManifest: expected,
-    expectedSchedule2ClauseCount: Array.isArray(expected.expectedClauses) ? expected.expectedClauses.length : v9RegistryNumber(expected.expectedClauseCount, criteria.length),
-    schedule2CriteriaItemCount: criteria.length,
-    coverageScoring: coverage,
-    estimatedSchedule2CoverageReadiness: readiness,
-    manualAuditRequiredForExternal98Claim: Boolean(coverage.manualAuditRequiredForExternal98Claim || coverage.external98ClaimAllowed === false),
-    external98ClaimAllowed: coverage.external98ClaimAllowed === true,
-    pdfContaminationControls: registry.pdfContaminationControls || registry.contaminationGuards || null,
-    contaminationGuards: registry.contaminationGuards || null,
-    intakeCoverageControls: registry.intakeCoverageControls || null,
-    pamsControls: registry.pamsControls || null,
-    registryFingerprint: registry.registryFingerprint || null,
-    sourceOfTruth: registry.sourceOfTruth || null,
-    sourceMap: registry.sourceMap || null,
-    v9Bridge: BIRCAN_CRITERIA_REGISTRY_V9_PDF_BRIDGE
-  };
-}
-function registryUnsupportedCriteriaAreBlocking(audit = {}, profile = {}) {
-  const unsupported = Array.isArray(audit.unsupportedSourceCriteria) ? audit.unsupportedSourceCriteria : [];
-  if (!unsupported.length) return false;
-  // V9 knowledgebase extracted registries deliberately carry source-mapping/audit controls.
-  // Unsupported source labels should downgrade the advice to review-required, not kill PDF generation,
-  // unless the registry has no V9 source/audit structure at all.
-  return !profile || (!profile.expectedGrantCriteriaManifest && !profile.sourceOfTruth && !profile.registryFingerprint);
-}
 const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, buildKnowledgebaseHealthReport } = require('./knowledgebaseLoader');
 const { buildDelegateSimulatorPdfInputs, supportedDelegateSimulatorSubclasses } = require('./migrationDecisionEngine');
 const { attachEvidenceValidation, validateEvidenceForAssessment } = require('./evidenceValidationLayer');
@@ -749,21 +695,16 @@ async function attachVisaAssessmentToClientById(assessmentId, client) {
     throw err;
   }
 
-  // Permanent form-email preservation:
-  // Attach the assessment to the authenticated portal account by client_id, but do not
-  // overwrite the assessment-form email with a stale/last dashboard login email.
-  // client_email/applicant_email remain the matter/form email; client_id is the account link.
-  const formEmail = assessmentEmail || clientEmail;
   const updated = await query(
     `UPDATE assessments
      SET client_id=$1,
-         client_email=COALESCE(NULLIF(client_email,''), $2),
-         applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
+         client_email=$2,
+         applicant_email=COALESCE(applicant_email,$2),
          active_plan=COALESCE(active_plan, selected_plan),
          updated_at=now()
      WHERE id=$3
      RETURNING *`,
-    [client.id, formEmail, assessment.id]
+    [client.id, client.email, assessment.id]
   );
   return updated.rows[0] || assessment;
 }
@@ -1983,7 +1924,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.5-pdf-advice-10-final-v7-12',
+    version: '12.2.3-production-email-lock-admin-route-removed',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -4114,22 +4055,9 @@ async function recordServicePaymentAuditSafe({ serviceType, serviceRef, clientId
     const stripeCreatedAt = session && session.created ? new Date(Number(session.created) * 1000) : new Date();
     const isPaid = status ? /paid|complete|completed|active|verified/i.test(String(status)) : (session && (session.payment_status === 'paid' || session.status === 'complete'));
     const finalPaidAt = paidAt || (isPaid ? stripeCreatedAt : null);
-    const sessionMetadata = (session && session.metadata) || {};
-    const resolvedEmail = normaliseEmail(
-      clientEmail ||
-      (session && session.customer_email) ||
-      (session && session.customer_details && session.customer_details.email) ||
-      sessionMetadata.client_email ||
-      sessionMetadata.email ||
-      sessionMetadata.applicant_email ||
-      sessionMetadata.portal_login_email ||
-      sessionMetadata.original_started_email ||
-      ''
-    );
     const values = {
       client_id: clientId || null,
-      email: resolvedEmail || null,
-      client_email: resolvedEmail || null,
+      client_email: normaliseEmail(clientEmail),
       service_type: normaliseServiceType(serviceType),
       service_ref: serviceRef || null,
       visa_type: visaType || null,
@@ -4178,9 +4106,6 @@ async function recordServicePaymentAuditSafe({ serviceType, serviceRef, clientId
       params.push(stripeCreatedAt);
     }
 
-    if (columns.get('email')?.is_nullable === 'NO' && !values.email) {
-      return { ok: false, skipped: true, reason: 'payments_email_required_but_missing' };
-    }
     if (columns.get('client_email')?.is_nullable === 'NO' && !values.client_email) {
       return { ok: false, skipped: true, reason: 'payments_client_email_required_but_missing' };
     }
@@ -4240,25 +4165,10 @@ async function recordPaymentAuditSafe(assessmentId, email, session) {
 
     const stripeCreatedAt = session.created ? new Date(Number(session.created) * 1000) : new Date();
     const paidAt = session.payment_status === 'paid' || session.status === 'complete' ? stripeCreatedAt : null;
-    const sessionMetadata = (session && session.metadata) || {};
-    const resolvedEmail = normaliseEmail(
-      email ||
-      assessment.client_email ||
-      assessment.applicant_email ||
-      (session && session.customer_email) ||
-      (session && session.customer_details && session.customer_details.email) ||
-      sessionMetadata.client_email ||
-      sessionMetadata.email ||
-      sessionMetadata.applicant_email ||
-      sessionMetadata.portal_login_email ||
-      sessionMetadata.original_started_email ||
-      ''
-    );
 
     const values = {
       client_id: assessment.client_id || null,
-      email: resolvedEmail || null,
-      client_email: resolvedEmail || null,
+      client_email: normaliseEmail(email || assessment.client_email),
       service_type: 'visa_assessment',
       service_ref: assessmentId,
       visa_type: assessment.visa_type || null,
@@ -4307,9 +4217,6 @@ async function recordPaymentAuditSafe(assessmentId, email, session) {
       params.push(stripeCreatedAt);
     }
 
-    if (!names.includes('email') && columns.get('email')?.is_nullable === 'NO') {
-      return { ok: false, skipped: true, reason: 'payments_email_required_but_missing' };
-    }
     if (!names.includes('client_email') && columns.get('client_email')?.is_nullable === 'NO') {
       return { ok: false, skipped: true, reason: 'payments_client_email_required_but_missing' };
     }
@@ -6214,31 +6121,19 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         legalPack: adviceBundle.legalSourcePack,
         assessment: assessmentForAdvice
       });
-      const registryV9Profile = buildV9CriteriaRegistryProfile(registry);
-      const minimumCoverage = Number(process.env.MIN_REGISTRY_COVERAGE_RATE || process.env.MIN_REGISTRY_READINESS_RATE || 95);
-      const validatorCoverage = Number(registryResult.audit && registryResult.audit.registryCoverageRate || 0);
-      const v9Coverage = Number(registryV9Profile.estimatedSchedule2CoverageReadiness || 0);
-      const effectiveCoverage = Math.max(validatorCoverage, v9Coverage);
-      if (!registryResult.audit.ok || effectiveCoverage < minimumCoverage || registryUnsupportedCriteriaAreBlocking(registryResult.audit, registryV9Profile)) {
-        const detail = JSON.stringify({
-          validatorAudit: registryResult.audit,
-          v9RegistryProfile,
-          effectiveCoverage,
-          minimumCoverage
-        });
+      if (!registryResult.audit.ok || registryResult.audit.registryCoverageRate < 100 || registryResult.audit.unsupportedSourceCriteria.length) {
+        const detail = JSON.stringify(registryResult.audit);
         throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
       }
-      adviceBundle.v9CriteriaRegistryProfile = registryV9Profile;
       adviceBundle.grantCriteriaFindings = registryResult.findings;
-      adviceBundle.criteriaRegistryAudit = { ...(registryResult.audit || {}), effectiveCoverage, minimumCoverage, v9RegistryProfile };
-      adviceBundle.grantCriteriaCoverageAudit = adviceBundle.criteriaRegistryAudit;
-      adviceBundle.registryCoverageRate = effectiveCoverage;
+      adviceBundle.criteriaRegistryAudit = registryResult.audit;
+      adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
+      adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
       adviceBundle.advice = adviceBundle.advice || {};
       adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
       adviceBundle.advice.criterion_findings = registryResult.findings;
       adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-      adviceBundle.internalLegalAudit.criteriaRegistryAudit = adviceBundle.criteriaRegistryAudit;
-      adviceBundle.internalLegalAudit.v9CriteriaRegistryProfile = registryV9Profile;
+      adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
 
       try {
         const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
@@ -6452,34 +6347,6 @@ function dashboardSessionId(req) {
   ).trim();
 }
 
-function dashboardMatterEmailFromServices(...groups) {
-  for (const group of groups) {
-    for (const row of Array.isArray(group) ? group : []) {
-      const email = normaliseEmail(
-        row && (row.applicant_email || row.applicantEmail || row.assessment_email || row.assessmentEmail || row.form_email || row.formEmail || row.client_email || row.clientEmail)
-      );
-      if (email) return email;
-    }
-  }
-  return '';
-}
-
-function dashboardClientPayload(req, matterEmail = '') {
-  const account = (req && req.client) || {};
-  const accountEmail = normaliseEmail(account.email);
-  const formEmail = normaliseEmail(matterEmail) || accountEmail;
-  return {
-    id: account.id || null,
-    email: formEmail,
-    clientEmail: formEmail,
-    assessmentEmail: formEmail,
-    applicantEmail: formEmail,
-    accountEmail,
-    portalEmail: accountEmail,
-    name: account.name || null
-  };
-}
-
 async function clientFromStripeDashboardSession(sessionId) {
   if (!stripe || !sessionId || !/^cs_(test|live)_/i.test(sessionId)) return null;
   try {
@@ -6534,25 +6401,16 @@ async function resolveDashboardAccess(req, res, next) {
   try {
     let client = null;
     const rawToken = dashboardRequestToken(req);
-    const sid = dashboardSessionId(req);
 
-    // Payment-return pages are matter-specific. If a Stripe session_id is present,
-    // resolve the dashboard account from that paid/session record FIRST.
-    // This prevents a stale browser cookie or the last account-dashboard login from
-    // making the dashboard load under the wrong client email.
-    if (sid && /^cs_(test|live)_/i.test(String(sid))) {
-      client = await clientFromLocalDashboardSession(sid);
-      if (!client) client = await clientFromStripeDashboardSession(sid);
-    }
+    // 1) Normal portal session cookie / bearer token.
+    client = await clientFromJwtToken(rawToken, SESSION_SECRET);
 
-    // Normal portal session cookie / bearer token is used only when there is no
-    // session-specific dashboard return client, or as a fallback for direct dashboard access.
-    if (!client) client = await clientFromJwtToken(rawToken, SESSION_SECRET);
-
-    // Dedicated signed dashboard access token.
+    // 2) Dedicated signed dashboard access token.
     if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
 
-    // Last fallback: local/Stripe session lookup when no stale cookie was present.
+    // 3) Stripe return fallback: resolve from local paid/session records first, then Stripe only as a last resort.
+    // This solves cross-site cookie loss without delaying the dashboard on external Stripe API latency.
+    const sid = dashboardSessionId(req);
     if (!client) client = await clientFromLocalDashboardSession(sid);
     if (!client) client = await clientFromStripeDashboardSession(sid);
 
@@ -6760,7 +6618,7 @@ async function handleDashboardFast(req, res) {
     ok: true,
     fast: true,
     loadMs: Date.now() - startedAt,
-    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(rawFast.visaRows || [], rawFast.citizenshipRows || [])),
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     accessToken: dashboardToken,
     accessPatch: DASHBOARD_ACCESS_PATCH,
@@ -6892,64 +6750,19 @@ async function queryDashboardV2Appeals(email, clientId, sessionId) {
 }
 
 async function queryDashboardV2Payments(email, sessionId) {
-  try {
-    const columnsRes = await query(`
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = 'payments'
-    `);
-    const columns = new Set(columnsRes.rows.map(r => r.column_name));
-    if (!columns.size) return [];
-
-    const select = (name, fallback = 'NULL::text') => columns.has(name) ? name : `${fallback} AS ${name}`;
-    const selectInt = (name) => columns.has(name) ? name : `NULL::integer AS ${name}`;
-    const selectDate = (name) => columns.has(name) ? name : `NULL::timestamptz AS ${name}`;
-    const selectJson = (name) => columns.has(name) ? name : `'{}'::jsonb AS ${name}`;
-
-    const emailPredicates = [];
-    if (columns.has('client_email')) emailPredicates.push(`lower(COALESCE(client_email,''))=lower($1)`);
-    if (columns.has('email')) emailPredicates.push(`lower(COALESCE(email,''))=lower($1)`);
-    if (!emailPredicates.length) emailPredicates.push('false');
-
-    const sessionPredicate = columns.has('stripe_session_id')
-      ? `($2 <> '' AND COALESCE(stripe_session_id,'')=$2)`
-      : 'false';
-
-    const orderExpr = [
-      columns.has('paid_at') ? 'paid_at' : null,
-      columns.has('stripe_created_at') ? 'stripe_created_at' : null,
-      columns.has('created_at') ? 'created_at' : null,
-      columns.has('updated_at') ? 'updated_at' : null
-    ].filter(Boolean).join(', ');
-
-    const sql = `
-      SELECT
-        ${select('id')},
-        ${select('service_type')},
-        ${select('service_ref')},
-        ${select('status')},
-        ${select('stripe_session_id')},
-        ${select('stripe_payment_intent')},
-        ${selectInt('amount_cents')},
-        ${select('currency', `'aud'::text`)},
-        ${select('plan')},
-        ${selectDate('created_at')},
-        ${selectDate('paid_at')},
-        ${selectDate('stripe_created_at')},
-        ${select('receipt_url')},
-        ${select('invoice_url')},
-        ${selectJson('raw_payload')}
-      FROM payments
-      WHERE (${emailPredicates.join(' OR ')})
-         OR ${sessionPredicate}
-      ORDER BY ${orderExpr ? `COALESCE(${orderExpr}) DESC NULLS LAST` : '1 DESC'}
-      LIMIT 50`;
-    return (await query(sql, [email, sessionId || ''])).rows;
-  } catch (err) {
-    console.warn('Dashboard v2 payments query failed:', err.message);
-    return [];
-  }
+  const sql = `
+    SELECT id, service_type, service_ref, status, stripe_session_id, stripe_payment_intent,
+           amount_cents, currency, plan, created_at, paid_at, stripe_created_at,
+           receipt_url, invoice_url
+    FROM payments
+    WHERE lower(COALESCE(client_email,''))=lower($1)
+       OR ($2 <> '' AND COALESCE(stripe_session_id,'')=$2)
+    ORDER BY COALESCE(paid_at, stripe_created_at, created_at) DESC NULLS LAST
+    LIMIT 50`;
+  try { return (await query(sql, [email, sessionId || ''])).rows; }
+  catch (err) { console.warn('Dashboard v2 payments query failed:', err.message); return []; }
 }
+
 
 function dashboardV2ShouldKickPdf(service) {
   if (!service || service.type !== 'visa_assessment') return false;
@@ -6989,9 +6802,11 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v10.1 payment-return identity fix:
-  // When Stripe returns with a session_id, repair/attach the paid session BEFORE the first dashboard query.
-  // Otherwise the dashboard can render a verified shell with no email and no linked services until a manual refresh.
+  // v7.7 permanent payment-link repair:
+  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
+  // paid Stripe session before the dashboard list query runs. This makes the dashboard
+  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
+  // The list query still returns metadata only; PDF bytes are never read here.
   let paymentRepair = null;
   if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
     try {
@@ -6999,14 +6814,11 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
       stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
       const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
       if (stripePaid) {
-        const attached = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-        paymentRepair = { repaired: true, mode: 'before_dashboard_query', sessionId, attached };
-      } else {
-        paymentRepair = { repaired: false, mode: 'stripe_not_paid_yet', sessionId, stripeStatus: stripeSession.status || null, paymentStatus: stripeSession.payment_status || null };
+        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
       }
     } catch (err) {
-      paymentRepair = { repaired: false, mode: 'repair_failed_before_dashboard_query', sessionId, error: err && err.message ? err.message : String(err) };
-      console.warn('Dashboard v2 payment-link repair failed before query:', paymentRepair.error);
+      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
+      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
     }
   }
 
@@ -7042,9 +6854,9 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-payment-return-repair-before-query-v10-1',
+    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
     loadMs: Date.now() - startedAt,
-    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
+    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
     paymentRepair,
