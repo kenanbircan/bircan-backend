@@ -749,16 +749,21 @@ async function attachVisaAssessmentToClientById(assessmentId, client) {
     throw err;
   }
 
+  // Permanent form-email preservation:
+  // Attach the assessment to the authenticated portal account by client_id, but do not
+  // overwrite the assessment-form email with a stale/last dashboard login email.
+  // client_email/applicant_email remain the matter/form email; client_id is the account link.
+  const formEmail = assessmentEmail || clientEmail;
   const updated = await query(
     `UPDATE assessments
      SET client_id=$1,
-         client_email=$2,
-         applicant_email=COALESCE(applicant_email,$2),
+         client_email=COALESCE(NULLIF(client_email,''), $2),
+         applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
          active_plan=COALESCE(active_plan, selected_plan),
          updated_at=now()
      WHERE id=$3
      RETURNING *`,
-    [client.id, client.email, assessment.id]
+    [client.id, formEmail, assessment.id]
   );
   return updated.rows[0] || assessment;
 }
@@ -6447,6 +6452,34 @@ function dashboardSessionId(req) {
   ).trim();
 }
 
+function dashboardMatterEmailFromServices(...groups) {
+  for (const group of groups) {
+    for (const row of Array.isArray(group) ? group : []) {
+      const email = normaliseEmail(
+        row && (row.applicant_email || row.applicantEmail || row.assessment_email || row.assessmentEmail || row.form_email || row.formEmail || row.client_email || row.clientEmail)
+      );
+      if (email) return email;
+    }
+  }
+  return '';
+}
+
+function dashboardClientPayload(req, matterEmail = '') {
+  const account = (req && req.client) || {};
+  const accountEmail = normaliseEmail(account.email);
+  const formEmail = normaliseEmail(matterEmail) || accountEmail;
+  return {
+    id: account.id || null,
+    email: formEmail,
+    clientEmail: formEmail,
+    assessmentEmail: formEmail,
+    applicantEmail: formEmail,
+    accountEmail,
+    portalEmail: accountEmail,
+    name: account.name || null
+  };
+}
+
 async function clientFromStripeDashboardSession(sessionId) {
   if (!stripe || !sessionId || !/^cs_(test|live)_/i.test(sessionId)) return null;
   try {
@@ -6501,16 +6534,25 @@ async function resolveDashboardAccess(req, res, next) {
   try {
     let client = null;
     const rawToken = dashboardRequestToken(req);
+    const sid = dashboardSessionId(req);
 
-    // 1) Normal portal session cookie / bearer token.
-    client = await clientFromJwtToken(rawToken, SESSION_SECRET);
+    // Payment-return pages are matter-specific. If a Stripe session_id is present,
+    // resolve the dashboard account from that paid/session record FIRST.
+    // This prevents a stale browser cookie or the last account-dashboard login from
+    // making the dashboard load under the wrong client email.
+    if (sid && /^cs_(test|live)_/i.test(String(sid))) {
+      client = await clientFromLocalDashboardSession(sid);
+      if (!client) client = await clientFromStripeDashboardSession(sid);
+    }
 
-    // 2) Dedicated signed dashboard access token.
+    // Normal portal session cookie / bearer token is used only when there is no
+    // session-specific dashboard return client, or as a fallback for direct dashboard access.
+    if (!client) client = await clientFromJwtToken(rawToken, SESSION_SECRET);
+
+    // Dedicated signed dashboard access token.
     if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
 
-    // 3) Stripe return fallback: resolve from local paid/session records first, then Stripe only as a last resort.
-    // This solves cross-site cookie loss without delaying the dashboard on external Stripe API latency.
-    const sid = dashboardSessionId(req);
+    // Last fallback: local/Stripe session lookup when no stale cookie was present.
     if (!client) client = await clientFromLocalDashboardSession(sid);
     if (!client) client = await clientFromStripeDashboardSession(sid);
 
@@ -6718,7 +6760,7 @@ async function handleDashboardFast(req, res) {
     ok: true,
     fast: true,
     loadMs: Date.now() - startedAt,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(rawFast.visaRows || [], rawFast.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
     accessToken: dashboardToken,
     accessPatch: DASHBOARD_ACCESS_PATCH,
@@ -6947,25 +6989,11 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   const sessionId = dashboardSessionId(req);
   const dashboardToken = req.dashboardAccessToken || signDashboardAccessToken(req.client);
 
-  // v7.7 permanent payment-link repair:
-  // If the dashboard is opened from Stripe with a checkout session id, repair/attach the
-  // paid Stripe session before the dashboard list query runs. This makes the dashboard
-  // independent from payment-complete.html timing, browser cache, and cross-site cookie loss.
-  // The list query still returns metadata only; PDF bytes are never read here.
+  // v7.10 permanent dashboard timeout fix:
+  // Dashboard is a read-first endpoint. It must never wait for Stripe/network repair
+  // before returning local account records. Payment repair is queued after response.
   let paymentRepair = null;
-  if (sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe) {
-    try {
-      let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
-      stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
-      const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
-      if (stripePaid) {
-        paymentRepair = await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
-      }
-    } catch (err) {
-      console.warn('Dashboard v2 payment-link repair skipped:', err && err.message ? err.message : err);
-      paymentRepair = { ok: false, error: err && err.message ? err.message : String(err || 'payment repair failed') };
-    }
-  }
+  let shouldQueuePaymentRepair = Boolean(sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe);
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
     queryDashboardFastRows(email, clientId, sessionId),
@@ -6996,12 +7024,29 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
 
   const documents = visa.concat(appeals).filter(s => s.type !== 'citizenship_test');
   const pdfGenerationKick = scheduleDashboardV2PdfGeneration(documents, email);
+  if (shouldQueuePaymentRepair) {
+    paymentRepair = { queued: true, mode: 'background_after_dashboard_response', sessionId };
+    res.once('finish', () => {
+      setImmediate(async () => {
+        try {
+          let stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+          stripeSession = await normalisePaidStripeSessionForAttachment(stripeSession);
+          const stripePaid = stripeSession.payment_status === 'paid' || stripeSession.status === 'complete';
+          if (stripePaid) {
+            await attachPaidSession(stripeSession, { triggerGeneration: true, waitForPdf: false });
+          }
+        } catch (err) {
+          console.warn('Dashboard v2 background payment-link repair skipped:', err && err.message ? err.message : err);
+        }
+      });
+    });
+  }
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-stable-contract-v7-9-pdf-worker-self-heal',
+    version: 'dashboard-v2-read-first-background-payment-repair-v10',
     loadMs: Date.now() - startedAt,
-    client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
+    client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
     paymentRepair,
