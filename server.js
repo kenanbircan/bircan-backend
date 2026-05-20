@@ -167,6 +167,7 @@ const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTE
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
 const PDF_OPEN_ON_DEMAND_PATCH = 'issued-pdf-only-dashboard-open-v2';
+const DASHBOARD_V2_HARD_TIMEOUT_PATCH = 'dashboard-v2-hard-timeout-local-first-v11';
 
 function requestBaseUrl(req) {
   const proto = (req && (req.headers['x-forwarded-proto'] || req.protocol)) || 'https';
@@ -6480,6 +6481,30 @@ function dashboardClientPayload(req, matterEmail = '') {
   };
 }
 
+
+// ---- Dashboard hard timeout guard v7.11 ----
+// Dashboard endpoints must render from local rows quickly. Any slow DB/Stripe lookup
+// is downgraded to an empty/partial result instead of letting the browser abort.
+function dashboardTimeoutMs(value, fallback = 6500) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+function withDashboardTimeout(label, promise, fallback, timeoutMs = 6500) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise).catch(err => {
+      console.warn(`${label} failed:`, err && err.message ? err.message : err);
+      return fallback;
+    }),
+    new Promise(resolve => {
+      timer = setTimeout(() => {
+        console.warn(`${label} timed out after ${timeoutMs}ms; returning dashboard fallback.`);
+        resolve(fallback);
+      }, dashboardTimeoutMs(timeoutMs));
+    })
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 async function clientFromStripeDashboardSession(sessionId) {
   if (!stripe || !sessionId || !/^cs_(test|live)_/i.test(sessionId)) return null;
   try {
@@ -6536,25 +6561,12 @@ async function resolveDashboardAccess(req, res, next) {
     const rawToken = dashboardRequestToken(req);
     const sid = dashboardSessionId(req);
 
-    // Payment-return pages are matter-specific. If a Stripe session_id is present,
-    // resolve the dashboard account from that paid/session record FIRST.
-    // This prevents a stale browser cookie or the last account-dashboard login from
-    // making the dashboard load under the wrong client email.
-    if (sid && /^cs_(test|live)_/i.test(String(sid))) {
-      client = await clientFromLocalDashboardSession(sid);
-      if (!client) client = await clientFromStripeDashboardSession(sid);
-    }
-
-    // Normal portal session cookie / bearer token is used only when there is no
-    // session-specific dashboard return client, or as a fallback for direct dashboard access.
-    if (!client) client = await clientFromJwtToken(rawToken, SESSION_SECRET);
-
-    // Dedicated signed dashboard access token.
-    if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
-
-    // Last fallback: local/Stripe session lookup when no stale cookie was present.
-    if (!client) client = await clientFromLocalDashboardSession(sid);
-    if (!client) client = await clientFromStripeDashboardSession(sid);
+    // v7.11: never block dashboard access on a live Stripe API lookup.
+    // The dashboard page already receives a cookie/bearer/dashboard token after login/payment-complete.
+    // Local session lookup is allowed, but capped. Stripe repair runs after the dashboard response.
+    client = await withDashboardTimeout('Dashboard JWT session lookup', clientFromJwtToken(rawToken, SESSION_SECRET), null, 2500);
+    if (!client) client = await withDashboardTimeout('Dashboard signed access-token lookup', clientFromJwtToken(rawToken, dashboardTokenSecret()), null, 2500);
+    if (!client && sid) client = await withDashboardTimeout('Dashboard local Stripe-session lookup', clientFromLocalDashboardSession(sid), null, 3500);
 
     if (!client) return res.status(401).json({
       ok: false,
@@ -6567,7 +6579,7 @@ async function resolveDashboardAccess(req, res, next) {
     req.dashboardAccessToken = signDashboardAccessToken(client);
     next();
   } catch (err) {
-    console.error('Dashboard access resolver failed:', err.message);
+    console.error('Dashboard access resolver failed:', err && err.message ? err.message : err);
     res.status(401).json({ ok: false, error: 'Login required.', code: 'DASHBOARD_ACCESS_FAILED' });
   }
 }
@@ -6961,9 +6973,12 @@ function dashboardV2ShouldKickPdf(service) {
 }
 
 function scheduleDashboardV2PdfGeneration(services, email) {
-  const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 3);
+  const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 2);
   if (!targets.length) return [];
   const ids = targets.map(t => t.id);
+
+  // v7.11: the dashboard must never start CPU-heavy PDF generation in the web request path.
+  // It only queues jobs after the response; the normal worker/on-demand PDF route performs generation.
   setImmediate(async () => {
     for (const service of targets) {
       try {
@@ -6973,9 +6988,8 @@ function scheduleDashboardV2PdfGeneration(services, email) {
            ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
           [service.id]
         );
-        await generateAssessmentPdfNow(service.id, email);
       } catch (err) {
-        console.error('Dashboard v2 PDF generation kick failed:', service.id, err && err.message ? err.message : err);
+        console.error('Dashboard v2 PDF queue kick failed:', service.id, err && err.message ? err.message : err);
       }
     }
   });
@@ -6996,9 +7010,9 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   let shouldQueuePaymentRepair = Boolean(sessionId && /^cs_(test|live)_/i.test(String(sessionId)) && stripe);
 
   const [fastRows, appealRows, paymentRows] = await Promise.all([
-    queryDashboardFastRows(email, clientId, sessionId),
-    queryDashboardV2Appeals(email, clientId, sessionId),
-    queryDashboardV2Payments(email, sessionId)
+    withDashboardTimeout('Dashboard visa/citizenship rows', queryDashboardFastRows(email, clientId, sessionId), { visaRows: [], citizenshipRows: [] }, 7000),
+    withDashboardTimeout('Dashboard appeals rows', queryDashboardV2Appeals(email, clientId, sessionId), [], 4500),
+    withDashboardTimeout('Dashboard payments rows', queryDashboardV2Payments(email, sessionId), [], 4500)
   ]);
 
   const visa = dedupeDashboardRows(fastRows.visaRows || [], ['duplicate_key', 'id'])
@@ -7044,7 +7058,7 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-read-first-background-payment-repair-v10',
+    version: 'dashboard-v2-hard-timeout-local-first-v11',
     loadMs: Date.now() - startedAt,
     client: dashboardClientPayload(req, dashboardMatterEmailFromServices(fastRows.visaRows || [], appealRows || [], fastRows.citizenshipRows || [])),
     dashboardAccessToken: dashboardToken,
