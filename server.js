@@ -1546,6 +1546,12 @@ async function installPostgresIdempotencyConstraints() {
       AND COALESCE(payment_status, 'unpaid') <> 'paid'
   `);
 
+
+
+  // v7.13 fast public handoff indexes: the pre-login save route must not scan JSONB payloads.
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_public_handoff_fast ON assessments (lower(client_email), visa_type, selected_plan, created_at DESC) WHERE COALESCE(payment_status, 'unpaid') <> 'paid'`).catch(err => console.warn('public handoff client_email index skipped:', err.message));
+  await query(`CREATE INDEX IF NOT EXISTS idx_assessments_public_handoff_applicant_fast ON assessments (lower(applicant_email), visa_type, selected_plan, created_at DESC) WHERE COALESCE(payment_status, 'unpaid') <> 'paid'`).catch(err => console.warn('public handoff applicant_email index skipped:', err.message));
+
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_service_sessions_unique_service_ref
     ON service_sessions (service_type, service_ref)
@@ -2845,6 +2851,7 @@ async function handlePublicVisaAssessmentStart(req, res) {
   let created;
   try {
     created = await tx(async (client) => {
+      // v7.13: this public save route must be fast. It must not scan JSON payloads or wait indefinitely on DB locks.
       // Permanent duplicate prevention:
       // Re-clicks, browser retries, and Stripe-return loops may reuse only an unpaid/in-progress
       // assessment. A paid assessment is a completed matter and must never be reused for a new
@@ -2862,11 +2869,10 @@ async function handlePublicVisaAssessmentStart(req, res) {
          WHERE (
              lower(a.client_email)=lower($1)
              OR lower(a.applicant_email)=lower($1)
-             OR lower(COALESCE(a.form_payload->'meta'->>'applicantEmail',''))=lower($1)
-             OR lower(COALESCE(a.form_payload->'meta'->>'clientEmail',''))=lower($1)
            )
            AND a.visa_type=$2
            AND COALESCE(a.active_plan, a.selected_plan, 'instant')=$3
+           AND COALESCE(a.payment_status,'unpaid') <> 'paid'
            AND a.created_at > now() - interval '48 hours'
            -- Strict public handoff idempotency:
            -- same email + same subclass + same plan must reuse the most recent matter
