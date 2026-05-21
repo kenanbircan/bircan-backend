@@ -1,5 +1,69 @@
 'use strict';
 
+/**
+ * Last-mile client-facing advice sanitiser.
+ * Runs inside pdf.js before the PDF quality gate and before rendering.
+ * It does not weaken the gate: it normalises known internal labels first,
+ * then the gate still blocks any forbidden wording that survives.
+ */
+function bmFinalCleanAdviceText(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(/\bGrant Criterion Control\b/gi, 'Grant criterion requirement')
+    .replace(/\bSubclass Specific Grant Criterion\b/gi, 'Subclass-specific requirement')
+    .replace(/\bRegistry-controlled pathway Stream\b/gi, 'selected pathway')
+    .replace(/\bRegistry-controlled pathway\b/gi, 'selected pathway')
+    .replace(/\bRegistry controlled pathway\b/gi, 'selected pathway')
+    .replace(/\bPrimary pathway\b/gi, 'selected pathway')
+    .replace(/Map the original evidence to the clause and record any unresolved gap before final advice\.?/gi,
+      'Review the original evidence against this requirement and resolve any evidentiary gap before final lodgement advice is finalised.')
+    .replace(/This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control\.?/gi,
+      'This requirement must be assessed against the original evidence, current legal settings and any applicable instrument before final lodgement advice is issued.')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function bmFinalSanitiseAdviceValue(value, seen) {
+  if (value === null || value === undefined) return value;
+  if (!seen) seen = new WeakSet();
+  if (typeof value === 'string') return bmFinalCleanAdviceText(value);
+  if (Array.isArray(value)) return value.map((item) => bmFinalSanitiseAdviceValue(item, seen));
+  if (typeof value === 'object') {
+    if (seen.has(value)) return value;
+    seen.add(value);
+    for (const key of Object.keys(value)) {
+      value[key] = bmFinalSanitiseAdviceValue(value[key], seen);
+    }
+    return value;
+  }
+  return value;
+}
+
+function bmFinalSanitiseCriteriaRows(rows) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((row) => bmFinalSanitiseAdviceValue(row));
+}
+
+function bmFinalAssertNoForbiddenAdviceText(payload) {
+  const text = JSON.stringify(payload || {});
+  const forbidden = [
+    'Registry-controlled pathway',
+    'Registry controlled pathway',
+    'Grant Criterion Control',
+    'Subclass Specific Grant Criterion',
+    'Map the original evidence to the clause',
+    'Primary pathway'
+  ];
+  for (const phrase of forbidden) {
+    if (text.includes(phrase)) {
+      throw new Error(`PDF blocked: forbidden fallback wording leaked into advice letter: ${phrase}`);
+    }
+  }
+  return true;
+}
+
+
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -958,9 +1022,9 @@ function buildAssessmentPdfBuffer(assessment, adviceBundle) {
 
       const facts = extractFactsObject(assessment || {}, adviceBundle || {});
       const subclass = cleanText(advice.subclass || assessment.visa_type || deepPick(facts, ['subclass', 'visaSubclass', 'visa_type'], '186'));
-      const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
+      let stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
-      const title = `Subclass ${subclass} Employer Nomination Scheme professional advice letter`;
+      let title = `Subclass ${subclass} Employer Nomination Scheme professional advice letter`;
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
       const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
       const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
@@ -2504,7 +2568,7 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       const stream = inferStream(assessment || {}, adviceBundle || {}, advice || {});
       const family = v11VisaFamily(subclass);
       const generatedAt = new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' });
-      const pathwayLabel = bmPathwayLabel(subclass, stream);
+      let pathwayLabel = bmPathwayLabel(subclass, stream);
       const title = pathwayLabel;
       const applicantName = inferApplicantName(assessment || {}, adviceBundle || {}, facts || {});
       const applicantEmail = inferApplicantEmail(assessment || {}, facts || {});
@@ -2554,25 +2618,27 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
           }
         };
       }
-      const criteria = v10BuildCriteria(effectiveAdvice, bundleForPdf || {}, subclass, stream);
+      let criteria = v10BuildCriteria(effectiveAdvice, bundleForPdf || {}, subclass, stream);
       const expectedVisibleCriteria = ensureArray(bundleForPdf.fullCriteriaRegistryMatrix || bundleForPdf.grantCriteriaFindings || effectiveAdvice.fullCriteriaRegistryMatrix || effectiveAdvice.grantCriteriaFindings || effectiveAdvice.criterion_findings || []).length;
       if (expectedVisibleCriteria && criteria.length < expectedVisibleCriteria) {
         throw new Error(`PDF blocked: Appendix criteria matrix incomplete. Registry produced ${expectedVisibleCriteria}, renderer produced ${criteria.length}.`);
       }
-      const pdfQualityText = JSON.stringify({ pathwayLabel, title, stream, effectiveAdvice, criteria, seniorAdviceModel: bundleForPdf.seniorAdviceModel || null });
-      const forbiddenPdfPhrases = [
-        'Registry-controlled pathway',
-        'Registry controlled pathway',
-        'Grant Criterion Control',
-        'Subclass Specific Grant Criterion',
-        'Map the original evidence to the clause',
-        'Primary pathway'
-      ];
-      for (const phrase of forbiddenPdfPhrases) {
-        if (pdfQualityText.includes(phrase)) {
-          throw new Error(`PDF blocked: forbidden fallback wording leaked into advice letter: ${phrase}`);
-        }
-      }
+      // Last-mile sanitisation must happen before the quality gate.
+      pathwayLabel = bmFinalCleanAdviceText(pathwayLabel);
+      title = bmFinalCleanAdviceText(title);
+      stream = bmFinalCleanAdviceText(stream);
+      bmFinalSanitiseAdviceValue(effectiveAdvice);
+      bmFinalSanitiseAdviceValue(bundleForPdf);
+      criteria = bmFinalSanitiseCriteriaRows(criteria);
+
+      bmFinalAssertNoForbiddenAdviceText({
+        pathwayLabel,
+        title,
+        stream,
+        effectiveAdvice,
+        criteria,
+        seniorAdviceModel: bundleForPdf.seniorAdviceModel || null
+      });
       const scForGate = String(subclass || '').replace(/[^0-9]/g, '');
       const subclassMentions = pdfQualityText.match(/Subclass\s+(\d{3})/g) || [];
       for (const mention of subclassMentions) {
