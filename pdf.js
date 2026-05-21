@@ -68,6 +68,11 @@ function cleanClientText(value) {
   if (typeof value !== 'string') return value;
 
   return value
+    .normalize('NFKC')
+    .replace(/[\uFFFC-\uFFFF]/g, '-')
+    .replace(/[\u200B-\u200D\u2060]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/\u00AD/g, '')
     .replace(/\bGrant Criterion Control\b/gi, 'Grant criterion requirement')
     .replace(/\bSubclass Specific Grant Criterion\b/gi, 'Subclass-specific requirement')
     .replace(/\bRegistry-controlled pathway Stream\b/gi, 'stream/pathway')
@@ -410,8 +415,46 @@ function pageWidth(doc) {
   return doc.page.width - doc.page.margins.left - doc.page.margins.right;
 }
 
+function bottomY(doc) {
+  return doc.page.height - doc.page.margins.bottom;
+}
+
+function remainingY(doc) {
+  return bottomY(doc) - doc.y;
+}
+
+function wrapLongTokens(value, max = 42) {
+  return String(value || '').split(/(\s+)/).map(part => {
+    if (/\s+/.test(part) || part.length <= max) return part;
+    return part.replace(new RegExp(`(.{1,${max}})`, 'g'), '$1 ').trim();
+  }).join('');
+}
+
+function safeBody(value) {
+  return wrapLongTokens(cleanClientText(text(value, '')).replace(/[\uFFFC-\uFFFF]/g, '-'))
+    .replace(/\s+([,.;:])/g, '$1')
+    .replace(/[‐‑‒–—]/g, '-')
+    .replace(/\s*-\s*/g, '-')
+    .replace(/-([,.;:])/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function ensureMeasuredSpace(doc, body, width, options = {}) {
+  const font = options.bold ? 'Helvetica-Bold' : 'Helvetica';
+  const size = options.size || 9.5;
+  const lineGap = options.lineGap || 2.8;
+  doc.font(font).fontSize(size);
+  const height = doc.heightOfString(safeBody(body), { width, lineGap }) + (options.extra || 10);
+  if (height < 500 && remainingY(doc) < height) doc.addPage();
+}
+
+function paragraphGap(doc, amount = 0.25) {
+  doc.moveDown(amount);
+}
+
 function ensureSpace(doc, height = 80) {
-  if (doc.y + height > doc.page.height - doc.page.margins.bottom) doc.addPage();
+  if (doc.y + height > bottomY(doc)) doc.addPage();
 }
 
 function rule(doc) {
@@ -420,26 +463,32 @@ function rule(doc) {
 }
 
 function h1(doc, value) {
-  ensureSpace(doc, 60);
-  doc.font('Helvetica-Bold').fontSize(18).fillColor('#0b2545').text(cleanClientText(value), { lineGap: 2 });
-  doc.moveDown(0.4);
+  ensureSpace(doc, 72);
+  doc.font('Helvetica-Bold').fontSize(16).fillColor('#0b2545')
+    .text(cleanClientText(value), { width: pageWidth(doc), lineGap: 2.4 });
+  doc.moveDown(0.45);
   rule(doc);
 }
 
 function h2(doc, value) {
-  ensureSpace(doc, 48);
-  doc.moveDown(0.4);
-  doc.font('Helvetica-Bold').fontSize(12.5).fillColor('#12355b').text(cleanClientText(value), { lineGap: 2 });
-  doc.moveDown(0.35);
+  ensureSpace(doc, 56);
+  doc.moveDown(0.5);
+  doc.font('Helvetica-Bold').fontSize(11.4).fillColor('#12355b')
+    .text(cleanClientText(value), { width: pageWidth(doc), lineGap: 2.2 });
+  doc.moveDown(0.5);
 }
 
 function p(doc, value, options = {}) {
-  const body = cleanClientText(text(value, ''));
+  const body = safeBody(value);
   if (!body) return;
-  ensureSpace(doc, 38);
-  doc.font(options.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(options.size || 9.5).fillColor(options.color || '#182334')
-    .text(body, { width: pageWidth(doc), lineGap: options.lineGap || 2.8, align: options.align || 'left' });
-  doc.moveDown(options.after === undefined ? 0.45 : options.after);
+  const width = options.width || pageWidth(doc);
+  const paragraphs = body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean);
+  for (const para of paragraphs) {
+    ensureMeasuredSpace(doc, para, width, options);
+    doc.font(options.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(options.size || 9.2).fillColor(options.color || '#182334')
+      .text(para, { width, lineGap: options.lineGap || 3.1, align: options.align || 'left' });
+    doc.moveDown(options.after === undefined ? 0.52 : options.after);
+  }
 }
 
 function small(doc, value) {
@@ -448,20 +497,29 @@ function small(doc, value) {
 
 function keyValueTable(doc, rows, widths) {
   const usable = pageWidth(doc);
-  const w1 = widths && widths[0] ? widths[0] : Math.round(usable * 0.32);
+  const w1 = widths && widths[0] ? widths[0] : Math.round(usable * 0.34);
   const w2 = usable - w1;
+  const leftPad = 8;
+  const topPad = 7;
+  const bottomPad = 8;
   for (const row of rows) {
-    const k = cleanClientText(text(row[0], ''));
-    const v = cleanClientText(text(row[1], '—'));
-    const h = Math.max(doc.heightOfString(k, { width: w1 - 8 }), doc.heightOfString(v, { width: w2 - 8 })) + 10;
-    ensureSpace(doc, h + 4);
+    const k = safeBody(text(row[0], ''));
+    const v = safeBody(text(row[1], '-'));
+    doc.font('Helvetica-Bold').fontSize(8.4);
+    const kh = doc.heightOfString(k, { width: w1 - (leftPad * 2), lineGap: 2 });
+    doc.font('Helvetica').fontSize(8.4);
+    const vh = doc.heightOfString(v, { width: w2 - (leftPad * 2), lineGap: 2.2 });
+    const h = Math.max(kh, vh, 14) + topPad + bottomPad;
+    ensureSpace(doc, h + 6);
     const y = doc.y;
     doc.rect(doc.page.margins.left, y, usable, h).fillAndStroke('#f8fafc', '#e2e8f0');
-    doc.fillColor('#26364a').font('Helvetica-Bold').fontSize(8.5).text(k, doc.page.margins.left + 6, y + 6, { width: w1 - 8 });
-    doc.fillColor('#152033').font('Helvetica').fontSize(8.5).text(v, doc.page.margins.left + w1 + 6, y + 6, { width: w2 - 8, lineGap: 1.8 });
-    doc.y = y + h + 3;
+    doc.fillColor('#26364a').font('Helvetica-Bold').fontSize(8.4)
+      .text(k, doc.page.margins.left + leftPad, y + topPad, { width: w1 - (leftPad * 2), lineGap: 2 });
+    doc.fillColor('#152033').font('Helvetica').fontSize(8.4)
+      .text(v, doc.page.margins.left + w1 + leftPad, y + topPad, { width: w2 - (leftPad * 2), lineGap: 2.2 });
+    doc.y = y + h + 4;
   }
-  doc.moveDown(0.3);
+  doc.moveDown(0.35);
 }
 
 function table(doc, headers, rows, widths) {
@@ -469,18 +527,23 @@ function table(doc, headers, rows, widths) {
   const cols = headers.length;
   const resolved = widths && widths.length === cols ? widths : new Array(cols).fill(usable / cols);
   const x0 = doc.page.margins.left;
+  const padX = 6;
+  const padY = 7;
 
   function drawRow(cells, header) {
-    const cleanCells = cells.map((c) => cleanClientText(text(c, '—')));
-    const heights = cleanCells.map((c, i) => doc.heightOfString(c, { width: resolved[i] - 8, lineGap: 1.6 }) + 10);
-    const h = Math.max(...heights, header ? 24 : 26);
-    ensureSpace(doc, h + 6);
+    const cleanCells = cells.map((c) => safeBody(text(c, '-')));
+    const heights = cleanCells.map((c, i) => {
+      doc.font(header ? 'Helvetica-Bold' : 'Helvetica').fontSize(header ? 8.0 : 7.8);
+      return doc.heightOfString(c, { width: resolved[i] - (padX * 2), lineGap: 2.0 }) + (padY * 2);
+    });
+    const h = Math.max(...heights, header ? 28 : 30);
+    ensureSpace(doc, h + 8);
     const y = doc.y;
     let x = x0;
     for (let i = 0; i < cols; i++) {
       doc.rect(x, y, resolved[i], h).fillAndStroke(header ? '#eaf1fb' : '#ffffff', '#d6dee9');
-      doc.fillColor('#172033').font(header ? 'Helvetica-Bold' : 'Helvetica').fontSize(header ? 8.4 : 8.1)
-        .text(cleanCells[i], x + 5, y + 6, { width: resolved[i] - 10, lineGap: 1.5 });
+      doc.fillColor('#172033').font(header ? 'Helvetica-Bold' : 'Helvetica').fontSize(header ? 8.0 : 7.8)
+        .text(cleanCells[i], x + padX, y + padY, { width: resolved[i] - (padX * 2), lineGap: 2.0 });
       x += resolved[i];
     }
     doc.y = y + h;
@@ -488,18 +551,19 @@ function table(doc, headers, rows, widths) {
 
   drawRow(headers, true);
   for (const row of rows) drawRow(row, false);
-  doc.moveDown(0.5);
+  doc.moveDown(0.6);
 }
 
 function bullet(doc, value) {
-  const body = cleanClientText(text(value, ''));
+  const body = safeBody(value);
   if (!body) return;
-  ensureSpace(doc, 36);
+  const width = pageWidth(doc) - 18;
+  ensureMeasuredSpace(doc, body, width, { size: 8.9, lineGap: 2.8, extra: 14 });
   const x = doc.page.margins.left;
   const y = doc.y;
-  doc.font('Helvetica').fontSize(9).fillColor('#182334').text('•', x, y, { width: 12 });
-  doc.text(body, x + 14, y, { width: pageWidth(doc) - 14, lineGap: 2.4 });
-  doc.moveDown(0.35);
+  doc.font('Helvetica').fontSize(8.9).fillColor('#182334').text('•', x, y, { width: 12, continued: false });
+  doc.font('Helvetica').fontSize(8.9).fillColor('#182334').text(body, x + 16, y, { width, lineGap: 2.8 });
+  doc.moveDown(0.42);
 }
 
 function findingStatusLabel(finding) {
@@ -518,23 +582,31 @@ function statusBadge(doc, value) {
   const label = cleanClientText(text(value, 'Unclear - evidence required'));
   const x = doc.x;
   const y = doc.y;
-  const w = Math.min(pageWidth(doc), Math.max(120, doc.widthOfString(label) + 18));
-  doc.roundedRect(x, y, w, 18, 9).fillAndStroke('#eef5ff', '#d7e7ff');
-  doc.fillColor('#174cc8').font('Helvetica-Bold').fontSize(8.2).text(label, x + 9, y + 5, { width: w - 18 });
-  doc.y = y + 24;
+  doc.font('Helvetica-Bold').fontSize(8.0);
+  const w = Math.min(pageWidth(doc), Math.max(126, doc.widthOfString(label) + 22));
+  doc.roundedRect(x, y, w, 19, 9).fillAndStroke('#eef5ff', '#d7e7ff');
+  doc.fillColor('#174cc8').font('Helvetica-Bold').fontSize(8.0).text(label, x + 10, y + 5, { width: w - 20, lineGap: 1.5 });
+  doc.y = y + 27;
 }
 
 function adviceBlock(doc, label, body) {
-  const value = cleanClientText(text(body, ''));
+  const value = safeBody(body);
   if (!value) return;
-  ensureSpace(doc, 45);
-  doc.font('Helvetica-Bold').fontSize(8.4).fillColor('#344054').text(cleanClientText(label), { width: pageWidth(doc), lineGap: 1.6 });
-  doc.font('Helvetica').fontSize(9.0).fillColor('#182334').text(value, { width: pageWidth(doc), lineGap: 2.4 });
-  doc.moveDown(0.45);
+  const width = pageWidth(doc);
+  doc.font('Helvetica-Bold').fontSize(8.3);
+  const labelH = doc.heightOfString(cleanClientText(label), { width, lineGap: 1.8 });
+  doc.font('Helvetica').fontSize(8.8);
+  const bodyH = doc.heightOfString(value, { width, lineGap: 2.9 });
+  const total = labelH + bodyH + 18;
+  if (total < 460 && remainingY(doc) < total) doc.addPage();
+  doc.font('Helvetica-Bold').fontSize(8.3).fillColor('#344054').text(cleanClientText(label), { width, lineGap: 1.8 });
+  doc.moveDown(0.12);
+  doc.font('Helvetica').fontSize(8.8).fillColor('#182334').text(value, { width, lineGap: 2.9 });
+  doc.moveDown(0.65);
 }
 
 function findingCard(doc, index, finding) {
-  ensureSpace(doc, 125);
+  ensureSpace(doc, 230);
   h2(doc, `${index}. ${findingTitle(finding)}`);
   statusBadge(doc, findingStatusLabel(finding));
   adviceBlock(doc, 'Legal requirement', findingRequirement(finding) || 'The requirement must be confirmed from the applicable legal framework before final advice.');
@@ -668,9 +740,9 @@ function writeEvidence(doc, model) {
 }
 
 function riskCard(doc, index, finding) {
-  ensureSpace(doc, 92);
-  doc.font('Helvetica-Bold').fontSize(9.6).fillColor('#0b2545')
-    .text(`${index}. ${findingTitle(finding)}`, { width: pageWidth(doc), lineGap: 1.8 });
+  ensureSpace(doc, 165);
+  doc.font('Helvetica-Bold').fontSize(9.2).fillColor('#0b2545')
+    .text(`${index}. ${findingTitle(finding)}`, { width: pageWidth(doc), lineGap: 2.1 });
   doc.moveDown(0.15);
   adviceBlock(doc, 'Risk/status', findingRisk(finding) || findingStatusLabel(finding));
   adviceBlock(doc, 'Professional consequence', findingConsequence(finding) || 'If unresolved, this issue may affect validity, eligibility, prospects or lodgement strategy.');
