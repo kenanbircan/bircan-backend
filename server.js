@@ -109,11 +109,10 @@ const appealUpload = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 let pdfParse = null;
 try { pdfParse = require('pdf-parse'); } catch (_err) { pdfParse = null; }
 const BOOTSTRAP_DB = String(process.env.BOOTSTRAP_DB || 'true').toLowerCase() !== 'false';
-const PDF_WORKER_INTERVAL_MS = Math.max(1500, Number(process.env.PDF_WORKER_INTERVAL_MS || 3000));
+const PDF_WORKER_INTERVAL_MS = Math.max(3000, Number(process.env.PDF_WORKER_INTERVAL_MS || 10000));
 const CHECKOUT_HANDOFF_PERMANENT_PATCH = 'assessment-prelogin-save-login-redirect-checkout-direct-v1';
 const PDF_MODULE_BINDING_PATCH = 'server-uses-pdf-js-buildAssessmentPdfBuffer-v1';
 const PDF_OPEN_ON_DEMAND_PATCH = 'issued-pdf-only-dashboard-open-v2';
-const PDF_GENERATION_SPEED_PATCH = 'pdf-worker-fast-claim-no-long-tx-v1';
 
 function requestBaseUrl(req) {
   const proto = (req && (req.headers['x-forwarded-proto'] || req.protocol)) || 'https';
@@ -6253,16 +6252,28 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
   const requestedId = String(assessmentId || '').trim();
   const force = Boolean(options && options.force);
 
+  async function markPdfGenerationFailed(id, message) {
+    if (!id) return;
+    await query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [message, id]).catch(() => null);
+    await query(
+      `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
+       VALUES ($1,'failed',$2,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status='failed', last_error=$2, updated_at=now()`,
+      [id, message]
+    ).catch(() => null);
+  }
+
+  // v7.12 PDF worker hardening:
+  // Do not hold a Postgres transaction or row lock while legal advice, registry,
+  // knowledgebase and PDF rendering work is performed. Long rendering work under
+  // FOR UPDATE was the cause of "PDF generation failed: Query read timeout".
   let rows = (await query(
     `SELECT * FROM assessments WHERE id=$1 ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} LIMIT 1`,
     accountEmail ? [requestedId, accountEmail] : [requestedId]
   )).rows;
 
-  // Older dashboard guards sometimes extracted only a partial reference such as
-  // sub_1777591587924_186 instead of sub_1777591587924_186_078247b3.
-  // Resolve that safely inside the same logged-in account without holding a row lock.
   if (!rows[0] && /^sub_\d+_[a-z0-9]+$/i.test(requestedId)) {
-    const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\\_%';
+    const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\_%';
     rows = (await query(
       `SELECT * FROM assessments WHERE id LIKE $1 ESCAPE '\\' ${accountEmail ? 'AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))' : ''} ORDER BY created_at DESC LIMIT 1`,
       accountEmail ? [likePattern, accountEmail] : [likePattern]
@@ -6278,13 +6289,18 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
   if (assessment.release_at && new Date(assessment.release_at).getTime() > Date.now() && !force) {
     const seconds = Math.max(0, Math.ceil((new Date(assessment.release_at).getTime() - Date.now()) / 1000));
     const msg = `This ${normalisePlanLabel(assessment.selected_plan || assessment.active_plan)} assessment is locked until release. Time remaining: ${formatDurationSeconds(seconds)}.`;
-    await query(`UPDATE pdf_jobs SET status='queued', run_after=$1, last_error=NULL, updated_at=now() WHERE assessment_id=$2`, [assessment.release_at, assessmentId]);
+    await query(
+      `INSERT INTO pdf_jobs (assessment_id, status, run_after, last_error, created_at, updated_at)
+       VALUES ($1,'queued',$2,NULL,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=$2, last_error=NULL, updated_at=now()`,
+      [assessmentId, assessment.release_at]
+    ).catch(() => null);
     throw new Error(msg);
   }
 
   if (hasIssuedPdfBytes(assessment.pdf_bytes) && !force) {
     const verified = await verifyIssuedPdfSaved({ query }, assessmentId);
-    await query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]);
+    await query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]).catch(() => null);
     return toPublicAssessment(verified);
   }
 
@@ -6305,37 +6321,27 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     assessment.pdf_bytes = null;
   }
 
-  // Keep database work short: mark/claim the row, then run legal/PDF generation outside
-  // a transaction. This avoids holding a Postgres row lock while the knowledgebase,
-  // criteriaRegistry and PDF renderer do CPU/file-system work.
   if (!payloadLooksUsable(assessment.form_payload)) {
     const msg = 'Assessment payload missing or incomplete — cannot generate final advice letter. Re-submit the assessment form so answers are stored before payment/PDF generation.';
-    await query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [msg, assessmentId]);
-    await query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [msg, assessmentId]);
+    await markPdfGenerationFailed(assessmentId, msg);
     throw new Error(msg);
   }
 
-  const claimRows = (await query(
+  await query(
     `UPDATE assessments
-     SET status='pdf_generating', generation_attempts=COALESCE(generation_attempts,0)+1,
-         generation_locked_at=now(), generation_error=NULL, updated_at=now()
-     WHERE id=$1
-       AND (status IS DISTINCT FROM 'pdf_generating' OR generation_locked_at IS NULL OR generation_locked_at < now() - interval '8 minutes' OR $2::boolean)
-     RETURNING id`,
-    [assessmentId, force]
-  )).rows;
-
-  if (!claimRows[0]) {
-    // Another immediate/payment-return worker is already generating the same PDF.
-    // Do not duplicate the expensive legal/PDF build.
-    return toPublicAssessment({ ...assessment, status: 'pdf_generating', has_pdf: false });
-  }
+     SET status='pdf_generating',
+         generation_attempts=COALESCE(generation_attempts,0)+1,
+         generation_locked_at=now(),
+         generation_error=NULL,
+         updated_at=now()
+     WHERE id=$1`,
+    [assessmentId]
+  );
 
   let pdf;
-  let adviceBundle;
-  const assessmentForAdvice = attachEvidenceValidation(assessment);
   try {
-    adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
+    const assessmentForAdvice = attachEvidenceValidation(assessment);
+    const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
 
     if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
       throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
@@ -6384,7 +6390,13 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     ].filter(Array.isArray).flat();
 
     if (registryCoverageRate < requiredCoverageRate || mandatoryCriteriaMissing.length) {
-      const detail = JSON.stringify({ registryCoverageRate, requiredCoverageRate, unsupportedSourceCriteria, mandatoryCriteriaMissing, auditOk: audit.ok === true });
+      const detail = JSON.stringify({
+        registryCoverageRate,
+        requiredCoverageRate,
+        unsupportedSourceCriteria,
+        mandatoryCriteriaMissing,
+        auditOk: audit.ok === true
+      });
       throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
     }
 
@@ -6422,28 +6434,35 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
     );
   } catch (err) {
-    await query(`UPDATE assessments SET status='pdf_failed', generation_locked_at=NULL, generation_error=$1, updated_at=now() WHERE id=$2`, [err.message, assessmentId]);
-    await query(`UPDATE pdf_jobs SET status='failed', last_error=$1, updated_at=now() WHERE assessment_id=$2`, [err.message, assessmentId]);
+    await markPdfGenerationFailed(assessmentId, err.message);
     throw err;
   }
 
   const filename = `Bircan-${assessment.visa_type}-${assessment.id}-grant-criteria-advice.pdf`;
   const hash = sha256(pdf);
 
-  await tx(async (client) => {
-    await client.query(
+  const saved = await tx(async (client) => {
+    const { rows: updatedRows } = await client.query(
       `UPDATE assessments
        SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
-           pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL,
-           generation_locked_at=NULL, updated_at=now()
-       WHERE id=$4`,
+           pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
+       WHERE id=$4
+       RETURNING id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan,
+                 status, payment_status, pdf_bytes, pdf_filename, pdf_sha256, pdf_generated_at, created_at, updated_at,
+                 true AS has_pdf`,
       [pdf, filename, hash, assessmentId]
     );
-    await client.query(`UPDATE pdf_jobs SET status='completed', updated_at=now(), last_error=NULL WHERE assessment_id=$1`, [assessmentId]);
+    await client.query(
+      `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
+       VALUES ($1,'completed',NULL,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status='completed', last_error=NULL, locked_at=NULL, updated_at=now()`,
+      [assessmentId]
+    ).catch(() => null);
+    return updatedRows[0];
   });
 
-  const saved = await verifyIssuedPdfSaved({ query }, assessmentId);
-  return toPublicAssessment(saved);
+  const verified = await verifyIssuedPdfSaved({ query }, assessmentId);
+  return toPublicAssessment(verified || saved);
 }
 
 function toPublicAssessment(a) {
@@ -6487,7 +6506,7 @@ async function runOnePdfJob() {
     const nextAttempts = Number(job.attempts || 0) + 1;
     const retry = nextAttempts < 3;
     await query(
-      `UPDATE pdf_jobs SET status=$1, last_error=$2, run_after=now() + interval '20 seconds', updated_at=now() WHERE id=$3`,
+      `UPDATE pdf_jobs SET status=$1, last_error=$2, run_after=now() + interval '2 minutes', updated_at=now() WHERE id=$3`,
       [retry ? 'queued' : 'failed', err.message, job.id]
     );
   }
