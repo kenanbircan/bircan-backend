@@ -3,9 +3,17 @@
 const { tx, query } = require('../db');
 const { createPaidAdviceJob, markAdviceManualReview, markAdviceReady } = require('./pdfReleaseService');
 
-async function claimNextAdviceJob() {
+async function claimNextAdviceJob({ assessmentId } = {}) {
   return tx(async (client) => {
-    const { rows } = await client.query(
+    const { rows } = assessmentId ? await client.query(
+      `SELECT * FROM pdf_jobs
+       WHERE assessment_id=$1
+         AND status IN ('queued','failed','processing')
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1`,
+      [assessmentId]
+    ) : await client.query(
       `SELECT * FROM pdf_jobs
        WHERE status='queued' AND run_after <= now()
        ORDER BY created_at ASC
@@ -22,9 +30,9 @@ async function claimNextAdviceJob() {
   });
 }
 
-async function runOneAdviceJob({ generateAssessmentPdfNow, maxAttempts = 3 } = {}) {
+async function runOneAdviceJob({ generateAssessmentPdfNow, maxAttempts = 3, assessmentId } = {}) {
   if (typeof generateAssessmentPdfNow !== 'function') throw new Error('generateAssessmentPdfNow function is required.');
-  const job = await claimNextAdviceJob();
+  const job = await claimNextAdviceJob({ assessmentId });
   if (!job) return { ran: false };
   try {
     const result = await generateAssessmentPdfNow(job.assessment_id);
@@ -48,10 +56,10 @@ async function runOneAdviceJob({ generateAssessmentPdfNow, maxAttempts = 3 } = {
   }
 }
 
-async function runDueAdviceJobs({ generateAssessmentPdfNow, limit = 1 } = {}) {
+async function runDueAdviceJobs({ generateAssessmentPdfNow, limit = 1, assessmentId } = {}) {
   const results = [];
   for (let i = 0; i < limit; i += 1) {
-    const result = await runOneAdviceJob({ generateAssessmentPdfNow });
+    const result = await runOneAdviceJob({ generateAssessmentPdfNow, assessmentId: i === 0 ? assessmentId : undefined });
     results.push(result);
     if (!result.ran) break;
   }

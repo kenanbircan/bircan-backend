@@ -10,7 +10,7 @@ async function createPaidAdviceJob({ assessmentId, runAfter = null, resetFailure
     VALUES ($1,'queued',COALESCE($2::timestamptz, now()),NULL,NULL,now(),now())
     ON CONFLICT (assessment_id) DO UPDATE SET
       status=CASE
-        WHEN pdf_jobs.status='completed' THEN pdf_jobs.status
+        WHEN pdf_jobs.status='completed' AND $3::boolean=false THEN pdf_jobs.status
         WHEN pdf_jobs.status='failed' AND $3::boolean=false THEN pdf_jobs.status
         ELSE 'queued'
       END,
