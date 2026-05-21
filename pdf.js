@@ -1,24 +1,20 @@
 'use strict';
 
 /**
- * Bircan Migration pdf.js — clean advice renderer
- * Rebuilt from scratch as a rendering-only module.
+ * Bircan Migration pdf.js — server-contract renderer v110
  *
- * Contract preserved:
- *   module.exports = {
- *     buildAssessmentPdfBuffer,
- *     buildAppealAdvicePdfBuffer,
- *     sha256
- *   }
- *
- * Important architectural rule:
- *   This file does not create legal advice. It renders a validated advice model.
- *   If the model still contains internal/fallback labels or wrong-subclass text,
- *   PDF generation is blocked before release.
+ * Rendering-only module for server.js.
+ * - Receives the client-facing advice bundle produced by server.js.
+ * - Does not create legal advice.
+ * - Deduplicates repeated findings at render time as a final safety net.
+ * - Blocks unsafe/internal/debug material before a client PDF is issued.
+ * - Uses paragraph/card layout instead of dense tables to avoid overflow.
  */
 
 const crypto = require('crypto');
 const PDFDocument = require('pdfkit');
+
+const RENDERER_VERSION = 'pdf-js-server-contract-renderer-v110-20260522';
 
 const BRAND = {
   name: 'Bircan Migration & Education',
@@ -26,6 +22,11 @@ const BRAND = {
   agent: 'Kenan Bircan JP',
   marn: '1463685'
 };
+
+const INTERNAL_KEYS = new Set([
+  'internalLegalAudit', 'internalAuditObject', 'criteriaRegistryAudit', 'rawRegistryFindings',
+  'criteriaRegistryFindings', 'debug', 'rawDebug', 'sourceHash', 'sourceHashes', 'quality_flags'
+]);
 
 const FORBIDDEN_CLIENT_PHRASES = [
   'Registry-controlled pathway',
@@ -36,7 +37,9 @@ const FORBIDDEN_CLIENT_PHRASES = [
   'Primary pathway',
   'quality_flags',
   'source hash',
-  'internalLegalAudit'
+  'internalLegalAudit',
+  'rawRegistryFindings',
+  'criteriaRegistryAudit'
 ];
 
 function sha256(buffer) {
@@ -47,6 +50,11 @@ function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function asArray(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value.filter(v => v !== undefined && v !== null && v !== '') : [value];
+}
+
 function pick(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && value !== '') return value;
@@ -54,9 +62,9 @@ function pick(...values) {
   return '';
 }
 
-function text(value, fallback = '—') {
+function toText(value, fallback = '—') {
   if (value === undefined || value === null || value === '') return fallback;
-  if (Array.isArray(value)) return value.map((item) => text(item, '')).filter(Boolean).join(', ') || fallback;
+  if (Array.isArray(value)) return value.map(v => toText(v, '')).filter(Boolean).join(', ') || fallback;
   if (typeof value === 'object') {
     try { return JSON.stringify(value); } catch (_err) { return fallback; }
   }
@@ -64,10 +72,8 @@ function text(value, fallback = '—') {
 }
 
 function cleanClientText(value) {
-  if (value === undefined || value === null) return value;
-  if (typeof value !== 'string') return value;
-
-  return value
+  if (value === undefined || value === null) return '';
+  let out = String(value)
     .normalize('NFKC')
     .replace(/[\uFFFC-\uFFFF]/g, '-')
     .replace(/[\u200B-\u200D\u2060]/g, '')
@@ -83,19 +89,47 @@ function cleanClientText(value) {
       'Review the original evidence against this requirement and resolve any evidentiary gap before final lodgement advice is finalised.')
     .replace(/This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control\.?/gi,
       'This requirement must be assessed against the original evidence, current legal settings and any applicable instrument before final lodgement advice is issued.')
+    .replace(/[‐‑‒–—]/g, '-')
     .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // Render-time score normalisation safety net: if upstream sent IELTS 65, display 6.5.
+  if (/\bIELTS\b/i.test(out)) {
+    out = out.replace(/\b(listening|reading|writing|speaking)\s+([0-9]{2})(\b|[,;)])/gi, (m, comp, raw, end) => {
+      const n = Number(raw);
+      if (n >= 10 && n <= 90) return `${comp} ${(n / 10).toFixed(1).replace(/\.0$/, '.0')}${end}`;
+      return m;
+    });
+  }
+  return out;
+}
+
+function wrapLongTokens(value, max = 42) {
+  return String(value || '').split(/(\s+)/).map(part => {
+    if (/\s+/.test(part) || part.length <= max) return part;
+    return part.replace(new RegExp(`(.{1,${max}})`, 'g'), '$1 ').trim();
+  }).join('');
+}
+
+function body(value) {
+  return wrapLongTokens(cleanClientText(toText(value, '')))
+    .replace(/\s+([,.;:])/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
 function deepClean(value, seen = new WeakSet()) {
   if (value === undefined || value === null) return value;
   if (typeof value === 'string') return cleanClientText(value);
-  if (Array.isArray(value)) return value.map((item) => deepClean(item, seen));
+  if (Array.isArray(value)) return value.map(v => deepClean(v, seen));
   if (isPlainObject(value)) {
     if (seen.has(value)) return value;
     seen.add(value);
     const out = {};
-    for (const [key, val] of Object.entries(value)) out[key] = deepClean(val, seen);
+    for (const [key, val] of Object.entries(value)) {
+      if (INTERNAL_KEYS.has(key)) continue;
+      out[key] = deepClean(val, seen);
+    }
     return out;
   }
   return value;
@@ -103,18 +137,15 @@ function deepClean(value, seen = new WeakSet()) {
 
 function flattenStrings(value, out = [], seen = new WeakSet()) {
   if (value === undefined || value === null) return out;
-  if (typeof value === 'string') {
-    out.push(value);
-    return out;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) flattenStrings(item, out, seen);
-    return out;
-  }
+  if (typeof value === 'string') { out.push(value); return out; }
+  if (Array.isArray(value)) { value.forEach(v => flattenStrings(v, out, seen)); return out; }
   if (isPlainObject(value)) {
     if (seen.has(value)) return out;
     seen.add(value);
-    for (const val of Object.values(value)) flattenStrings(val, out, seen);
+    for (const [key, val] of Object.entries(value)) {
+      out.push(String(key));
+      flattenStrings(val, out, seen);
+    }
   }
   return out;
 }
@@ -122,9 +153,10 @@ function flattenStrings(value, out = [], seen = new WeakSet()) {
 function assertNoForbiddenClientText(model, stage = 'PDF') {
   const all = flattenStrings(model).join('\n');
   for (const phrase of FORBIDDEN_CLIENT_PHRASES) {
-    if (all.includes(phrase)) {
-      throw new Error(`${stage} blocked: forbidden fallback wording leaked into advice letter: ${phrase}`);
-    }
+    if (all.includes(phrase)) throw new Error(`${stage} blocked: forbidden fallback/internal wording leaked into advice letter: ${phrase}`);
+  }
+  for (const key of INTERNAL_KEYS) {
+    if (all.includes(key)) throw new Error(`${stage} blocked: internal audit field leaked into client PDF: ${key}`);
   }
 }
 
@@ -135,249 +167,176 @@ function assertNoWrongSubclassLeak(model, subclass) {
   const matches = all.match(/\bSubclass\s+(\d{3})\b/gi) || [];
   for (const match of matches) {
     const n = (match.match(/\d{3}/) || [])[0];
-    if (n && n !== subclassText) {
-      throw new Error(`PDF blocked: wrong subclass legal frame leaked into Subclass ${subclassText}: ${match}`);
-    }
+    if (n && n !== subclassText) throw new Error(`PDF blocked: wrong subclass legal frame leaked into Subclass ${subclassText}: ${match}`);
   }
 }
 
-function normaliseArray(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.filter((item) => item !== undefined && item !== null);
-  return [value];
+function getAdviceModel(bundle) {
+  const b = bundle || {};
+  return deepClean(pick(
+    b.clientAdviceObject,
+    b.universalAdviceModel,
+    b.seniorAdviceModel,
+    b.adviceModel,
+    b.advice && b.advice.clientAdviceObject,
+    b.advice && b.advice.universalAdviceModel,
+    b.advice && b.advice.seniorAdviceModel,
+    b.advice,
+    b
+  ));
 }
 
-function getAssessmentSubclass(assessment, bundle, model) {
+function getSubclass(assessment, bundle, model) {
   return String(pick(
-    assessment && (assessment.subclass || assessment.visa_subclass || assessment.visaSubclass),
-    model && (model.subclass || model.visaSubclass),
-    bundle && (bundle.subclass || bundle.visaSubclass),
-    bundle && bundle.advice && (bundle.advice.subclass || bundle.advice.visaSubclass)
-  ) || '').replace(/[^\d]/g, '').slice(0, 3);
+    assessment.subclass, assessment.visa_type, assessment.visa_subclass, assessment.visaSubclass,
+    model.subclass, model.visaSubclass,
+    bundle.subclass, bundle.visaSubclass,
+    bundle.advice && (bundle.advice.subclass || bundle.advice.visaSubclass)
+  ) || '').replace(/[^0-9]/g, '').slice(0, 3);
 }
 
-function getRawStream(assessment, bundle, model) {
-  return pick(
-    model && (model.streamLabel || model.stream || model.pathway || model.clientFacingStream),
-    bundle && (bundle.streamLabel || bundle.stream || bundle.pathway || bundle.clientFacingStream),
-    bundle && bundle.advice && (bundle.advice.streamLabel || bundle.advice.stream || bundle.advice.pathway),
-    assessment && (assessment.streamLabel || assessment.stream || assessment.pathway || assessment.selected_stream || assessment.selectedStream || assessment.visa_stream)
-  );
+function getStream(assessment, bundle, model) {
+  return cleanClientText(pick(
+    model.streamLabel, model.stream, model.pathway, model.clientFacingStream,
+    bundle.streamLabel, bundle.stream, bundle.pathway, bundle.clientFacingStream,
+    bundle.advice && (bundle.advice.streamLabel || bundle.advice.stream || bundle.advice.pathway),
+    assessment.streamLabel, assessment.stream, assessment.pathway, assessment.selected_stream, assessment.selectedStream, assessment.visa_stream
+  ));
 }
 
 function isUnresolvedStream(value) {
   return /registry-controlled|registry controlled|primary pathway|generic pathway|stream\/pathway|not confirmed/i.test(String(value || ''));
 }
 
-function getAdviceModel(adviceBundle) {
-  const bundle = adviceBundle || {};
-  return deepClean(pick(
-    bundle.universalAdviceModel,
-    bundle.seniorAdviceModel,
-    bundle.adviceModel,
-    bundle.advice && bundle.advice.universalAdviceModel,
-    bundle.advice && bundle.advice.seniorAdviceModel,
-    bundle.advice,
-    bundle
-  ));
+function findingTitle(f) {
+  if (!isPlainObject(f)) return body(f);
+  return body(pick(f.issue, f.title, f.label, f.criterionLabel, f.criterionName, f.name, f.criterion, f.criterionId, 'Legal requirement'));
+}
+
+function findingStatus(f) {
+  if (!isPlainObject(f)) return 'Not verified';
+  return body(pick(f.statusLabel, f.status, f.finding, f.riskLevel, f.risk, f.evidenceStatus, 'Not verified'));
+}
+
+function findingRequirement(f) {
+  if (!isPlainObject(f)) return '';
+  return body(pick(f.legalRequirement, f.requirement, f.legalTest, f.rule, f.whatMustBeEstablished, f.assessmentRequired, f.legislativeRequirement));
+}
+
+function findingFacts(f) {
+  if (!isPlainObject(f)) return '';
+  return body(pick(f.clientFacts, f.factsApplied, f.currentPosition, f.presentInformation, f.evidenceHeld, f.filePosition, f.applicationToFacts));
+}
+
+function findingGap(f) {
+  if (!isPlainObject(f)) return '';
+  return body(pick(f.evidenceGap, f.evidenceMissing, f.gap, f.requiredEvidence, f.documentsRequired, f.evidence));
+}
+
+function findingConsequence(f) {
+  if (!isPlainObject(f)) return '';
+  return body(pick(f.consequence, f.legalConsequence, f.consequenceOfFailure, f.riskIfMissing, f.whyItMatters, f.delegateRisk));
+}
+
+function findingAction(f) {
+  if (!isPlainObject(f)) return '';
+  return body(pick(f.requiredAction, f.action, f.recommendation, f.seniorOpinion, f.agentOpinion, f.professionalPosition, f.strategy));
+}
+
+function criterionKey(f) {
+  const title = findingTitle(f).toLowerCase();
+  if (/english/.test(title)) return 'english';
+  if (/age/.test(title)) return 'age';
+  if (/salary|market|remuneration|amsr/.test(title)) return 'salary-market';
+  if (/skill|qualification|occupation pathway/.test(title)) return 'skills';
+  if (/occupation|anzsco|duties/.test(title)) return 'occupation';
+  if (/sponsor|employer|nomination|genuine position|operational need/.test(title)) return 'nomination-employer';
+  if (/health/.test(title)) return 'health';
+  if (/character|integrity|public interest|pic/.test(title)) return 'character-integrity';
+  if (/migration history|compliance|refusal|cancellation|section 48|8503/.test(title)) return 'migration-history';
+  if (/identity|valid|application/.test(title)) return 'validity-identity';
+  return title.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'criterion';
+}
+
+function findingScore(f) {
+  return [findingRequirement(f), findingFacts(f), findingGap(f), findingConsequence(f), findingAction(f)].filter(Boolean).join(' ').length;
+}
+
+function dedupeFindings(findings) {
+  const map = new Map();
+  for (const raw of asArray(findings)) {
+    const f = deepClean(raw);
+    const key = criterionKey(f);
+    const previous = map.get(key);
+    if (!previous || findingScore(f) > findingScore(previous)) map.set(key, f);
+  }
+  return Array.from(map.values());
 }
 
 function collectFindings(model, bundle) {
   const candidates = [
-    model && model.criteriaFindings,
-    model && model.seniorCriteriaFindings,
-    model && model.grantCriteriaFindings,
-    model && model.criterion_findings,
-    model && model.legalIssues,
-    model && model.issues,
-    bundle && bundle.seniorCriteriaFindings,
-    bundle && bundle.grantCriteriaFindings,
-    bundle && bundle.criterion_findings,
-    bundle && bundle.advice && bundle.advice.grantCriteriaFindings,
-    bundle && bundle.advice && bundle.advice.criterion_findings
+    model.criteriaFindings,
+    model.seniorCriteriaFindings,
+    model.grantCriteriaFindings,
+    model.clientFacingCriteriaFindings,
+    model.criterion_findings,
+    model.eligibilityFindings,
+    model.riskFindings,
+    model.legalIssues,
+    model.issues,
+    bundle.seniorCriteriaFindings,
+    bundle.clientFacingCriteriaFindings,
+    bundle.grantCriteriaFindings,
+    bundle.criterion_findings,
+    bundle.advice && bundle.advice.seniorCriteriaFindings,
+    bundle.advice && bundle.advice.grantCriteriaFindings,
+    bundle.advice && bundle.advice.criterion_findings
   ];
   for (const candidate of candidates) {
-    const arr = normaliseArray(candidate);
-    if (arr.length) return deepClean(arr);
+    const arr = asArray(candidate);
+    if (arr.length) return dedupeFindings(arr);
   }
   return [];
 }
 
-function collectEvidenceGaps(model) {
-  return normaliseArray(pick(
-    model && model.evidenceGaps,
-    model && model.requiredEvidence,
-    model && model.evidencePlan,
-    model && model.documentRequests
-  ));
+function collectAnswers(assessment) {
+  const p = isPlainObject(assessment.form_payload) ? assessment.form_payload : {};
+  const answers = isPlainObject(p.answers) ? p.answers : isPlainObject(p.formPayload) ? p.formPayload : p;
+  return isPlainObject(answers) ? answers : {};
 }
 
-function collectActionPlan(model) {
-  return normaliseArray(pick(
-    model && model.actionPlan,
-    model && model.lodgementReadinessActionPlan,
-    model && model.nextSteps,
-    model && model.recommendedActions
-  ));
-}
-
-function collectPriorityActionPlan(model) {
-  return normaliseArray(pick(
-    model && model.priorityActionPlan,
-    model && model.clientAdviceObject && model.clientAdviceObject.priorityActionPlan,
-    model && model.seniorOpinion && model.seniorOpinion.priorityActionPlan
-  ));
-}
-
-function writeViabilityAndPriorities(doc, model) {
-  const viability = pick(
-    model && model.viabilityOpinion,
-    model && model.clientAdviceObject && model.clientAdviceObject.viabilityOpinion
-  );
-  const pathwayStrength = pick(
-    model && model.pathwayStrengthAnalysis,
-    model && model.clientAdviceObject && model.clientAdviceObject.pathwayStrengthAnalysis
-  );
-  const blockers = normaliseArray(pick(
-    model && model.topMaterialBlockers,
-    model && model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers,
-    viability && viability.materialBlockers
-  ));
-  const priorities = collectPriorityActionPlan(model);
-
-  if (!viability && !pathwayStrength && !blockers.length && !priorities.length) return;
-
-  h1(doc, '2. Current viability and priority action plan');
-  if (isPlainObject(viability)) {
-    keyValueTable(doc, [
-      ['Current viability', pick(viability.position, viability.viability, 'Potentially viable subject to evidence reconciliation')],
-      ['Overall risk', pick(viability.overallRisk, model && model.overallRisk, 'High')],
-      ['Main next step', pick(viability.nextStep, model && model.nextStep, 'Resolve priority evidence issues before final lodgement advice')]
-    ]);
-    if (viability.summary) p(doc, viability.summary);
-  } else if (viability) {
-    p(doc, viability);
+function flattenObject(input, prefix = '', out = {}) {
+  if (!isPlainObject(input)) return out;
+  for (const [key, value] of Object.entries(input)) {
+    const name = prefix ? `${prefix}.${key}` : key;
+    if (isPlainObject(value)) flattenObject(value, name, out);
+    else if (Array.isArray(value)) out[name] = value.join('; ');
+    else if (value !== undefined && value !== null && value !== '') out[name] = value;
   }
-
-  if (pathwayStrength) {
-    h2(doc, 'Pathway strength analysis');
-    p(doc, pathwayStrength);
-  }
-
-  if (blockers.length) {
-    h2(doc, 'Main blockers to resolve');
-    blockers.slice(0, 6).forEach(item => bullet(doc, item));
-  }
-
-  if (priorities.length) {
-    h2(doc, 'Priority action plan');
-    priorities.slice(0, 6).forEach((item, index) => {
-      if (isPlainObject(item)) {
-        bullet(doc, `Priority ${item.priority || index + 1} — ${pick(item.issue, item.title, 'Issue')}: ${pick(item.requiredAction, item.action, item.description, item.whyItMatters, 'Resolve before final advice.')}`);
-      } else {
-        bullet(doc, item);
-      }
-    });
-  }
+  return out;
 }
 
-function findingTitle(finding) {
-  if (!isPlainObject(finding)) return text(finding, '');
-  return cleanClientText(pick(
-    finding.issue,
-    finding.title,
-    finding.label,
-    finding.criterionLabel,
-    finding.criterionName,
-    finding.name,
-    finding.criterion,
-    finding.criterionId
-  ) || 'Legal requirement');
+function hasAnswerMatching(assessment, re) {
+  const flat = flattenObject(collectAnswers(assessment));
+  return Object.entries(flat).some(([k, v]) => re.test(`${k} ${v}`));
 }
 
-function findingRequirement(finding) {
-  if (!isPlainObject(finding)) return '';
-  return cleanClientText(pick(
-    finding.legalRequirement,
-    finding.requirement,
-    finding.legalTest,
-    finding.rule,
-    finding.whatMustBeEstablished,
-    finding.assessmentRequired
-  ));
-}
-
-function findingFacts(finding) {
-  if (!isPlainObject(finding)) return '';
-  return cleanClientText(pick(
-    finding.clientFacts,
-    finding.factsApplied,
-    finding.currentPosition,
-    finding.presentInformation,
-    finding.evidenceHeld,
-    finding.filePosition
-  ));
-}
-
-function findingGap(finding) {
-  if (!isPlainObject(finding)) return '';
-  return cleanClientText(pick(
-    finding.evidenceGap,
-    finding.evidenceMissing,
-    finding.gap,
-    finding.requiredEvidence,
-    finding.documentsRequired
-  ));
-}
-
-function findingConsequence(finding) {
-  if (!isPlainObject(finding)) return '';
-  return cleanClientText(pick(
-    finding.consequence,
-    finding.legalConsequence,
-    finding.consequenceOfFailure,
-    finding.riskIfMissing,
-    finding.whyItMatters
-  ));
-}
-
-function findingAction(finding) {
-  if (!isPlainObject(finding)) return '';
-  return cleanClientText(pick(
-    finding.requiredAction,
-    finding.action,
-    finding.recommendation,
-    finding.seniorOpinion,
-    finding.agentOpinion,
-    finding.professionalPosition
-  ));
-}
-
-function findingRisk(finding) {
-  if (!isPlainObject(finding)) return 'Not verified';
-  return cleanClientText(pick(finding.riskLevel, finding.risk, finding.status, finding.evidenceStatus, 'Not verified'));
-}
-
-function assertAdviceModelReady(assessment, adviceBundle, model, subclass, stream, findings) {
-  if (!adviceBundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');
+function assertAdviceModelReady(assessment, bundle, model, subclass, stream, findings) {
+  if (!bundle) throw new Error('Advice-grade PDF generation requires adviceBundle.');
   if (!subclass) throw new Error('Advice-grade PDF blocked: subclass could not be identified.');
+  if (!stream || isUnresolvedStream(stream)) throw new Error(`Advice-grade PDF blocked: valid stream/pathway not confirmed for Subclass ${subclass}.`);
+  if (!findings.length) throw new Error(`Advice-grade PDF blocked: no criterion-level senior advice findings were supplied for Subclass ${subclass}.`);
 
-  if (!stream || isUnresolvedStream(stream)) {
-    throw new Error(`Advice-grade PDF blocked: valid stream/pathway not confirmed for Subclass ${subclass}.`);
+  const substantive = findings.filter(f => findingRequirement(f) || findingFacts(f) || findingGap(f) || findingConsequence(f) || findingAction(f));
+  if (!substantive.length) throw new Error(`Advice-grade PDF blocked: criterion findings for Subclass ${subclass} do not contain legal-frame or fact-application content.`);
+
+  // Renderer quality gate: if saved answers clearly include age or English, final client model must contain corresponding findings.
+  const keys = new Set(findings.map(criterionKey));
+  if (hasAnswerMatching(assessment, /\bage\b|date[-_\s]*of[-_\s]*birth|birth/i) && !keys.has('age')) {
+    throw new Error(`Advice-grade PDF blocked: saved age/date-of-birth answers exist but no age criterion finding was supplied for Subclass ${subclass}.`);
   }
-
-  if (!findings.length) {
-    throw new Error(`Advice-grade PDF blocked: no criterion-level senior advice findings were supplied for Subclass ${subclass}.`);
-  }
-
-  // At least some legal substance must be present. If every row only has a title/risk, release is unsafe.
-  const substantive = findings.filter((f) => {
-    if (!isPlainObject(f)) return false;
-    return !!(findingRequirement(f) || findingFacts(f) || findingGap(f) || findingConsequence(f) || findingAction(f));
-  });
-
-  if (!substantive.length) {
-    throw new Error(`Advice-grade PDF blocked: criterion findings for Subclass ${subclass} do not contain legal-frame or fact-application content.`);
+  if (hasAnswerMatching(assessment, /english|ielts|pte|toefl|oet|cambridge|listening|reading|writing|speaking/i) && !keys.has('english')) {
+    throw new Error(`Advice-grade PDF blocked: saved English answers exist but no English criterion finding was supplied for Subclass ${subclass}.`);
   }
 
   assertNoForbiddenClientText({ assessment, model, findings, subclass, stream }, 'PDF');
@@ -389,487 +348,237 @@ function createDoc(resolve, reject) {
     size: 'A4',
     margins: { top: 54, bottom: 54, left: 54, right: 54 },
     bufferPages: true,
-    info: {
-      Title: 'Professional Migration Advice Letter',
-      Author: BRAND.name,
-      Subject: 'Migration advice letter',
-      Creator: BRAND.name
-    }
+    info: { Title: 'Professional Migration Advice Letter', Author: BRAND.name, Subject: 'Migration advice letter', Creator: BRAND.name }
   });
-
   const chunks = [];
-  doc.on('data', (chunk) => chunks.push(chunk));
-  doc.on('end', () => {
-    try {
-      const range = doc.bufferedPageRange();
-      resolve(Buffer.concat(chunks));
-    } catch (_err) {
-      resolve(Buffer.concat(chunks));
-    }
-  });
+  doc.on('data', c => chunks.push(c));
+  doc.on('end', () => resolve(Buffer.concat(chunks)));
   doc.on('error', reject);
   return doc;
 }
 
-function pageWidth(doc) {
-  return doc.page.width - doc.page.margins.left - doc.page.margins.right;
-}
-
-function bottomY(doc) {
-  return doc.page.height - doc.page.margins.bottom;
-}
-
-function remainingY(doc) {
-  return bottomY(doc) - doc.y;
-}
-
-function wrapLongTokens(value, max = 42) {
-  return String(value || '').split(/(\s+)/).map(part => {
-    if (/\s+/.test(part) || part.length <= max) return part;
-    return part.replace(new RegExp(`(.{1,${max}})`, 'g'), '$1 ').trim();
-  }).join('');
-}
-
-function safeBody(value) {
-  return wrapLongTokens(cleanClientText(text(value, '')).replace(/[\uFFFC-\uFFFF]/g, '-'))
-    .replace(/\s+([,.;:])/g, '$1')
-    .replace(/[‐‑‒–—]/g, '-')
-    .replace(/\s*-\s*/g, '-')
-    .replace(/-([,.;:])/g, '$1')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function ensureMeasuredSpace(doc, body, width, options = {}) {
-  const font = options.bold ? 'Helvetica-Bold' : 'Helvetica';
-  const size = options.size || 9.5;
-  const lineGap = options.lineGap || 2.8;
+function pageWidth(doc) { return doc.page.width - doc.page.margins.left - doc.page.margins.right; }
+function bottomY(doc) { return doc.page.height - doc.page.margins.bottom; }
+function remainingY(doc) { return bottomY(doc) - doc.y; }
+function ensureSpace(doc, h = 90) { if (doc.y + h > bottomY(doc)) doc.addPage(); }
+function measure(doc, text, width, font = 'Helvetica', size = 9.2, lineGap = 3) {
   doc.font(font).fontSize(size);
-  const height = doc.heightOfString(safeBody(body), { width, lineGap }) + (options.extra || 10);
-  if (height < 500 && remainingY(doc) < height) doc.addPage();
+  return doc.heightOfString(body(text), { width, lineGap });
 }
-
-function paragraphGap(doc, amount = 0.25) {
-  doc.moveDown(amount);
+function ensureMeasured(doc, text, width, options = {}) {
+  const h = measure(doc, text, width, options.bold ? 'Helvetica-Bold' : 'Helvetica', options.size || 9.2, options.lineGap || 3) + (options.extra || 12);
+  if (h < 580 && remainingY(doc) < h) doc.addPage();
 }
-
-function ensureSpace(doc, height = 80) {
-  if (doc.y + height > bottomY(doc)) doc.addPage();
-}
-
 function rule(doc) {
-  doc.moveTo(doc.page.margins.left, doc.y).lineTo(doc.page.width - doc.page.margins.right, doc.y).strokeColor('#d5dce8').lineWidth(0.7).stroke();
-  doc.moveDown(0.7);
+  doc.moveTo(doc.page.margins.left, doc.y).lineTo(doc.page.width - doc.page.margins.right, doc.y).strokeColor('#d7deea').lineWidth(0.7).stroke();
+  doc.moveDown(0.55);
 }
-
 function h1(doc, value) {
-  ensureSpace(doc, 72);
-  doc.font('Helvetica-Bold').fontSize(16).fillColor('#0b2545')
-    .text(cleanClientText(value), { width: pageWidth(doc), lineGap: 2.4 });
-  doc.moveDown(0.45);
-  rule(doc);
+  ensureSpace(doc, 70);
+  doc.font('Helvetica-Bold').fontSize(16).fillColor('#0b2545').text(cleanClientText(value), { width: pageWidth(doc), lineGap: 2.4 });
+  doc.moveDown(0.4); rule(doc);
 }
-
 function h2(doc, value) {
-  ensureSpace(doc, 56);
-  doc.moveDown(0.5);
-  doc.font('Helvetica-Bold').fontSize(11.4).fillColor('#12355b')
-    .text(cleanClientText(value), { width: pageWidth(doc), lineGap: 2.2 });
-  doc.moveDown(0.5);
+  ensureSpace(doc, 50);
+  doc.moveDown(0.25);
+  doc.font('Helvetica-Bold').fontSize(11.2).fillColor('#12355b').text(cleanClientText(value), { width: pageWidth(doc), lineGap: 2.2 });
+  doc.moveDown(0.25);
 }
-
 function p(doc, value, options = {}) {
-  const body = safeBody(value);
-  if (!body) return;
+  const b = body(value); if (!b) return;
   const width = options.width || pageWidth(doc);
-  const paragraphs = body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean);
-  for (const para of paragraphs) {
-    ensureMeasuredSpace(doc, para, width, options);
+  const paras = b.split(/\n{2,}/).map(x => x.trim()).filter(Boolean);
+  for (const para of paras) {
+    ensureMeasured(doc, para, width, options);
     doc.font(options.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(options.size || 9.2).fillColor(options.color || '#182334')
       .text(para, { width, lineGap: options.lineGap || 3.1, align: options.align || 'left' });
-    doc.moveDown(options.after === undefined ? 0.52 : options.after);
+    doc.moveDown(options.after === undefined ? 0.48 : options.after);
   }
 }
-
-function small(doc, value) {
-  p(doc, value, { size: 8.2, color: '#4a5568', lineGap: 2, after: 0.25 });
-}
-
-function keyValueTable(doc, rows, widths) {
-  const usable = pageWidth(doc);
-  const w1 = widths && widths[0] ? widths[0] : Math.round(usable * 0.34);
-  const w2 = usable - w1;
-  const leftPad = 8;
-  const topPad = 7;
-  const bottomPad = 8;
-  for (const row of rows) {
-    const k = safeBody(text(row[0], ''));
-    const v = safeBody(text(row[1], '-'));
-    doc.font('Helvetica-Bold').fontSize(8.4);
-    const kh = doc.heightOfString(k, { width: w1 - (leftPad * 2), lineGap: 2 });
-    doc.font('Helvetica').fontSize(8.4);
-    const vh = doc.heightOfString(v, { width: w2 - (leftPad * 2), lineGap: 2.2 });
-    const h = Math.max(kh, vh, 14) + topPad + bottomPad;
-    ensureSpace(doc, h + 6);
-    const y = doc.y;
-    doc.rect(doc.page.margins.left, y, usable, h).fillAndStroke('#f8fafc', '#e2e8f0');
-    doc.fillColor('#26364a').font('Helvetica-Bold').fontSize(8.4)
-      .text(k, doc.page.margins.left + leftPad, y + topPad, { width: w1 - (leftPad * 2), lineGap: 2 });
-    doc.fillColor('#152033').font('Helvetica').fontSize(8.4)
-      .text(v, doc.page.margins.left + w1 + leftPad, y + topPad, { width: w2 - (leftPad * 2), lineGap: 2.2 });
-    doc.y = y + h + 4;
-  }
+function bullet(doc, value) {
+  const b = body(value); if (!b) return;
+  const x = doc.page.margins.left + 12;
+  const width = pageWidth(doc) - 18;
+  ensureMeasured(doc, b, width, { size: 9, lineGap: 2.7, extra: 8 });
+  doc.font('Helvetica').fontSize(9).fillColor('#182334').text('•', doc.page.margins.left, doc.y, { continued: true });
+  doc.text(' ' + b, x, doc.y, { width, lineGap: 2.7 });
   doc.moveDown(0.35);
 }
-
-function table(doc, headers, rows, widths) {
-  const usable = pageWidth(doc);
-  const cols = headers.length;
-  const resolved = widths && widths.length === cols ? widths : new Array(cols).fill(usable / cols);
-  const x0 = doc.page.margins.left;
-  const padX = 6;
-  const padY = 7;
-
-  function drawRow(cells, header) {
-    const cleanCells = cells.map((c) => safeBody(text(c, '-')));
-    const heights = cleanCells.map((c, i) => {
-      doc.font(header ? 'Helvetica-Bold' : 'Helvetica').fontSize(header ? 8.0 : 7.8);
-      return doc.heightOfString(c, { width: resolved[i] - (padX * 2), lineGap: 2.0 }) + (padY * 2);
-    });
-    const h = Math.max(...heights, header ? 28 : 30);
-    ensureSpace(doc, h + 8);
+function keyValue(doc, rows) {
+  const usable = pageWidth(doc), leftW = Math.round(usable * 0.34), rightW = usable - leftW, pad = 7;
+  for (const [k, v] of rows) {
+    const kk = body(k), vv = body(v || '—');
+    const kh = measure(doc, kk, leftW - pad * 2, 'Helvetica-Bold', 8.4, 2);
+    const vh = measure(doc, vv, rightW - pad * 2, 'Helvetica', 8.4, 2.2);
+    const h = Math.max(kh, vh, 14) + 14;
+    ensureSpace(doc, h + 4);
     const y = doc.y;
-    let x = x0;
-    for (let i = 0; i < cols; i++) {
-      doc.rect(x, y, resolved[i], h).fillAndStroke(header ? '#eaf1fb' : '#ffffff', '#d6dee9');
-      doc.fillColor('#172033').font(header ? 'Helvetica-Bold' : 'Helvetica').fontSize(header ? 8.0 : 7.8)
-        .text(cleanCells[i], x + padX, y + padY, { width: resolved[i] - (padX * 2), lineGap: 2.0 });
-      x += resolved[i];
-    }
+    doc.rect(doc.page.margins.left, y, usable, h).fillAndStroke('#f8fafc', '#e2e8f0');
+    doc.fillColor('#26364a').font('Helvetica-Bold').fontSize(8.4).text(kk, doc.page.margins.left + pad, y + pad, { width: leftW - pad * 2, lineGap: 2 });
+    doc.fillColor('#182334').font('Helvetica').fontSize(8.4).text(vv, doc.page.margins.left + leftW + pad, y + pad, { width: rightW - pad * 2, lineGap: 2.2 });
     doc.y = y + h;
   }
-
-  drawRow(headers, true);
-  for (const row of rows) drawRow(row, false);
   doc.moveDown(0.6);
 }
-
-function bullet(doc, value) {
-  const body = safeBody(value);
-  if (!body) return;
-  const width = pageWidth(doc) - 18;
-  ensureMeasuredSpace(doc, body, width, { size: 8.9, lineGap: 2.8, extra: 14 });
-  const x = doc.page.margins.left;
+function adviceBlock(doc, label, value) {
+  const v = body(value); if (!v) return;
+  const width = pageWidth(doc), pad = 8;
+  const h = measure(doc, label, width - pad * 2, 'Helvetica-Bold', 8.2, 2) + measure(doc, v, width - pad * 2, 'Helvetica', 8.8, 2.5) + 20;
+  ensureSpace(doc, Math.min(h + 8, 520));
   const y = doc.y;
-  doc.font('Helvetica').fontSize(8.9).fillColor('#182334').text('•', x, y, { width: 12, continued: false });
-  doc.font('Helvetica').fontSize(8.9).fillColor('#182334').text(body, x + 16, y, { width, lineGap: 2.8 });
-  doc.moveDown(0.42);
+  doc.roundedRect(doc.page.margins.left, y, width, h, 8).fillAndStroke('#fbfdff', '#e2e8f0');
+  doc.fillColor('#0b2545').font('Helvetica-Bold').fontSize(8.2).text(label, doc.page.margins.left + pad, y + 7, { width: width - pad * 2 });
+  doc.fillColor('#182334').font('Helvetica').fontSize(8.8).text(v, doc.page.margins.left + pad, doc.y + 3, { width: width - pad * 2, lineGap: 2.5 });
+  doc.y = y + h + 5;
 }
 
-function findingStatusLabel(finding) {
-  if (!isPlainObject(finding)) return 'Unclear - evidence required';
-  return cleanClientText(pick(
-    finding.displayStatus,
-    finding.riskLevel,
-    finding.status,
-    finding.risk,
-    finding.evidenceStatus,
-    'Unclear - evidence required'
-  ));
-}
-
-function statusBadge(doc, value) {
-  const label = cleanClientText(text(value, 'Unclear - evidence required'));
-  const x = doc.x;
-  const y = doc.y;
-  doc.font('Helvetica-Bold').fontSize(8.0);
-  const w = Math.min(pageWidth(doc), Math.max(126, doc.widthOfString(label) + 22));
-  doc.roundedRect(x, y, w, 19, 9).fillAndStroke('#eef5ff', '#d7e7ff');
-  doc.fillColor('#174cc8').font('Helvetica-Bold').fontSize(8.0).text(label, x + 10, y + 5, { width: w - 20, lineGap: 1.5 });
-  doc.y = y + 27;
-}
-
-function adviceBlock(doc, label, body) {
-  const value = safeBody(body);
-  if (!value) return;
-  const width = pageWidth(doc);
-  doc.font('Helvetica-Bold').fontSize(8.3);
-  const labelH = doc.heightOfString(cleanClientText(label), { width, lineGap: 1.8 });
-  doc.font('Helvetica').fontSize(8.8);
-  const bodyH = doc.heightOfString(value, { width, lineGap: 2.9 });
-  const total = labelH + bodyH + 18;
-  if (total < 460 && remainingY(doc) < total) doc.addPage();
-  doc.font('Helvetica-Bold').fontSize(8.3).fillColor('#344054').text(cleanClientText(label), { width, lineGap: 1.8 });
-  doc.moveDown(0.12);
-  doc.font('Helvetica').fontSize(8.8).fillColor('#182334').text(value, { width, lineGap: 2.9 });
-  doc.moveDown(0.65);
-}
-
-function findingCard(doc, index, finding) {
-  ensureSpace(doc, 230);
-  h2(doc, `${index}. ${findingTitle(finding)}`);
-  statusBadge(doc, findingStatusLabel(finding));
-  adviceBlock(doc, 'Legal requirement', findingRequirement(finding) || 'The requirement must be confirmed from the applicable legal framework before final advice.');
-  adviceBlock(doc, 'Application to current instructions', findingFacts(finding) || finding.body || finding.finding || 'The current instructions require reconciliation against original evidence.');
-  adviceBlock(doc, 'Evidence still required', findingGap(finding) || 'Original evidence must be reviewed before final lodgement advice.');
-  adviceBlock(doc, 'Consequence if unresolved', findingConsequence(finding) || 'If unresolved, this issue may affect validity, eligibility, prospects or lodgement strategy.');
-  adviceBlock(doc, 'Required action', findingAction(finding) || 'Resolve before final lodgement advice is issued.');
-  rule(doc);
-}
-
-function coverPage(doc, { assessment, subclass, stream, model }) {
-  doc.rect(0, 0, doc.page.width, 118).fill('#0b2545');
-  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(20).text('Professional Migration', 54, 42);
-  doc.fontSize(26).text('Advice Letter', 54, 68);
-  doc.fillColor('#dbeafe').font('Helvetica').fontSize(10).text(`${BRAND.name} | ${BRAND.subtitle}`, 54, 24);
-
-  doc.y = 154;
-  h1(doc, `Subclass ${subclass} — ${stream}`);
-
-  keyValueTable(doc, [
-    ['Reference', pick(assessment.reference, assessment.assessment_id, assessment.id, assessment.assessmentId)],
-    ["Applicant's name", pick(assessment.applicant_name, assessment.applicantName, assessment.name, model.applicantName)],
-    ['Applicant email', pick(assessment.applicant_email, assessment.applicantEmail, assessment.email)],
-    ['Client email', pick(assessment.client_email, assessment.clientEmail, assessment.account_email, assessment.email)],
-    ['Subclass', subclass],
-    ['Stream/pathway', stream],
+function cover(doc, assessment, subclass, stream, model) {
+  doc.font('Helvetica-Bold').fontSize(22).fillColor('#0b2545').text('Professional Migration\nAdvice Letter', { width: pageWidth(doc), lineGap: 4 });
+  doc.moveDown(0.5);
+  doc.font('Helvetica').fontSize(10).fillColor('#4a5568').text(`${BRAND.name} | ${BRAND.subtitle}`);
+  doc.moveDown(1.2);
+  keyValue(doc, [
+    ['Matter', `Subclass ${subclass || '—'}${stream ? ' — ' + stream : ''}`],
+    ['Reference', pick(assessment.id, assessment.reference, assessment.assessment_id, '—')],
+    ["Applicant's name", pick(assessment.applicant_name, model.applicantName, model.clientName, '—')],
+    ['Applicant email', pick(assessment.applicant_email, model.applicantEmail, '—')],
+    ['Client email', pick(assessment.client_email, model.clientEmail, assessment.applicant_email, '—')],
     ['Generated', new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' })]
   ]);
-
-  doc.moveDown(1.2);
-  p(doc, 'Confidential professional advice', { bold: true, size: 11.5 });
-  p(doc, 'This advice letter is prepared from the information presently available and is subject to review of original evidence, current law, Departmental records, conflict checks and final migration-agent review before lodgement action.');
-  p(doc, 'No guarantee of visa grant is given. This document records a professional preliminary position and the evidence work required before any final lodgement recommendation is made.', { color: '#344054' });
+  h2(doc, 'Confidential professional advice');
+  p(doc, 'This advice letter is prepared from the information presently available and is subject to review of original evidence, current law, Departmental records, conflict checks and final migration-agent review before lodgement action. No guarantee of visa grant is given.');
   doc.addPage();
 }
 
-function writeExecutive(doc, model, subclass, stream) {
+function writeExecutive(doc, model, subclass, stream, findings) {
   h1(doc, '1. Executive professional advice');
-  const applicant = cleanClientText(pick(model.applicantName, model.clientName, 'the applicant'));
-  p(doc, `Dear ${applicant},`);
-  p(doc, pick(
-    model.executiveAdvice,
-    model.seniorOpinion && model.seniorOpinion.shortOpinion,
-    model.summary,
-    `I have reviewed the information presently available for the proposed Subclass ${subclass} — ${stream} pathway.`
-  ));
-
-  const recommendation = pick(
-    model.finalRecommendation && model.finalRecommendation.summary,
-    model.recommendation,
-    model.lodgementPosition,
-    'On the present information, immediate lodgement is not recommended unless and until the legal criteria, evidence gaps and public-interest matters identified in this advice are resolved.'
-  );
-  p(doc, recommendation);
-
-  keyValueTable(doc, [
-    ['Pathway assessed', `Subclass ${subclass} — ${stream}`],
-    ['Current professional position', pick(model.lodgementPosition, model.finalRecommendation && model.finalRecommendation.position, 'Not lodgement-ready on the present evidence position')],
-    ['Overall risk', pick(model.overallRisk, model.riskLevel, model.finalRecommendation && model.finalRecommendation.overallRisk, 'Not verified')],
-    ['Required next step', pick(model.nextStep, model.finalRecommendation && model.finalRecommendation.nextStep, 'Evidence review and lodgement-readiness assessment before filing')]
+  const intro = pick(model.executiveAdvice, model.executiveSummary, model.summary, model.clientSummary && model.clientSummary.summary,
+    `On the current saved answers, the Subclass ${subclass} ${stream} pathway requires criterion-by-criterion evidence reconciliation before final lodgement advice.`);
+  p(doc, intro);
+  keyValue(doc, [
+    ['Pathway assessed', `Subclass ${subclass}${stream ? ' - ' + stream : ''}`],
+    ['Current professional position', pick(model.currentProfessionalPosition, model.lodgementPosition, model.agentPosition && model.agentPosition.position, 'Potentially viable subject to evidence reconciliation')],
+    ['Overall risk', pick(model.overallRisk, model.riskLevel, model.agentPosition && model.agentPosition.risk, 'Evidence review required')],
+    ['Renderer version', RENDERER_VERSION]
   ]);
+  const blockers = asArray(pick(model.topMaterialBlockers, model.materialBlockers, model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers));
+  if (blockers.length) { h2(doc, 'Main issues to resolve'); blockers.slice(0, 6).forEach(bullet.bind(null, doc)); }
+  else { h2(doc, 'Main issues to resolve'); findings.slice(0, 5).forEach(f => bullet(doc, findingTitle(f))); }
 }
 
 function writeFacts(doc, assessment, model) {
-  h1(doc, '3. Facts, assumptions and evidence status');
-  p(doc, 'The following matters are treated as preliminary unless confirmed by original evidence. The advice separates the current file position from the issues that must be verified before a final lodgement recommendation is made.');
-
-  const rows = [
-    ['Applicant identity', pick(assessment.applicant_name, assessment.applicantName, model.applicantName, 'Not confirmed')],
-    ['Current location / visa status', pick(assessment.current_location, assessment.location, assessment.currentVisaStatus, model.currentVisaStatus, 'Not confirmed')],
-    ['Stream/pathway evidence', pick(model.streamEvidenceStatus, model.pathwayEvidenceStatus, 'Not verified')],
-    ['Public-interest criteria', pick(model.publicInterestStatus, 'Health, character, integrity and immigration-history issues require review')],
-    ['Evidence status', pick(model.evidenceStatus, model.fileStatus, 'Original evidence not yet fully reviewed')]
-  ];
-
-  keyValueTable(doc, rows);
+  h1(doc, '2. Facts, assumptions and evidence status');
+  keyValue(doc, [
+    ['Applicant identity', pick(assessment.applicant_name, model.applicantName, 'Not confirmed')],
+    ['Current location / visa status', pick(model.currentLocationVisaStatus, model.facts && model.facts.currentStatus, 'Not confirmed')],
+    ['Stream/pathway evidence', pick(model.streamEvidenceStatus, 'Not verified')],
+    ['Evidence status', pick(model.evidenceStatus, model.evidenceSummary, 'Original evidence not yet fully reviewed')]
+  ]);
 }
 
 function writeLegalFramework(doc, model, subclass, stream) {
-  h1(doc, '4. Legal framework applied');
-  const frame = pick(
-    model.legalFrameworkSummary,
-    model.legalFrameSummary,
-    model.legalFramework && model.legalFramework.summary,
-    `The assessment is controlled by the legal criteria applicable to Subclass ${subclass} — ${stream}, including validity requirements, Schedule 2 grant criteria, public-interest criteria, any applicable legislative instruments and relevant Departmental policy guidance.`
-  );
-  p(doc, frame);
-
-  const legalSources = normaliseArray(pick(
-    model.legalSources,
-    model.legalFramework && model.legalFramework.sources,
-    model.knowledgebaseSources
-  ));
-
-  if (legalSources.length) {
-    h2(doc, 'Legal source control');
-    for (const source of legalSources.slice(0, 12)) {
-      if (isPlainObject(source)) {
-        bullet(doc, pick(source.title, source.name, source.source, source.reference, source.path));
-      } else {
-        bullet(doc, source);
-      }
-    }
-  }
+  h1(doc, '3. Legal framework applied');
+  p(doc, pick(model.legalFramework, model.framework,
+    `This preliminary assessment considered the Subclass ${subclass} ${stream || ''} framework using the saved assessment answers, subclass criteria registry, knowledgebase source mapping, evidence validation and risk controls. Exact clause references should be used only where verified in the source-mapped registry and remain subject to RMA review.`));
 }
 
 function writeFindings(doc, findings) {
-  h1(doc, '5. Application of law to the client’s facts');
-  p(doc, 'The following findings apply the identified legal requirements to the information currently available. The status labels separate matters that appear supportable from matters that remain unclear or higher risk. A final lodgement recommendation should not be issued until the listed evidence is reconciled.');
-
-  const maxMain = Math.min(findings.length, 12);
-  for (let i = 0; i < maxMain; i++) {
-    findingCard(doc, i + 1, findings[i]);
-  }
+  h1(doc, '4. Application of law to the client’s facts');
+  p(doc, 'The following findings apply the identified requirements to the information currently available. Status labels separate matters that appear supportable from matters that remain unclear or higher risk.');
+  findings.slice(0, 24).forEach((f, i) => {
+    ensureSpace(doc, 130);
+    doc.font('Helvetica-Bold').fontSize(11.4).fillColor('#0b2545').text(`${i + 1}. ${findingTitle(f)}`, { width: pageWidth(doc), lineGap: 1.8 });
+    doc.moveDown(0.2);
+    adviceBlock(doc, 'Status', findingStatus(f));
+    adviceBlock(doc, 'Legal requirement', findingRequirement(f) || 'Requirement to be verified against the subclass legal frame.');
+    adviceBlock(doc, 'Application to current instructions', findingFacts(f) || 'The available instructions must be reconciled against original evidence before final advice.');
+    adviceBlock(doc, 'Evidence still required', findingGap(f) || 'Supporting evidence required before final lodgement advice.');
+    adviceBlock(doc, 'Consequence if unresolved', findingConsequence(f) || 'The issue may affect lodgement readiness if unresolved.');
+    adviceBlock(doc, 'Required action', findingAction(f) || 'Resolve before final lodgement advice.');
+    rule(doc);
+  });
 }
 
-function writeEvidence(doc, model) {
-  h1(doc, '6. Evidence gaps and document request');
-  const gaps = collectEvidenceGaps(model);
-  if (!gaps.length) {
-    p(doc, 'A formal evidence request should be prepared from the criterion-by-criterion findings before final lodgement advice is issued.');
-    return;
-  }
-  for (const gap of gaps.slice(0, 18)) {
-    if (isPlainObject(gap)) {
-      bullet(doc, `${pick(gap.issue, gap.label, gap.category, 'Evidence item')}: ${pick(gap.requiredEvidence, gap.documents, gap.action, gap.description, gap.gap)}`);
-    } else {
-      bullet(doc, gap);
-    }
-  }
-}
-
-function riskCard(doc, index, finding) {
-  ensureSpace(doc, 165);
-  doc.font('Helvetica-Bold').fontSize(9.2).fillColor('#0b2545')
-    .text(`${index}. ${findingTitle(finding)}`, { width: pageWidth(doc), lineGap: 2.1 });
-  doc.moveDown(0.15);
-  adviceBlock(doc, 'Risk/status', findingRisk(finding) || findingStatusLabel(finding));
-  adviceBlock(doc, 'Professional consequence', findingConsequence(finding) || 'If unresolved, this issue may affect validity, eligibility, prospects or lodgement strategy.');
-  adviceBlock(doc, 'Required action', findingAction(finding) || 'Resolve before final advice.');
-  rule(doc);
+function writeEvidence(doc, model, findings) {
+  h1(doc, '5. Evidence gaps and document request');
+  const items = asArray(pick(model.evidenceChecklist, model.evidenceGaps, model.requiredEvidence, model.documentRequests));
+  if (items.length) items.slice(0, 30).forEach(x => bullet(doc, isPlainObject(x) ? pick(x.item, x.document, x.evidence, x.title, JSON.stringify(x)) : x));
+  else findings.forEach(f => bullet(doc, `${findingTitle(f)}: ${findingGap(f) || 'Evidence to be verified.'}`));
 }
 
 function writeRisk(doc, model, findings) {
-  h1(doc, '7. Risk assessment');
-  const riskSummary = pick(
-    model.riskAnalysis && model.riskAnalysis.summary,
-    model.riskSummary,
-    'The matter should be treated as not lodgement-ready until the identified legal criteria, evidence gaps and public-interest matters have been reconciled.'
-  );
-  p(doc, riskSummary);
-
-  const material = findings.slice(0, 12);
-  for (let i = 0; i < material.length; i++) {
-    riskCard(doc, i + 1, material[i]);
-  }
+  h1(doc, '6. Risk assessment');
+  p(doc, pick(model.riskAssessmentSummary, model.riskSummary, 'The matter should be treated as not lodgement-ready until the identified legal criteria, evidence gaps and public-interest matters have been reconciled.'));
+  findings.slice(0, 18).forEach((f, i) => {
+    ensureSpace(doc, 92);
+    doc.font('Helvetica-Bold').fontSize(9.8).fillColor('#0b2545').text(`${i + 1}. ${findingTitle(f)}`);
+    adviceBlock(doc, 'Risk/status', findingStatus(f));
+    adviceBlock(doc, 'Professional consequence', findingConsequence(f) || 'Requires evidence review before final advice.');
+    adviceBlock(doc, 'Required action', findingAction(f) || 'Resolve before lodgement.');
+  });
 }
 
-function writeActionPlan(doc, model) {
-  h1(doc, '8. Lodgement-readiness action plan');
-  const actions = collectActionPlan(model);
-  const defaultActions = [
-    'Confirm the selected subclass and stream/pathway against the applicable registry and legal frame.',
-    'Review original evidence and Departmental records for each material criterion.',
-    'Resolve all critical and high-risk evidence gaps before any positive lodgement recommendation.',
-    'Prepare a final criterion-by-criterion evidence brief.',
-    'Issue final migration-agent advice only after law, facts and evidence are reconciled.'
-  ];
-  for (const action of (actions.length ? actions : defaultActions).slice(0, 12)) {
-    if (isPlainObject(action)) bullet(doc, pick(action.action, action.title, action.description, action.requiredAction));
-    else bullet(doc, action);
-  }
+function writeActionPlan(doc, model, findings) {
+  h1(doc, '7. Lodgement-readiness action plan');
+  const plan = asArray(pick(model.priorityActionPlan, model.actionPlan, model.nextSteps, model.requiredActions));
+  if (plan.length) plan.slice(0, 18).forEach((x, i) => bullet(doc, isPlainObject(x) ? `Priority ${pick(x.priority, i + 1)} - ${pick(x.issue, x.title, 'Issue')}: ${pick(x.requiredAction, x.action, x.description, 'Resolve before final advice.')}` : x));
+  else findings.slice(0, 8).forEach((f, i) => bullet(doc, `Priority ${i + 1} - ${findingTitle(f)}: ${findingAction(f) || 'Resolve before final advice.'}`));
 }
 
-function writeRecommendation(doc, model, subclass, stream) {
-  h1(doc, '9. Final professional recommendation');
-  const rec = pick(
-    model.finalRecommendation && model.finalRecommendation.fullText,
-    model.finalRecommendation && model.finalRecommendation.summary,
-    model.finalRecommendation,
-    model.recommendation,
-    `Based on the information presently available, I do not recommend immediate lodgement of the Subclass ${subclass} — ${stream} application until the identified legal requirements, evidence gaps and public-interest matters have been reviewed and reconciled.`
-  );
-  p(doc, rec);
-
-  const findings = normaliseArray(pick(model.eligibilityFindings, model.criteriaFindings, model.seniorCriteriaFindings, model.grantCriteriaFindings));
-  const priority = findings
-    .filter(f => /unclear|risk|high|medium|evidence|required|reconcile/i.test(`${findingStatusLabel(f)} ${findingRisk(f)} ${findingConsequence(f)}`))
-    .slice(0, 5)
-    .map(f => findingTitle(f))
-    .filter(Boolean);
-  if (priority.length) {
-    p(doc, `The most material issues to resolve before lodgement are: ${priority.join('; ')}.`, { bold: true });
-  }
-
-  p(doc, 'This position protects the client from avoidable refusal risk, unnecessary cost and a weaker future migration record. The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.');
+function writeRecommendation(doc, model) {
+  h1(doc, '8. Final professional recommendation');
+  p(doc, pick(model.finalRecommendation, model.recommendation, model.agentPosition && model.agentPosition.recommendation,
+    'The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.'));
 }
 
 function writeLimitations(doc) {
-  h1(doc, '10. Important limitations');
+  h1(doc, '9. Important limitations');
   p(doc, 'This advice is preliminary and based on the information presently available. It is subject to review of original documents, current law and policy, Departmental records, conflict checks and final professional review before lodgement. No guarantee of visa grant is given.');
-  p(doc, 'The Department may request further information, apply policy differently, identify adverse information, or reach a different view after assessing the complete application record.');
-  doc.moveDown(1);
-  p(doc, 'Yours faithfully,');
-  p(doc, `${BRAND.agent}\nRegistered Migration Agent | MARN: ${BRAND.marn}\n${BRAND.name}`, { bold: true });
+  doc.moveDown(1.4);
+  p(doc, `Yours faithfully,\n${BRAND.agent}\nRegistered Migration Agent | MARN: ${BRAND.marn}\n${BRAND.name}`, { bold: true });
 }
 
 function writeAppendix(doc, findings) {
   doc.addPage();
   h1(doc, 'Appendix A — Criterion-by-criterion lodgement-readiness matrix');
-  p(doc, 'This appendix records the issue, status, requirement, evidence gap and action for file control. It is not a guarantee that each criterion is satisfied. Dense table formatting is deliberately avoided so that criterion content remains readable and is not split across pages.');
-
-  for (let i = 0; i < Math.min(findings.length, 18); i++) {
-    const f = findings[i];
-    ensureSpace(doc, 100);
+  p(doc, 'This appendix records the issue, status, requirement, evidence gap and action for file control. Dense table formatting is deliberately avoided so criterion content remains readable.');
+  findings.slice(0, 24).forEach((f, i) => {
+    ensureSpace(doc, 110);
     doc.font('Helvetica-Bold').fontSize(9.4).fillColor('#0b2545').text(`${i + 1}. ${findingTitle(f)}`, { width: pageWidth(doc), lineGap: 1.6 });
-    doc.moveDown(0.2);
-    adviceBlock(doc, 'Status', findingStatusLabel(f));
+    adviceBlock(doc, 'Status', findingStatus(f));
     adviceBlock(doc, 'Requirement', findingRequirement(f) || 'Requirement to be verified against legal frame.');
     adviceBlock(doc, 'Gap/action', `${findingGap(f) || 'Evidence gap to be resolved.'} ${findingAction(f) || 'Resolve before final lodgement advice.'}`);
     rule(doc);
-  }
-}
-
-function addPageNumbers(bufferPromise) {
-  return bufferPromise;
+  });
 }
 
 function buildAssessmentPdfBuffer(assessment = {}, adviceBundle = {}) {
   return new Promise((resolve, reject) => {
     try {
-      const model = getAdviceModel(adviceBundle);
       const cleanBundle = deepClean(adviceBundle);
       const cleanAssessment = deepClean(assessment);
-      const subclass = getAssessmentSubclass(cleanAssessment, cleanBundle, model);
-      const stream = cleanClientText(getRawStream(cleanAssessment, cleanBundle, model));
+      const model = getAdviceModel(cleanBundle);
+      const subclass = getSubclass(cleanAssessment, cleanBundle, model);
+      const stream = getStream(cleanAssessment, cleanBundle, model);
       const findings = collectFindings(model, cleanBundle);
-
       assertAdviceModelReady(cleanAssessment, cleanBundle, model, subclass, stream, findings);
 
       const doc = createDoc(resolve, reject);
-
-      coverPage(doc, { assessment: cleanAssessment, subclass, stream, model });
-      writeExecutive(doc, model, subclass, stream);
-      writeViabilityAndPriorities(doc, model);
+      cover(doc, cleanAssessment, subclass, stream, model);
+      writeExecutive(doc, model, subclass, stream, findings);
       writeFacts(doc, cleanAssessment, model);
       writeLegalFramework(doc, model, subclass, stream);
       writeFindings(doc, findings);
-      writeEvidence(doc, model);
+      writeEvidence(doc, model, findings);
       writeRisk(doc, model, findings);
-      writeActionPlan(doc, model);
-      writeRecommendation(doc, model, subclass, stream);
+      writeActionPlan(doc, model, findings);
+      writeRecommendation(doc, model);
       writeLimitations(doc);
       writeAppendix(doc, findings);
-
-      // Final safety check against the exact material rendered.
       assertNoForbiddenClientText({ model, cleanAssessment, subclass, stream, findings }, 'PDF');
       assertNoWrongSubclassLeak({ model, findings, stream }, subclass);
-
       doc.end();
-    } catch (err) {
-      reject(err);
-    }
+    } catch (err) { reject(err); }
   });
 }
 
@@ -878,34 +587,27 @@ function buildAppealAdvicePdfBuffer(assessment = {}, adviceBundle = {}) {
     try {
       const model = deepClean(pick(adviceBundle.appealAdviceModel, adviceBundle.advice, adviceBundle));
       const doc = createDoc(resolve, reject);
-      const title = cleanClientText(pick(model.title, 'Visa refusal review advice'));
-      const ref = pick(assessment.reference, assessment.assessment_id, assessment.id, '—');
-
-      h1(doc, title);
-      keyValueTable(doc, [
-        ['Reference', ref],
+      h1(doc, pick(model.title, 'Visa refusal review advice'));
+      keyValue(doc, [
+        ['Reference', pick(assessment.reference, assessment.assessment_id, assessment.id, '—')],
         ['Applicant', pick(assessment.applicant_name, assessment.applicantName, model.applicantName, '—')],
         ['Generated', new Date().toLocaleString('en-AU', { timeZone: 'Australia/Sydney' })]
       ]);
       p(doc, pick(model.executiveAdvice, model.summary, 'This appeal assessment is prepared from the information presently available and requires review of the decision record, application file and relevant time limits.'));
       h1(doc, 'Issues for review');
-      for (const item of normaliseArray(pick(model.issues, model.findings, model.reviewIssues)).slice(0, 20)) {
-        if (isPlainObject(item)) bullet(doc, pick(item.issue, item.title, item.finding, item.summary));
-        else bullet(doc, item);
-      }
+      asArray(pick(model.issues, model.findings, model.reviewIssues)).slice(0, 20).forEach(x => bullet(doc, isPlainObject(x) ? pick(x.issue, x.title, x.finding, x.summary) : x));
       h1(doc, 'Recommendation');
       p(doc, pick(model.recommendation, model.finalRecommendation, 'A final appeal recommendation should be issued only after the decision record, reasons, evidence and time limits are reviewed.'));
       writeLimitations(doc);
       assertNoForbiddenClientText(model, 'Appeal PDF');
       doc.end();
-    } catch (err) {
-      reject(err);
-    }
+    } catch (err) { reject(err); }
   });
 }
 
 module.exports = {
   buildAssessmentPdfBuffer,
   buildAppealAdvicePdfBuffer,
-  sha256
+  sha256,
+  RENDERER_VERSION
 };
