@@ -7,6 +7,7 @@ const { loadCriteriaRegistry, listSupportedCriteriaRegistrySubclasses } = requir
 const { validateCriteriaCoverage, buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
 const { loadLegalFrame } = require('./legalFrameLoader');
 const { buildSeniorAdviceModel } = require('./seniorAdviceEngine');
+const { buildUniversalAdviceModel } = require('./universalAdviceEngine');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
@@ -532,7 +533,7 @@ async function generateMigrationAdvice(assessment){
   // FIRST GATE: extract subclass and stream before any knowledgebase or GPT call.
   const extractedSubclass = extractVisaSubclass(assessment);
   if(!extractedSubclass) throw new Error('Visa subclass could not be identified. Knowledgebase-enforced advice generation blocked.');
-  const selectedStream = extractSelectedStream(assessment);
+  const selectedStream = assessment.selected_stream || assessment.stream || assessment.pathway || extractSelectedStream(assessment);
   const assessmentForAdvice = { ...assessment, visa_type: extractedSubclass, selected_stream: selectedStream || assessment.selected_stream };
   const facts=structuredFacts(assessmentForAdvice);
   const subclass=normSubclass(extractedSubclass || facts.visa_subclass);
@@ -541,8 +542,13 @@ async function generateMigrationAdvice(assessment){
   const legalPack=await buildKnowledgebaseLegalPack(assessmentForAdvice);
   assertKnowledgebasePack(legalPack);
   if(String(legalPack.subclass) !== String(subclass)) throw new Error('Knowledgebase subclass does not match extracted assessment subclass. Advice generation blocked.');
-  const legalFrame = loadLegalFrame(subclass, selectedStream || legalPack.selectedStream || '');
-  const criteriaRegistry = legalFrame.registry || loadCriteriaRegistry(subclass, selectedStream || legalPack.selectedStream || '');
+  const universalAdviceModel = await buildUniversalAdviceModel({
+    assessment: assessmentForAdvice,
+    subclass,
+    rawStream: selectedStream || legalPack.selectedStream || assessment.stream || assessment.pathway || ''
+  });
+  const legalFrame = universalAdviceModel.legalFrame || loadLegalFrame(subclass, universalAdviceModel.stream || selectedStream || legalPack.selectedStream || '');
+  const criteriaRegistry = legalFrame.registry || loadCriteriaRegistry(subclass);
   const advice=await callOpenAIForAdvice(facts,rules,legalPack,criteriaRegistry);
   const legalSourcePack={
     loadedAt:legalPack.loadedAt,
@@ -571,23 +577,11 @@ async function generateMigrationAdvice(assessment){
     legalPack: legalSourcePack,
     facts
   });
-  const seniorAdviceModel = buildSeniorAdviceModel({
-    assessment: assessmentForAdvice,
-    adviceBundle: {
-      facts,
-      rules,
-      legalSourcePack,
-      legalFrame,
-      criteriaRegistry,
-      advice: validatedAdvice,
-      subclass,
-      stream: selectedStream || legalPack.selectedStream || legalFrame.clientFacingStream || legalFrame.stream
-    },
-    registry: criteriaRegistry,
-    stream: selectedStream || legalPack.selectedStream || legalFrame.clientFacingStream || legalFrame.stream,
-    legalFrame
-  });
-  const legalFrameFindings = Array.isArray(seniorAdviceModel.criteriaFindings) ? seniorAdviceModel.criteriaFindings : [];
+  // Universal engine is the single source of advice-grade findings.
+  // Legacy seniorAdviceEngine remains available for compatibility, but must not
+  // overwrite or dilute the universal knowledgebase legal-frame model.
+  const seniorAdviceModel = universalAdviceModel;
+  const legalFrameFindings = Array.isArray(universalAdviceModel.criteriaFindings) ? universalAdviceModel.criteriaFindings : [];
   if (!legalFrameFindings.length) {
     throw new Error(`Advice-grade PDF blocked: no knowledgebase legal-frame findings generated for subclass ${subclass}.`);
   }

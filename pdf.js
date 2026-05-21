@@ -77,7 +77,7 @@ function clientFriendlyCriterionLabelLegacy(value) {
   if (!raw) return '';
   const key = raw.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const map = {
-    'correct subclass 186 stream selected': 'whether the Subclass 186 Labour Agreement stream is the correct pathway',
+    'correct subclass 186 stream selected': 'whether the selected Subclass 186 stream is the correct pathway',
     'executed labour agreement is current and applicable': 'whether the executed Labour Agreement is current and applicable to the employer and nominated role',
     'occupation covered by labour agreement': 'whether the nominated occupation is expressly covered by the Labour Agreement',
     'nominating employer lawfully and actively operates': 'whether the nominating employer is lawfully and actively operating',
@@ -2334,7 +2334,7 @@ function bmWriteFactsEvidenceStatus(doc, assessment, adviceBundle, facts, subcla
   const currentVisa = cleanText(deepPick(facts || {}, ['currentVisa', 'current_visa', 'visaStatus'], '') || assessment.current_visa || 'Not confirmed');
   const rows = family === 'employer' ? [
     ['Visa subclass', `Subclass ${cleanText(subclass)}`, 'Identified', 'Assessment should remain within the selected subclass unless evidence shows another pathway is more appropriate.'],
-    ['Stream', `${cleanText(stream)} Stream`, 'Identified', 'The Labour Agreement, not a generic 186 checklist, controls the analysis.'],
+    ['Stream', `${cleanText(stream)}`, 'Identified', 'The selected employer-sponsored stream must be verified against the applicable legal frame, nomination requirements and original evidence.'],
     ['Employer nomination', 'A nomination is required and must support this applicant, role and stream.', 'Not verified', 'No final positive advice should be issued until nomination evidence is reviewed.'],
     ['Labour Agreement', 'Must be current and applicable to the employer, occupation, location and role.', 'Not verified', 'This is a critical pre-lodgement issue.'],
     ['Concessions', 'Any concession must be expressly available and evidenced.', 'Not verified', 'Concessions must not be assumed.'],
@@ -2353,7 +2353,7 @@ function bmWriteLegalFrameworkApplied(doc, subclass, stream, family) {
   const sc = String(subclass || '').replace(/[^0-9]/g, '');
   const is300 = sc === '300';
   writePara(doc, family === 'employer'
-    ? 'The assessment is controlled by the Subclass 186 Labour Agreement Stream requirements, Schedule 1 validity requirements, the relevant Schedule 2 grant criteria, the employer nomination framework, public-interest criteria, and the exact terms of the executed Labour Agreement. The Labour Agreement is central because it may define permitted occupations, employer coverage, location restrictions, concessions, salary arrangements, ceilings and special conditions.'
+    ? `The assessment is controlled by Subclass ${sc} requirements, Schedule 1 validity requirements, the relevant Schedule 2 grant criteria, employer sponsorship/nomination requirements where applicable, public-interest criteria, and the selected stream's knowledgebase legal frame. Any Labour Agreement, DAMA, nomination, salary, occupation-list or concession issue must be applied only where it is legally relevant to this subclass and stream.`
     : is300
       ? 'The assessment is controlled by the Subclass 300 Prospective Marriage requirements, Schedule 1 validity requirements, relevant Schedule 2 grant criteria, public-interest criteria, sponsor eligibility and relationship evidence. The central legal questions are whether the prospective marriage pathway is available, whether the parties have a genuine intention and legal capacity to marry, whether the sponsor position is supportable, and whether the public-interest position is clear.'
       : 'The assessment is controlled by the selected subclass and stream, Schedule 1 validity requirements, relevant Schedule 2 grant criteria, public-interest criteria and the pathway-specific legal prerequisites identified from the knowledgebase legal frame.', { size: 9.6 });
@@ -2559,6 +2559,29 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       if (expectedVisibleCriteria && criteria.length < expectedVisibleCriteria) {
         throw new Error(`PDF blocked: Appendix criteria matrix incomplete. Registry produced ${expectedVisibleCriteria}, renderer produced ${criteria.length}.`);
       }
+      const pdfQualityText = JSON.stringify({ pathwayLabel, title, stream, effectiveAdvice, criteria, seniorAdviceModel: bundleForPdf.seniorAdviceModel || null });
+      const forbiddenPdfPhrases = [
+        'Registry-controlled pathway',
+        'Registry controlled pathway',
+        'Grant Criterion Control',
+        'Subclass Specific Grant Criterion',
+        'Map the original evidence to the clause',
+        'Primary pathway'
+      ];
+      for (const phrase of forbiddenPdfPhrases) {
+        if (pdfQualityText.includes(phrase)) {
+          throw new Error(`PDF blocked: forbidden fallback wording leaked into advice letter: ${phrase}`);
+        }
+      }
+      const scForGate = String(subclass || '').replace(/[^0-9]/g, '');
+      const subclassMentions = pdfQualityText.match(/Subclass\s+(\d{3})/g) || [];
+      for (const mention of subclassMentions) {
+        const n = String(mention).replace(/[^0-9]/g, '');
+        if (n && scForGate && n !== scForGate) {
+          throw new Error(`PDF blocked: wrong subclass wording leaked into Subclass ${scForGate} advice letter: ${mention}`);
+        }
+      }
+
       const position = v11ProfessionalPosition(effectiveAdvice || {}, bundleForPdf || {}, criteria);
       const overallRisk = v10OverallRisk(criteria);
 
