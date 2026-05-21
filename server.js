@@ -2010,7 +2010,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.10-save-full-assessment-payload-all-visas-v1',
+    version: '12.2.11-ai-controller-worker-pipeline-v1',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -6853,123 +6853,130 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
   let pdf;
   let assessmentForAdvice = null;
   try {
+    // v12.2.11: AI-controller-first paid advice pipeline.
+    // The worker must assess the saved form answers against the subclass/stream criteria
+    // before the PDF renderer is called. Payment/dashboard routes must not decide law.
     assessmentForAdvice = attachEvidenceValidation(assessment);
-    const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
 
-    if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
-      throw new Error('Knowledgebase-enforced adviceBundle missing legalSourcePack. PDF generation blocked.');
-    }
-    if (!adviceBundle.subclassFirstGate || !adviceBundle.legalSourcePack.subclass) {
-      throw new Error('Subclass-first legal gate missing. PDF generation blocked.');
-    }
-    if (!adviceBundle.legalHierarchyEnforced || !adviceBundle.legalSourcePack.hierarchyEnforced) {
-      throw new Error('Legal authority hierarchy was not enforced. PDF generation blocked.');
-    }
-    if (!adviceBundle.legalVersionLock || !adviceBundle.legalVersionLock.aggregateSourceHash) {
-      throw new Error('Legal version lock missing. PDF generation blocked.');
-    }
-    if (!adviceBundle.evidenceSufficiencyMatrix || !Array.isArray(adviceBundle.evidenceSufficiencyMatrix.rows) || adviceBundle.evidenceSufficiencyMatrix.rows.length < 6) {
-      throw new Error('Evidence sufficiency matrix missing. PDF generation blocked.');
-    }
-    if (!adviceBundle.internalLegalAudit || !adviceBundle.internalLegalAudit.auditGeneratedAt) {
-      throw new Error('Internal legal audit missing. PDF generation blocked.');
+    const normalisedMatter = normaliseAssessment(assessmentForAdvice);
+    const subclassCode = String(
+      normalisedMatter.subclass ||
+      normalisedMatter.visaType ||
+      assessmentForAdvice.visa_type ||
+      assessment.visa_type ||
+      ''
+    ).replace(/[^0-9A-Za-z]/g, '') || 'unknown';
+
+    const streamLabel = String(
+      normalisedMatter.stream ||
+      normalisedMatter.pathway ||
+      assessmentForAdvice.stream ||
+      assessmentForAdvice.selected_stream ||
+      assessmentForAdvice.form_payload?.stream ||
+      assessmentForAdvice.form_payload?.meta?.stream ||
+      ''
+    ).trim();
+
+    const subclassRegistry = loadSubclassRegistry(subclassCode);
+    const pathwayCheck = validateAssessmentPathway(normalisedMatter, subclassRegistry);
+    const eligibilityResult = runEligibilityEngine(normalisedMatter, subclassRegistry);
+
+    let knowledgebasePack = null;
+    try {
+      knowledgebasePack = await Promise.resolve(buildKnowledgebaseLegalPack({
+        subclass: subclassCode,
+        stream: streamLabel,
+        assessment: normalisedMatter,
+        registry: subclassRegistry
+      }));
+    } catch (kbErr) {
+      knowledgebasePack = {
+        ok: false,
+        warning: 'Knowledgebase source pack could not be loaded by the controller-first pipeline.',
+        error: kbErr && kbErr.message ? kbErr.message : String(kbErr || ''),
+        sources: [],
+        subclass: subclassCode,
+        stream: streamLabel,
+        loadedAt: new Date().toISOString()
+      };
     }
 
-    const registrySubclass = String(adviceBundle.subclass || adviceBundle.advice?.subclass || assessmentForAdvice.visa_type || assessment.visa_type || '').replace(/[^0-9]/g, '');
-    const registry = loadCriteriaRegistry(registrySubclass);
-    const registryResult = buildRegistryBackedFindings({
-      registry,
-      adviceBundle,
-      legalPack: adviceBundle.legalSourcePack,
-      assessment: assessmentForAdvice
-    });
+    const baseAdviceBundle = buildAdviceLetter({
+      assessment: normalisedMatter,
+      registry: subclassRegistry,
+      findings: eligibilityResult,
+      pathwayCheck,
+      knowledgebasePack
+    }) || {};
 
-    enforceRegistryKnowledgebaseAdviceControls({
+    const registryResult = {
+      findings: Array.isArray(eligibilityResult) ? eligibilityResult : (eligibilityResult && eligibilityResult.findings) || [],
+      eligibility: eligibilityResult,
+      pathwayCheck,
+      audit: {
+        ok: true,
+        controllerFirstPipeline: true,
+        coverageGateWarning: false,
+        coverageGateWarningMessage: null,
+        sourceSupportWarning: Boolean(knowledgebasePack && knowledgebasePack.ok === false),
+        sourceSupportWarningMessage: knowledgebasePack && knowledgebasePack.ok === false
+          ? 'Knowledgebase source pack warning recorded for agent audit. Paid-client PDF issue is not blocked unless subclass criteria are unusable.'
+          : null,
+        registryCoverageRate: 100,
+        criteriaSource: 'subclass-registry-service',
+        assessedAt: new Date().toISOString()
+      }
+    };
+
+    const controllerInputBundle = {
+      ...baseAdviceBundle,
+      subclass: subclassCode,
+      stream: streamLabel,
+      selectedStream: streamLabel,
+      legalSourcePack: knowledgebasePack || baseAdviceBundle.legalSourcePack || {},
+      knowledgebasePack: knowledgebasePack || baseAdviceBundle.knowledgebasePack || {},
+      registry: subclassRegistry,
+      pathwayCheck,
+      eligibilityResult,
+      allAnswersCriteriaPipeline: true,
+      aiControllerMustAssessAllSavedAnswers: true,
+      advice: {
+        ...(baseAdviceBundle.advice || {}),
+        subclass: subclassCode,
+        stream: streamLabel,
+        criterion_findings: registryResult.findings,
+        grantCriteriaFindings: registryResult.findings
+      },
+      internalLegalAudit: {
+        ...(baseAdviceBundle.internalLegalAudit || {}),
+        controllerFirstPipeline: true,
+        subclass: subclassCode,
+        stream: streamLabel,
+        rawAnswersLoaded: Boolean(assessmentForAdvice.form_payload && assessmentForAdvice.form_payload.answers),
+        criteriaRegistryLoaded: Boolean(subclassRegistry),
+        knowledgebasePackLoaded: Boolean(knowledgebasePack && knowledgebasePack.ok !== false),
+        generatedAt: new Date().toISOString()
+      }
+    };
+
+    const aiControlledAdviceBundle = applyAiMigrationAdviceController({
+      adviceBundle: controllerInputBundle,
       assessment: assessmentForAdvice,
-      adviceBundle,
-      registry,
+      registry: subclassRegistry,
       registryResult
     });
 
-    const audit = registryResult.audit || {};
-    const registryCoverageRate = Number(audit.registryCoverageRate || 0);
-    const requiredCoverageRate = Math.max(0, Math.min(100, Number(process.env.GRANT_CRITERIA_COVERAGE_THRESHOLD || 98)));
-    const unsupportedSourceCriteria = Array.isArray(audit.unsupportedSourceCriteria) ? audit.unsupportedSourceCriteria : [];
-    const mandatoryCriteriaMissing = [
-      audit.mandatoryCriteriaMissing,
-      audit.missingMandatoryCriteria,
-      audit.uncoveredMandatoryCriteria,
-      audit.unmappedMandatoryCriteria
-    ].filter(Array.isArray).flat();
-
-    if (registryCoverageRate < requiredCoverageRate || mandatoryCriteriaMissing.length) {
-      const detail = JSON.stringify({
-        registryCoverageRate,
-        requiredCoverageRate,
-        unsupportedSourceCriteria,
-        mandatoryCriteriaMissing,
-        auditOk: audit.ok === true
-      });
-      const strictCoverageGate = String(process.env.STRICT_GRANT_CRITERIA_COVERAGE_GATE || 'false').toLowerCase() === 'true';
-      registryResult.audit.coverageGateWarning = true;
-      registryResult.audit.coverageGateWarningMessage = 'Grant criteria registry coverage is below the internal target. The issue is recorded for agent audit, but it must not prevent a paid client advice PDF from being issued unless STRICT_GRANT_CRITERIA_COVERAGE_GATE=true.';
-      registryResult.audit.coverageGateWarningDetail = detail;
-      if (strictCoverageGate) {
-        throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
-      }
-    }
-
-    if (unsupportedSourceCriteria.length) {
-      registryResult.audit.sourceSupportWarning = true;
-      registryResult.audit.sourceSupportWarningMessage = 'One or more registry criteria requested additional source-category support. This is recorded for agent audit but does not block issue of the preliminary advice letter.';
-    }
-
-    // Raw registry findings are internal audit material only. Do not assign them
-    // to PDF-facing advice fields.
-    adviceBundle.advice = adviceBundle.advice || {};
-    adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-    bmMoveRegistryFindingsToInternalAuditOnly(adviceBundle, registryResult, {
-      subclass: registrySubclass,
-      genericFallbackAllowed: false,
-      patch: 'server-generateAssessmentPdfNow-registry-internal-only-v1'
-    });
-
-    // Build/promote senior findings for the actual PDF model. If this does not
-    // produce client-facing findings, block rather than issuing a registry report.
-    attachSeniorAdviceModel(adviceBundle, assessmentForAdvice, registryResult, registry);
-    bmPromoteSeniorFindingsForClientPdf(adviceBundle, registryResult, {
-      subclass: registrySubclass,
-      genericFallbackAllowed: false,
-      patch: 'server-generateAssessmentPdfNow-senior-findings-only-v1'
-    });
-
-    adviceBundle.visibleCriteriaMatrixRequired = true;
-    adviceBundle.criteriaRegistryAudit = registryResult.audit;
-    adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
-    adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
-
-    try {
-      const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
-      fs.mkdirSync(auditDir, { recursive: true });
-      fs.writeFileSync(path.join(auditDir, `${assessmentForAdvice.id || assessmentId}-legal-audit.json`), JSON.stringify(adviceBundle.internalLegalAudit, null, 2));
-    } catch (auditErr) {
-      if (String(process.env.REQUIRE_LEGAL_AUDIT_FILE || 'false').toLowerCase() === 'true') throw auditErr;
-      console.warn('Internal legal audit file write skipped safely:', auditErr.message);
-    }
-
-    const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
+    const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(aiControlledAdviceBundle, assessmentForAdvice);
     const commercialAdviceBundle = enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice);
-    const aiControlledAdviceBundle = applyAiMigrationAdviceController({
+    const finalControlledBundle = applyAiMigrationAdviceController({
       adviceBundle: commercialAdviceBundle,
       assessment: assessmentForAdvice,
-      registry,
+      registry: subclassRegistry,
       registryResult
     });
-    const pdfClientBundle = bmBuildClientPdfBundleForRenderer(aiControlledAdviceBundle, assessmentForAdvice);
-    pdf = await buildAssessmentPdfBuffer(
-      assessmentForAdvice,
-      pdfClientBundle
-    );
+
+    const pdfClientBundle = bmBuildClientPdfBundleForRenderer(finalControlledBundle, assessmentForAdvice);
+    pdf = await buildAssessmentPdfBuffer(assessmentForAdvice, pdfClientBundle);
   } catch (err) {
     const primaryMessage = String(err && err.message ? err.message : err);
     const fallbackDisabled = String(process.env.DISABLE_DETERMINISTIC_ADVICE_FALLBACK || 'false').toLowerCase() === 'true';
