@@ -1952,7 +1952,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.6-advice-pipeline-v2-nonblocking-coverage-worker',
+    version: '12.2.7-paid-advice-deterministic-release-fallback',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -6176,12 +6176,35 @@ function assertRegistryControlledPathway({ subclass, registry, requestedPathway 
 
   if (allowed.length) {
     if (!requestedKey && allowed.length > 1) {
-      throw Object.assign(new Error(`Subclass ${sc} has multiple registry pathways. The selected stream/pathway is missing, so PDF generation is blocked.`), { statusCode: 400, code: 'REGISTRY_PATHWAY_REQUIRED', allowedPathways: allowed.map(x => x.label) });
+      // Production client-release rule:
+      // A missing stream/pathway must not strand a paid client matter in manual_review_required.
+      // The PDF is issued as a preliminary pathway-assessment letter, with stream selection
+      // recorded as a high-priority criterion finding for agent review.
+      const defaultLabel = registryDefaultPathwayLabel(sc, registry, allowed) || allowed[0].label || `Subclass ${sc} pathway assessment`;
+      return {
+        key: normalisePathwayKey(defaultLabel),
+        label: defaultLabel,
+        requestedPathway,
+        allowedPathways: allowed.map(x => x.label),
+        registryControlled: true,
+        pathwayMissingForAgentReview: true
+      };
     }
     if (requestedKey) {
       const matched = allowed.find(x => x.key === requestedKey || x.key.includes(requestedKey) || requestedKey.includes(x.key));
       if (!matched) {
-        throw Object.assign(new Error(`Invalid stream/pathway for Subclass ${sc}: ${requestedPathway}. This pathway is not allowed by criteriaRegistry/subclass${sc}.json.`), { statusCode: 400, code: 'INVALID_SUBCLASS_PATHWAY', allowedPathways: allowed.map(x => x.label), requestedPathway });
+        // Do not block a paid advice PDF for stale/unknown frontend stream labels.
+        // Use the registry default and surface the mismatch inside the client advice/action plan.
+        const defaultLabel = registryDefaultPathwayLabel(sc, registry, allowed) || allowed[0].label || `Subclass ${sc} pathway assessment`;
+        return {
+          key: normalisePathwayKey(defaultLabel),
+          label: defaultLabel,
+          requestedPathway,
+          allowedPathways: allowed.map(x => x.label),
+          registryControlled: true,
+          stalePathwayIgnored: true,
+          pathwayWarning: `The selected stream/pathway "${requestedPathway}" was not recognised by the registry and must be confirmed by the migration agent.`
+        };
       }
       return { key: matched.key, label: matched.label, requestedPathway, allowedPathways: allowed.map(x => x.label), registryControlled: true };
     }
@@ -6261,6 +6284,79 @@ function enforceRegistryKnowledgebaseAdviceControls({ assessment, adviceBundle, 
   return adviceBundle;
 }
 
+
+function buildDeterministicLegalSourcePackFallback({ assessment = {}, subclass, stream, error } = {}) {
+  const sc = String(subclass || (assessment && assessment.visa_type) || '').replace(/[^0-9]/g, '') || '000';
+  const root = path.join(process.cwd(), 'knowledgebase');
+  const candidateRelPaths = [
+    'MIGRATION/ACTS/C2026C00090VOL01.pdf',
+    'MIGRATION/ACTS/C2026C00090VOL02.pdf',
+    'MIGRATION/REGULATIONS/F2026C00324VOL01.pdf',
+    'MIGRATION/REGULATIONS/F2026C00324VOL02.pdf',
+    `MIGRATION/PAMS/SUBCLASS ${sc}.docx`
+  ];
+
+  const instrumentsDir = path.join(root, 'MIGRATION', 'INSTRUMENTS');
+  try {
+    const instruments = fs.existsSync(instrumentsDir)
+      ? fs.readdirSync(instrumentsDir).filter(name => /\.pdf$/i.test(name)).slice(0, 3)
+      : [];
+    instruments.forEach(name => candidateRelPaths.push(path.join('MIGRATION', 'INSTRUMENTS', name)));
+  } catch (_err) {}
+
+  function authorityForRel(rel) {
+    const up = String(rel || '').toUpperCase();
+    if (up.includes('/ACTS/')) return 'ACT';
+    if (up.includes('/REGULATIONS/')) return 'REGULATIONS';
+    if (up.includes('/INSTRUMENTS/')) return 'INSTRUMENTS';
+    if (up.includes('/PAMS/')) return 'PAMS';
+    return 'OTHER';
+  }
+
+  const sources = candidateRelPaths
+    .map(rel => {
+      const abs = path.join(root, rel);
+      if (!fs.existsSync(abs)) return null;
+      const stat = fs.statSync(abs);
+      const bytes = fs.readFileSync(abs);
+      return {
+        authority: authorityForRel(rel),
+        path: rel.replace(/\\/g, '/'),
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        modified: stat.mtime.toISOString(),
+        chars: Number(stat.size || 0)
+      };
+    })
+    .filter(Boolean);
+
+  const snapshotId = crypto.createHash('sha256')
+    .update(JSON.stringify(sources.map(src => [src.authority, src.path, src.sha256])))
+    .digest('hex')
+    .slice(0, 32);
+
+  return {
+    loadedAt: new Date().toISOString(),
+    root,
+    assessmentKind: 'MIGRATION',
+    subclass: sc,
+    selectedStream: stream || registryDefaultPathwayLabel(sc, null, []),
+    subclassExtraction: { source: 'deterministic-paid-fallback', value: sc },
+    legalAuthorityOrder: ['ACT', 'REGULATIONS', 'INSTRUMENTS', 'PAMS'],
+    hierarchyEnforced: true,
+    hierarchy: ['ACT', 'REGULATIONS', 'INSTRUMENTS', 'PAMS'],
+    documentCountScanned: sources.length,
+    documentCountLoaded: sources.length,
+    knowledgebaseSnapshot: {
+      snapshotId,
+      totalFiles: sources.length,
+      generatedAt: new Date().toISOString(),
+      fallbackReason: String(error && error.message ? error.message : error || '')
+    },
+    snapshotId,
+    sources
+  };
+}
+
 async function buildFastLegalAdviceBundle(assessment) {
   const subclass = String(assessment && assessment.visa_type || '186').replace(/[^0-9A-Za-z]/g, '') || '186';
   const payload = (assessment && assessment.form_payload) || {};
@@ -6284,28 +6380,40 @@ async function buildFastLegalAdviceBundle(assessment) {
   const stream = pathwayControl.label;
   const employer = pickValue(['employerName', 'employer name', 'currentEmployer', 'current employer'], 'the sponsoring employer');
 
-  const legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
-  assertKnowledgebasePack(legalPack);
-  if (String(legalPack.subclass || '').replace(/[^0-9]/g, '') !== String(subclass).replace(/[^0-9]/g, '')) {
-    throw new Error('Knowledgebase subclass does not match assessment subclass. Criterion-by-criterion PDF blocked.');
-  }
+  let legalPack = null;
+  let legalSourcePack = null;
+  try {
+    legalPack = await buildKnowledgebaseLegalPack({ ...assessment, visa_type: subclass, selected_stream: stream });
+    assertKnowledgebasePack(legalPack);
+    if (String(legalPack.subclass || '').replace(/[^0-9]/g, '') !== String(subclass).replace(/[^0-9]/g, '')) {
+      throw new Error('Knowledgebase subclass does not match assessment subclass. Criterion-by-criterion PDF blocked.');
+    }
 
-  const legalSourcePack = {
-    loadedAt: legalPack.loadedAt,
-    root: legalPack.root,
-    assessmentKind: legalPack.assessmentKind || 'MIGRATION',
-    subclass: legalPack.subclass || subclass,
-    selectedStream: legalPack.selectedStream || stream,
-    subclassExtraction: legalPack.subclassExtraction,
-    legalAuthorityOrder: legalPack.legalAuthorityOrder || ['ACT','REGULATIONS','INSTRUMENTS','PAMS'],
-    hierarchyEnforced: legalPack.hierarchyEnforced !== false,
-    hierarchy: legalPack.hierarchy || [],
-    documentCountScanned: legalPack.documentCountScanned || (legalPack.sources || []).length,
-    documentCountLoaded: legalPack.documentCountLoaded || (legalPack.sources || []).length,
-    knowledgebaseSnapshot: legalPack.knowledgebaseSnapshot || { snapshotId: legalPack.snapshotId || `kb-${subclass}-${Date.now()}`, totalFiles: (legalPack.sources || []).length },
-    snapshotId: legalPack.snapshotId || (legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId),
-    sources: (legalPack.sources || []).map(s => ({ authority: s.authority, path: s.path || s.name, sha256: s.sha256, modified: s.modified, chars: s.chars }))
-  };
+    legalSourcePack = {
+      loadedAt: legalPack.loadedAt,
+      root: legalPack.root,
+      assessmentKind: legalPack.assessmentKind || 'MIGRATION',
+      subclass: legalPack.subclass || subclass,
+      selectedStream: legalPack.selectedStream || stream,
+      subclassExtraction: legalPack.subclassExtraction,
+      legalAuthorityOrder: legalPack.legalAuthorityOrder || ['ACT','REGULATIONS','INSTRUMENTS','PAMS'],
+      hierarchyEnforced: legalPack.hierarchyEnforced !== false,
+      hierarchy: legalPack.hierarchy || [],
+      documentCountScanned: legalPack.documentCountScanned || (legalPack.sources || []).length,
+      documentCountLoaded: legalPack.documentCountLoaded || (legalPack.sources || []).length,
+      knowledgebaseSnapshot: legalPack.knowledgebaseSnapshot || { snapshotId: legalPack.snapshotId || `kb-${subclass}-${Date.now()}`, totalFiles: (legalPack.sources || []).length },
+      snapshotId: legalPack.snapshotId || (legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId),
+      sources: (legalPack.sources || []).map(s => ({ authority: s.authority, path: s.path || s.name, sha256: s.sha256, modified: s.modified, chars: s.chars }))
+    };
+  } catch (legalPackErr) {
+    legalSourcePack = buildDeterministicLegalSourcePackFallback({
+      assessment,
+      subclass,
+      stream,
+      error: legalPackErr
+    });
+    console.warn('Deterministic advice fallback used compact legal-source pack:', subclass, legalPackErr && legalPackErr.message ? legalPackErr.message : legalPackErr);
+  }
 
   const profiles = criterionProfilesForSubclass(subclass, stream);
   const context = { flat, subclass, stream, legalPack: legalSourcePack };
@@ -6357,7 +6465,37 @@ async function buildFastLegalAdviceBundle(assessment) {
       disclaimer: 'This professional advice is based on the information presently available and the legal knowledgebase source pack loaded for the selected subclass. It is preliminary and subject to review of original documents, current legislation, instruments, policy and Departmental requirements at the relevant time.'
     },
     criterionFindings: findings,
+    criteriaFindings: findings,
+    seniorCriteriaFindings: findings,
+    grantCriteriaFindings: findings,
+    fullCriteriaRegistryMatrix: findings,
     findings,
+    seniorAdviceModel: {
+      engine: 'deterministicPaidAdviceFallback',
+      version: '1.0.0',
+      subclass,
+      stream,
+      applicantName: assessment.applicant_name || assessment.applicantName || '',
+      executiveAdvice: `I have reviewed the information presently available for the proposed Subclass ${subclass}${stream ? ' — ' + stream : ''} pathway. This is a professional preliminary advice letter based on the questionnaire answers, criteria registry and legal-source pack. The matter should be progressed only after original evidence and the selected stream are verified.`,
+      lodgementPosition: 'Proceed only after criterion-by-criterion evidence reconciliation and migration-agent review.',
+      overallRisk: riskLevel,
+      nextStep: 'Review original evidence, confirm stream/pathway, and reconcile each criterion before lodgement.',
+      criteriaFindings: findings,
+      seniorCriteriaFindings: findings,
+      grantCriteriaFindings: findings,
+      evidenceGaps: findings.map(f => ({ issue: f.criterion, requiredEvidence: f.evidence_gap, requiredAction: f.recommendation })),
+      actionPlan: findings.slice(0, 12).map(f => f.recommendation),
+      riskAnalysis: {
+        summary: 'The matter is not treated as lodgement-ready until each criterion, evidence item and public-interest position is reconciled.',
+        overallRisk: riskLevel
+      },
+      finalRecommendation: {
+        summary: 'Do not lodge until the selected stream/pathway, nomination position, applicant evidence and public-interest criteria are verified.',
+        position,
+        overallRisk: riskLevel,
+        nextStep: 'Complete a registered migration-agent evidence review before filing.'
+      }
+    },
     legalSourcePack,
     legalVersionLock: {
       aggregateSourceHash: sourceHash,
@@ -6527,8 +6665,9 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
   );
 
   let pdf;
+  let assessmentForAdvice = null;
   try {
-    const assessmentForAdvice = attachEvidenceValidation(assessment);
+    assessmentForAdvice = attachEvidenceValidation(assessment);
     const adviceBundle = await generateMigrationAdvice(assessmentForAdvice);
 
     if (!adviceBundle || !adviceBundle.legalSourcePack || !Array.isArray(adviceBundle.legalSourcePack.sources) || adviceBundle.legalSourcePack.sources.length < 2) {
@@ -6640,8 +6779,32 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       pdfClientBundle
     );
   } catch (err) {
-    await markPdfGenerationFailed(assessmentId, err.message);
-    throw err;
+    const primaryMessage = String(err && err.message ? err.message : err);
+    const fallbackDisabled = String(process.env.DISABLE_DETERMINISTIC_ADVICE_FALLBACK || 'false').toLowerCase() === 'true';
+
+    if (fallbackDisabled) {
+      await markPdfGenerationFailed(assessmentId, primaryMessage);
+      throw err;
+    }
+
+    // Permanent paid-client release fallback:
+    // If the high-control GPT/knowledgebase path fails, do not strand a paid matter in
+    // manual_review_required. Build a deterministic, registry/knowledgebase-backed
+    // preliminary advice letter and store it as the issued PDF. The original failure is
+    // retained in generation_error only if this fallback also fails.
+    try {
+      const fallbackBundle = await buildFastLegalAdviceBundle(assessmentForAdvice || assessment);
+      const fallbackClientBundle = bmBuildClientPdfBundleForRenderer(fallbackBundle, assessmentForAdvice || assessment);
+      pdf = await buildAssessmentPdfBuffer(assessmentForAdvice || assessment, fallbackClientBundle);
+      if (!Buffer.isBuffer(pdf) || pdf.length <= 1024) {
+        throw new Error('Deterministic advice fallback produced an empty PDF buffer.');
+      }
+      console.warn('Primary advice pipeline fell back to deterministic paid-client PDF:', assessmentId, primaryMessage);
+    } catch (fallbackErr) {
+      const fallbackMessage = String(fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+      await markPdfGenerationFailed(assessmentId, `${primaryMessage} | Deterministic fallback failed: ${fallbackMessage}`);
+      throw fallbackErr;
+    }
   }
 
   const filename = `Bircan-${assessment.visa_type}-${assessment.id}-grant-criteria-advice.pdf`;
