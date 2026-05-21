@@ -7150,7 +7150,7 @@ function dashboardV2StatusLabel(status) {
     pdf_queued: 'Advice letter queued',
     pdf_generating: 'Advice letter generating',
     manual_review_required: 'Manual review required',
-    pdf_failed: 'PDF generation failed',
+    pdf_failed: 'Manual review required',
     pdf_ready: 'PDF ready',
     active: 'Active'
   })[status] || 'Processing';
@@ -7273,7 +7273,7 @@ function scheduleDashboardV2PdfGeneration(services, email) {
         await query(
           `UPDATE assessments
            SET status=CASE WHEN status IN ('pdf_ready','advice_ready') THEN status ELSE 'pdf_queued' END,
-               generation_error=NULL,
+               generation_error=generation_error,
                updated_at=now()
            WHERE id=$1 AND payment_status='paid' AND (pdf_bytes IS NULL OR octet_length(pdf_bytes) <= 1024)`,
           [service.id]
