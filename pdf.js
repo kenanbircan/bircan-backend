@@ -312,7 +312,7 @@ function assertAdviceModelReady(assessment, adviceBundle, model, subclass, strea
     throw new Error(`Advice-grade PDF blocked: criterion findings for Subclass ${subclass} do not contain legal-frame or fact-application content.`);
   }
 
-  assertNoForbiddenClientText({ assessment, adviceBundle, model, findings }, 'PDF');
+  assertNoForbiddenClientText({ assessment, model, findings, subclass, stream }, 'PDF');
   assertNoWrongSubclassLeak({ model, findings, stream }, subclass);
 }
 
@@ -675,7 +675,7 @@ function buildAssessmentPdfBuffer(assessment = {}, adviceBundle = {}) {
       writeAppendix(doc, findings);
 
       // Final safety check against the exact material rendered.
-      assertNoForbiddenClientText({ model, cleanBundle, cleanAssessment, subclass, stream, findings }, 'PDF');
+      assertNoForbiddenClientText({ model, cleanAssessment, subclass, stream, findings }, 'PDF');
       assertNoWrongSubclassLeak({ model, findings, stream }, subclass);
 
       doc.end();

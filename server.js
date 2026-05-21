@@ -1105,16 +1105,18 @@ function buildUnifiedServiceCard(row) {
   const secondsRemaining = Math.max(0, Number(row.release_seconds_remaining || 0));
   const locked = paid && secondsRemaining > 0;
   const hasPdf = row.has_pdf === true;
-  // For paid/released visa matters, the Open PDF action must be available even if
-  // pdf_bytes have not been written yet. The final-pdf route generates the PDF on demand.
-  const canOpenVisaPdf = serviceType === 'visa_assessment' && paid && !locked;
-  const ready = paid && !locked && (hasPdf || canOpenVisaPdf || serviceType === 'citizenship_test');
+  // A visa PDF can be opened only after real issued bytes exist. The final-pdf
+  // route is read-only; generation happens through the queue/worker, not on open.
+  const canOpenVisaPdf = serviceType === 'visa_assessment' && paid && !locked && hasPdf;
+  const ready = paid && !locked && ((serviceType === 'visa_assessment' && hasPdf) || (serviceType === 'appeals_assessment' && hasPdf) || serviceType === 'citizenship_test');
   const finalPdfUrl = canOpenVisaPdf ? buildFinalPdfUrl(row.id) : serviceType === 'appeals_assessment' && hasPdf && !locked ? `/api/appeals/${encodeURIComponent(row.id)}/final-pdf` : null;
   let actionLabel = 'Complete payment';
   if (serviceType === 'citizenship_test' && paid) actionLabel = 'Open paid exam';
   else if (locked) actionLabel = `${normalisePlanLabel(plan)} release pending`;
   else if (ready && finalPdfUrl) actionLabel = 'Open PDF';
-  else if (paid) actionLabel = 'Preparing advice letter';
+  else if (paid && row.status === 'pdf_failed') actionLabel = 'Internal review required';
+  else if (paid && row.status === 'pdf_queued') actionLabel = 'Advice letter queued';
+  else if (paid) actionLabel = 'Generating advice letter';
   return {
     id: row.id,
     serviceType,
@@ -5960,7 +5962,68 @@ function bmPromoteSeniorFindingsForClientPdf(adviceBundle, registryResult, conte
   return seniorFindings;
 }
 
+/**
+ * Build the only object allowed to reach pdf.js.
+ * This deliberately excludes internalLegalAudit, raw registry rows, audit JSON,
+ * debug route data and other non-client-facing material. The PDF renderer should
+ * never have to inspect internal audit material to decide whether a letter is safe.
+ */
+function bmBuildClientPdfBundleForRenderer(adviceBundle, assessment = {}) {
+  const seniorFindings = bmSeniorFindingsFromBundle(adviceBundle);
+  if (!bmArrayWithItems(seniorFindings)) {
+    const subclass = String((assessment && assessment.visa_type) || (adviceBundle && adviceBundle.subclass) || '').replace(/\D/g, '');
+    throw Object.assign(
+      new Error(`Advice-grade PDF blocked: no senior client-facing criteria findings available for Subclass ${subclass || 'unknown'}.`),
+      { statusCode: 500, code: 'PDF_CLIENT_FINDINGS_MISSING' }
+    );
+  }
 
+  const advice = (adviceBundle && adviceBundle.advice) || {};
+  const model = (adviceBundle && (adviceBundle.universalAdviceModel || adviceBundle.seniorAdviceModel || adviceBundle.adviceModel))
+    || advice.seniorAdviceModel
+    || advice.universalAdviceModel
+    || advice;
+
+  return {
+    subclass: adviceBundle && adviceBundle.subclass,
+    stream: (adviceBundle && (adviceBundle.stream || adviceBundle.selectedStream || adviceBundle.clientFacingStream)) || advice.stream || advice.selectedStream,
+    selectedStream: (adviceBundle && (adviceBundle.selectedStream || adviceBundle.stream || adviceBundle.clientFacingStream)) || advice.selectedStream || advice.stream,
+    clientFacingStream: (adviceBundle && (adviceBundle.clientFacingStream || adviceBundle.stream || adviceBundle.selectedStream)) || advice.clientFacingStream || advice.stream,
+    advice: {
+      ...advice,
+      grantCriteriaFindings: seniorFindings,
+      criterion_findings: seniorFindings,
+      seniorCriteriaFindings: seniorFindings,
+      fullCriteriaRegistryMatrix: seniorFindings
+    },
+    seniorAdviceModel: model && typeof model === 'object'
+      ? {
+          ...model,
+          criteriaFindings: seniorFindings,
+          grantCriteriaFindings: seniorFindings,
+          seniorCriteriaFindings: seniorFindings
+        }
+      : { criteriaFindings: seniorFindings, grantCriteriaFindings: seniorFindings, seniorCriteriaFindings: seniorFindings },
+    seniorCriteriaFindings: seniorFindings,
+    grantCriteriaFindings: seniorFindings,
+    criterion_findings: seniorFindings,
+    clientFacingCriteriaFindings: seniorFindings,
+    legalSourcePack: adviceBundle && adviceBundle.legalSourcePack ? {
+      subclass: adviceBundle.legalSourcePack.subclass,
+      selectedStream: adviceBundle.legalSourcePack.selectedStream,
+      loadedAt: adviceBundle.legalSourcePack.loadedAt,
+      hierarchyEnforced: adviceBundle.legalSourcePack.hierarchyEnforced,
+      legalAuthorityOrder: adviceBundle.legalSourcePack.legalAuthorityOrder,
+      sources: Array.isArray(adviceBundle.legalSourcePack.sources)
+        ? adviceBundle.legalSourcePack.sources.map(src => ({ authority: src.authority, title: src.title, reference: src.reference, path: src.path })).slice(0, 30)
+        : []
+    } : null,
+    knowledgebaseFirstAdvice: true,
+    registryFindingsMovedToInternalAudit: true,
+    rawRegistryFindingsClientFacing: false,
+    pdfRendererInput: 'client-facing-only-v1'
+  };
+}
 
 function normalisePathwayKey(value) {
   return String(value || '')
@@ -6321,7 +6384,7 @@ async function buildFastLegalAdviceBundle(assessment) {
 
 async function saveFastAssessmentPdf(client, assessment, reason = 'fast_professional_pdf') {
   const adviceBundle = await buildFastLegalAdviceBundle(assessment);
-  const pdf = await buildAssessmentPdfBuffer(assessment, adviceBundle);
+  const pdf = await buildAssessmentPdfBuffer(assessment, bmBuildClientPdfBundleForRenderer(adviceBundle, assessment));
   if (!Buffer.isBuffer(pdf) || pdf.length <= 1024) throw new Error('Professional PDF generation failed: empty PDF buffer.');
   const filename = `Bircan-${assessment.visa_type || 'visa'}-${assessment.id}-assessment-letter.pdf`;
   const hash = sha256(pdf);
@@ -6536,9 +6599,11 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     }
 
     const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
+    const commercialAdviceBundle = enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice);
+    const pdfClientBundle = bmBuildClientPdfBundleForRenderer(commercialAdviceBundle, assessmentForAdvice);
     pdf = await buildAssessmentPdfBuffer(
       assessmentForAdvice,
-      enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice)
+      pdfClientBundle
     );
   } catch (err) {
     await markPdfGenerationFailed(assessmentId, err.message);
@@ -7202,7 +7267,7 @@ function scheduleDashboardV2PdfGeneration(services, email) {
           `INSERT INTO pdf_jobs (assessment_id, status, run_after)
            VALUES ($1,'queued',now())
            ON CONFLICT (assessment_id) DO UPDATE
-             SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
+             SET status=CASE WHEN pdf_jobs.status='failed' THEN pdf_jobs.status ELSE 'queued' END, run_after=now(), locked_at=NULL, updated_at=now()`,
           [service.id]
         );
         await query(
@@ -7858,10 +7923,9 @@ async function sendAssessmentPdf(req, res, rawId) {
     ).catch(() => null);
     await query(
       `UPDATE assessments
-       SET status='pdf_queued',
-           generation_error=NULL,
+       SET status=CASE WHEN status='pdf_failed' THEN status ELSE 'pdf_queued' END,
            updated_at=now()
-       WHERE id=$1 AND (pdf_bytes IS NULL OR octet_length(pdf_bytes) <= 1024 OR $2=true)`,
+       WHERE id=$1 AND status <> 'pdf_failed' AND (pdf_bytes IS NULL OR octet_length(pdf_bytes) <= 1024 OR $2=true)`,
       [assessment.id, needsGrantCriteriaRegeneration]
     ).catch(() => null);
   }
