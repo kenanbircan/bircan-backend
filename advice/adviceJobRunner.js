@@ -8,7 +8,10 @@ async function claimNextAdviceJob({ assessmentId } = {}) {
     const { rows } = assessmentId ? await client.query(
       `SELECT * FROM pdf_jobs
        WHERE assessment_id=$1
-         AND status IN ('queued','failed','processing')
+         AND (
+           status IN ('queued','failed')
+           OR (status='processing' AND (locked_at IS NULL OR locked_at < now() - interval '10 minutes'))
+         )
        ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
