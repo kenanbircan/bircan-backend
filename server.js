@@ -273,26 +273,83 @@ function pickApplicantEmailValue(client, ...sources) {
   }
   return normaliseEmail(client && client.email);
 }
+function firstObjectValue(...values) {
+  for (const value of values) {
+    if (isPlainObject(value)) return value;
+  }
+  return {};
+}
+
+function firstArrayValue(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
 function buildAssessmentPayload(body, client) {
   const b = isPlainObject(body) ? body : {};
-  const source = isPlainObject(b.formPayload) ? b.formPayload : isPlainObject(b.form_payload) ? b.form_payload : isPlainObject(b.answers) ? b.answers : isPlainObject(b.formData) ? b.formData : isPlainObject(b.form_data) ? b.form_data : isPlainObject(b.payload) ? b.payload : isPlainObject(b.data) ? b.data : b;
-  const answers = normaliseValue(source) || {};
+  const fp = isPlainObject(b.formPayload) ? b.formPayload : isPlainObject(b.form_payload) ? b.form_payload : {};
+  const rawAnswersSource = firstObjectValue(
+    fp.answers,
+    b.answers,
+    b.formData,
+    b.form_data,
+    b.payload,
+    b.data,
+    fp,
+    b
+  );
+  const answers = normaliseValue(rawAnswersSource) || {};
+  const questions = normaliseValue(firstArrayValue(fp.questions, b.questions, b.formQuestions, b.form_questions)) || [];
+  const evidence = normaliseValue(firstObjectValue(fp.evidence, b.evidence, b.evidenceFlags, b.evidence_flags)) || {};
+  const riskFacts = normaliseValue(firstObjectValue(fp.riskFacts, fp.risk_facts, b.riskFacts, b.risk_facts)) || {};
   const flatAnswers = flattenObject(answers);
   const flatBody = flattenObject(b);
   const applicantName = pickApplicantValue(b, answers, flatAnswers, flatBody);
   const applicantEmail = pickApplicantEmailValue(client, b, answers, flatAnswers, flatBody);
+  const visaType = String(
+    b.visaType || b.visa_type || b.subclass || b.visaSubclass ||
+    fp.visaType || fp.visa_type || fp.subclass || fp.visaSubclass ||
+    answers.visaType || answers.visa_type || answers.subclass || answers.visaSubclass ||
+    flatAnswers.visaType || flatAnswers.visa_type || flatAnswers.subclass || ''
+  ).replace(/[^0-9A-Za-z]/g, '') || 'unknown';
+  const stream = String(
+    b.stream || b.pathway || b.selectedStream || b.selected_stream ||
+    fp.stream || fp.pathway || fp.selectedStream || fp.selected_stream ||
+    answers.stream || answers.pathway || answers.selectedStream || answers.selected_stream ||
+    flatAnswers.stream || flatAnswers.pathway || flatAnswers.selectedStream || ''
+  ).trim();
   const meta = {
     submittedAt: new Date().toISOString(),
     clientEmail: normaliseEmail(client && client.email),
     applicantEmail,
     applicantName,
-    visaType: String(b.visaType || b.visa_type || b.subclass || b.visaSubclass || answers.visaType || answers.visa_type || flatAnswers.visaType || flatAnswers.visa_type || '').replace(/[^0-9A-Za-z]/g, '') || 'unknown',
+    visaType,
+    subclass: visaType,
+    stream,
     selectedPlan: planFromAssessmentBody(b, 'instant'),
-    sourceShape: b.formPayload ? 'formPayload' : b.form_payload ? 'form_payload' : b.answers ? 'answers' : b.formData ? 'formData' : b.payload ? 'payload' : 'rawBody'
+    sourceShape: b.formPayload ? 'formPayload' : b.form_payload ? 'form_payload' : b.answers ? 'answers' : b.formData ? 'formData' : b.payload ? 'payload' : 'rawBody',
+    page: b.page || b.sourcePage || b.formPage || fp.page || fp.sourcePage || '',
+    formVersion: b.formVersion || b.version || fp.formVersion || fp.version || '',
+    payloadPolicy: 'save-full-submission-all-visa-pages-v1'
   };
-  return { meta, answers, flatAnswers, rawSubmission: normaliseValue(b) };
+  return {
+    meta,
+    subclass: visaType,
+    stream,
+    clientEmail: normaliseEmail(b.clientEmail || b.client_email || b.email || applicantEmail || (client && client.email)),
+    applicantEmail,
+    applicantName,
+    plan: meta.selectedPlan,
+    clientConfirmation: Boolean(b.clientConfirmation || b.client_confirmation || fp.clientConfirmation || fp.client_confirmation),
+    questions,
+    answers,
+    evidence,
+    riskFacts,
+    rawSubmission: normaliseValue(b)
+  };
 }
-
 
 function stripVolatileAssessmentValues(value) {
   if (Array.isArray(value)) return value.map(stripVolatileAssessmentValues);
@@ -1953,7 +2010,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.9-ai-migration-advice-controller-v1',
+    version: '12.2.10-save-full-assessment-payload-all-visas-v1',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2898,6 +2955,18 @@ async function handlePublicVisaAssessmentStart(req, res) {
         existing = null;
       }
       if (existing) {
+        await client.query(
+          `UPDATE assessments
+           SET form_payload=$1,
+               applicant_email=COALESCE(applicant_email,$2),
+               applicant_name=COALESCE($3, applicant_name),
+               submission_fingerprint=$4,
+               updated_at=now()
+           WHERE id=$5 AND COALESCE(payment_status,'unpaid') <> 'paid'`,
+          [built, built.meta.applicantEmail || email, built.meta.applicantName || null, submissionFingerprint, existing.id]
+        );
+        existing.form_payload = built;
+        existing.submission_fingerprint = submissionFingerprint;
         let serviceSession = null;
         if (existing.service_session_id) {
           const sr = await client.query(`SELECT * FROM service_sessions WHERE id=$1 LIMIT 1`, [existing.service_session_id]);
