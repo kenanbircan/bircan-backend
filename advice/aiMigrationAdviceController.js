@@ -14,7 +14,7 @@
  * pdf.js must render the client object only.
  */
 
-const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v2-all-answers-registry-criteria-20260522';
+const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v3-universal-all-subclasses-answer-criteria-20260522';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -343,24 +343,101 @@ function registryGrantCriteria(registry, stream) {
 }
 
 const AREA_PROFILES = [
-  { area: 'stream_pathway', label: 'Subclass and stream/pathway', patterns: [/selected.*stream/i, /stream/i, /pathway/i, /labour.*agreement/i, /dama/i], types: /stream|pathway|labour_agreement/ },
-  { area: 'nomination', label: 'Sponsoring employer and nomination position', patterns: [/sponsor/i, /employer/i, /nomination/i, /nominator/i, /business/i, /position/i, /genuine/i, /abn/i, /contract/i, /ongoing/i], types: /nomination|sponsor|employer|genuine/ },
-  { area: 'occupation_skills', label: 'Occupation, ANZSCO, skills and licensing', patterns: [/occupation/i, /anzsco/i, /duties/i, /skill/i, /qualification/i, /licen[cs]/i, /assess/i, /authority/i, /training/i], types: /skill|occupation|anzsco|licen|registration/ },
-  { area: 'employment', label: 'Employment history and work rights', patterns: [/employment/i, /employed/i, /work/i, /hours/i, /start/i, /payroll/i, /reference/i, /visa.*right/i], types: /employment|work|salary_employment/ },
-  { area: 'salary', label: 'Salary, market salary and employment conditions', patterns: [/salary/i, /remuneration/i, /market/i, /super/i, /award/i, /enterprise/i, /allowance/i, /deduction/i, /bank/i, /tax/i], types: /salary|market|remuneration/ },
+  { area: 'stream_pathway', label: 'Subclass and stream/pathway', patterns: [/selected.*stream/i, /stream/i, /pathway/i, /labour.*agreement/i, /dama/i, /points/i, /invitation/i, /nomination/i, /visitor/i, /student/i, /protection/i], types: /stream|pathway|labour_agreement|points|invitation|validity|visitor|student|protection/ },
+  { area: 'nomination', label: 'Sponsor, nominator, employer or pathway support', patterns: [/sponsor/i, /employer/i, /nomination/i, /nominator/i, /business/i, /position/i, /genuine/i, /abn/i, /contract/i, /ongoing/i, /support/i, /inviter/i, /relationship.*sponsor/i], types: /nomination|sponsor|employer|genuine|supporter|nominator/ },
+  { area: 'occupation_skills', label: 'Occupation, skills, study or pathway-specific capability', patterns: [/occupation/i, /anzsco/i, /duties/i, /skill/i, /qualification/i, /licen[cs]/i, /assess/i, /authority/i, /training/i, /study/i, /course/i, /business.*history/i, /investment/i, /claim.*evidence/i], types: /skill|occupation|anzsco|licen|registration|qualification|study|business|investment|claim/ },
+  { area: 'employment', label: 'Employment, study, relationship or personal history chronology', patterns: [/employment/i, /employed/i, /work/i, /hours/i, /start/i, /payroll/i, /reference/i, /visa.*right/i, /study.*history/i, /relationship.*history/i, /cohab/i, /travel.*history/i, /movement/i, /claim.*chronology/i], types: /employment|work|salary_employment|study_history|relationship_history|chronology|personal_history/ },
+  { area: 'salary', label: 'Salary, funds, financial capacity and support evidence', patterns: [/salary/i, /remuneration/i, /market/i, /super/i, /award/i, /enterprise/i, /allowance/i, /deduction/i, /bank/i, /tax/i, /fund/i, /financial/i, /income/i, /asset/i, /support/i], types: /salary|market|remuneration|fund|financial|income|asset/ },
   { area: 'english', label: 'English language requirement or concession', patterns: [/english/i, /ielts/i, /pte/i, /toefl/i, /oet/i, /cambridge/i, /passport.*country/i, /concession/i], types: /english/ },
   { area: 'age', label: 'Age requirement or exemption', patterns: [/date.*birth/i, /dob/i, /age/i, /high.*income/i, /earnings/i], types: /age/ },
-  { area: 'identity_location', label: 'Application validity, identity and location/status', patterns: [/passport/i, /identity/i, /name.*change/i, /currently.*australia/i, /current.*country/i, /current.*visa/i, /visa.*expiry/i, /bridging/i, /condition/i, /location/i], types: /location_status|identity|validity/ },
-  { area: 'health', label: 'Health requirements', patterns: [/health/i, /medical/i, /treatment/i, /hap/i], types: /health/ },
-  { area: 'character_integrity', label: 'Character, integrity and adverse history', patterns: [/character/i, /criminal/i, /police/i, /offen/i, /convict/i, /pending/i, /false/i, /fraud/i, /identity/i, /integrity/i, /paid.*sponsor/i], types: /character|integrity|public_interest|health_character/ },
-  { area: 'migration_history', label: 'Migration history, refusals and compliance', patterns: [/refus/i, /cancel/i, /section\s*48/i, /8503/i, /unlawful/i, /overstay/i, /breach/i, /tribunal/i, /appeal/i, /visa.*history/i], types: /migration|compliance|public_interest/ },
-  { area: 'family', label: 'Family members and secondary applicants', patterns: [/partner/i, /dependent/i, /dependant/i, /child/i, /family/i, /custody/i], types: /relationship_family|family|secondary/ },
-  { area: 'evidence', label: 'Evidence readiness', patterns: [/available/i, /docs/i, /document/i, /evidence/i, /records/i, /payslip/i, /tax/i, /super/i, /resume/i, /reference/i], types: /evidence/ }
+  { area: 'identity_location', label: 'Application validity, identity and location/status', patterns: [/passport/i, /identity/i, /name.*change/i, /currently.*australia/i, /current.*country/i, /current.*visa/i, /visa.*expiry/i, /bridging/i, /condition/i, /location/i, /form/i, /charge/i, /lodgement/i], types: /location_status|identity|validity|application_validity|charge|lodgement/ },
+  { area: 'health', label: 'Health requirements', patterns: [/health/i, /medical/i, /treatment/i, /hap/i, /disease/i, /disability/i], types: /health/ },
+  { area: 'character_integrity', label: 'Character, integrity and adverse information', patterns: [/character/i, /criminal/i, /police/i, /offen/i, /convict/i, /pending/i, /false/i, /fraud/i, /identity/i, /integrity/i, /paid.*sponsor/i, /pic/i, /4020/i, /public.*interest/i], types: /character|integrity|public_interest|health_character|pic|4020/ },
+  { area: 'migration_history', label: 'Migration history, refusals, compliance or claims history', patterns: [/refus/i, /cancel/i, /section\s*48/i, /8503/i, /unlawful/i, /overstay/i, /breach/i, /tribunal/i, /appeal/i, /visa.*history/i, /protection.*claim/i, /persecution/i, /country/i, /relocation/i], types: /migration|compliance|public_interest|protection|refugee|complementary|exclusion|claims/ },
+  { area: 'family', label: 'Family, relationship and secondary applicants', patterns: [/partner/i, /spouse/i, /de facto/i, /dependent/i, /dependant/i, /child/i, /family/i, /custody/i, /relationship/i, /sponsor.*partner/i, /family.*violence/i], types: /relationship_family|family|secondary|partner|child|parent|carer|remaining_relative/ },
+  { area: 'evidence', label: 'Evidence readiness', patterns: [/available/i, /docs/i, /document/i, /evidence/i, /records/i, /payslip/i, /tax/i, /super/i, /resume/i, /reference/i, /certificate/i, /statement/i], types: /evidence|document/ }
 ];
 
+
+function subclassNumber(facts = {}) {
+  return normaliseSubclass(facts.subclass || '');
+}
+
+function subclassIn(facts, list) {
+  return list.map(String).includes(subclassNumber(facts));
+}
+
+function subclassFamily(facts = {}) {
+  const sc = subclassNumber(facts);
+  if (['186','187','482','494','407'].includes(sc)) return 'employer_sponsored';
+  if (['189','190','489','491'].includes(sc)) return 'general_skilled';
+  if (['188','888'].includes(sc)) return 'business_investment';
+  if (['300','309','820','801'].includes(sc)) return 'partner_family';
+  if (['101','102','103','115','116','173','836','870'].includes(sc)) return 'family_parent_child_carer';
+  if (['500','590'].includes(sc)) return 'student_guardian';
+  if (['600','601','602','651'].includes(sc)) return 'visitor_medical';
+  if (['785','790','866'].includes(sc)) return 'protection_humanitarian';
+  if (['417','462'].includes(sc)) return 'working_holiday';
+  if (['444','461'].includes(sc)) return 'nz_related';
+  if (['485'].includes(sc)) return 'graduate';
+  return 'visa';
+}
+
+function profileLabel(profile, facts = {}, criterion = {}) {
+  const family = subclassFamily(facts);
+  const textHay = `${criterion.criterionId || ''} ${criterion.criterionType || ''} ${criterion.requirementText || ''}`.toLowerCase();
+  if (profile.area === 'nomination') {
+    if (family === 'partner_family') return 'Sponsor, relationship and application support';
+    if (family === 'family_parent_child_carer') return 'Sponsor, family relationship and dependency criteria';
+    if (family === 'student_guardian') return 'Enrolment, genuine student/guardian and support criteria';
+    if (family === 'protection_humanitarian') return 'Protection claims, complementary protection and exclusion issues';
+    if (family === 'general_skilled') return 'Nomination/invitation, points-tested pathway and state/territory support';
+    if (family === 'business_investment') return 'Business, investment and nomination criteria';
+    if (family === 'visitor_medical') return 'Visitor purpose, stay period and temporary entrant criteria';
+    if (family === 'working_holiday') return 'Working holiday eligibility and conditions';
+    if (family === 'nz_related') return 'New Zealand citizen/family relationship pathway';
+  }
+  if (profile.area === 'occupation_skills') {
+    if (family === 'partner_family') return 'Relationship evidence and family criteria';
+    if (family === 'student_guardian') return 'Course, study history and genuine student evidence';
+    if (family === 'protection_humanitarian') return 'Claims evidence and country-information alignment';
+    if (family === 'visitor_medical') return 'Visit purpose, funds and temporary stay evidence';
+    if (family === 'business_investment') return 'Business/investment history and ownership evidence';
+  }
+  if (profile.area === 'employment') {
+    if (family === 'student_guardian') return 'Study, work rights and temporary stay history';
+    if (family === 'partner_family') return 'Relationship chronology and household evidence';
+    if (family === 'protection_humanitarian') return 'Personal history, movements and claim chronology';
+  }
+  if (profile.area === 'salary') {
+    if (family === 'student_guardian' || family === 'visitor_medical') return 'Funds, financial capacity and support evidence';
+    if (family === 'partner_family' || family === 'family_parent_child_carer') return 'Financial support, dependency and household evidence';
+    if (family === 'protection_humanitarian') return 'Practical barriers, relocation and support evidence';
+  }
+  if (profile.area === 'stream_pathway') return `Subclass ${subclassNumber(facts) || ''} stream/pathway selection`.trim();
+  if (/relationship|partner|spouse|de facto|sponsor/.test(textHay)) return 'Relationship and sponsorship criterion';
+  return profile.label;
+}
+
+function areaRelevantForSubclass(area, facts = {}, registryAreas = new Set()) {
+  const sc = subclassNumber(facts);
+  if (!sc) return true;
+  if (registryAreas && registryAreas.has(area)) return true;
+  if (area === 'age') return ['186','187','188','189','190','407','485','489','491','494','888'].includes(sc) || Boolean(facts.ageInfo && (facts.ageInfo.age || facts.ageInfo.dateOfBirth || facts.ageInfo.exemption));
+  if (area === 'english') return ['186','187','188','189','190','407','482','485','489','491','494','500','590','888'].includes(sc) || Boolean(facts.englishDetails && (facts.englishDetails.raw || facts.englishDetails.testType));
+  return true;
+}
+
 function profileForCriterion(criterion) {
-  const hay = `${criterion.clause || ''} ${criterion.criterionId || ''} ${asArray(criterion.criterionType).join(' ')} ${criterion.requirementText || ''}`;
-  return AREA_PROFILES.find(p => p.types.test(hay)) || AREA_PROFILES.find(p => p.area === 'evidence');
+  const hay = `${criterion.clause || ''} ${criterion.criterionId || ''} ${asArray(criterion.criterionType).join(' ')} ${criterion.requirementText || ''} ${asArray(criterion.evidenceRules).map(r => text(r.documentGroup || r.document || r.proves)).join(' ')}`;
+  const lower = hay.toLowerCase();
+  if (/partner|spouse|de facto|relationship|sponsor|family violence/.test(lower)) return AREA_PROFILES.find(p => p.area === 'family');
+  if (/student|enrol|course|genuine student|gs requirement|oshc|school|guardian/.test(lower)) return AREA_PROFILES.find(p => p.area === 'employment');
+  if (/fund|financial|money|support|income|asset|bank/.test(lower)) return AREA_PROFILES.find(p => p.area === 'salary');
+  if (/protection|refugee|complementary|persecution|country information|claim|exclusion|article/.test(lower)) return AREA_PROFILES.find(p => p.area === 'migration_history');
+  if (/visitor|tourist|temporary entrant|genuine temporary|visit purpose|medical treatment/.test(lower)) return AREA_PROFILES.find(p => p.area === 'stream_pathway');
+  if (/points|invitation|state nomination|territory nomination|eoi/.test(lower)) return AREA_PROFILES.find(p => p.area === 'stream_pathway');
+  return AREA_PROFILES.find(p => p.types.test(hay)) || AREA_PROFILES.find(p => p.patterns.some(re => re.test(hay))) || AREA_PROFILES.find(p => p.area === 'evidence');
 }
 
 function fieldsForProfile(flat, profile, criterion = {}) {
@@ -475,12 +552,15 @@ function buildRegistryCriteriaFindings({ registry, facts }) {
   const criteria = registryGrantCriteria(registry, facts.stream);
   const findings = [];
   const fieldUsage = new Map();
+  const registryAreas = new Set();
   for (const criterion of criteria) {
     const profile = profileForCriterion(criterion);
+    registryAreas.add(profile.area);
     const fields = fieldsForProfile(facts.rawFlat, profile, criterion);
+    const label = profileLabel(profile, facts, criterion);
     fields.forEach(([k]) => fieldUsage.set(k, (fieldUsage.get(k) || 0) + 1));
     const status = statusForRegistryCriterion({ criterion, profile, fields, facts });
-    const issue = `${profile.label}${criterion.clause ? ` — clause ${criterion.clause}` : ''}`;
+    const issue = `${label}${criterion.clause ? ` — clause ${criterion.clause}` : ''}`;
     findings.push({
       issue,
       title: issue,
@@ -497,8 +577,8 @@ function buildRegistryCriteriaFindings({ registry, facts }) {
       legalRequirement: requirementFromCriterion(criterion, profile, facts),
       clientFacts: clientFactsForRegistryCriterion({ criterion, profile, fields, facts }),
       evidenceGap: evidenceTextForCriterion(criterion, profile),
-      consequence: consequenceForRegistryCriterion(profile, status),
-      requiredAction: actionForRegistryCriterion({ profile, status }),
+      consequence: consequenceForRegistryCriterion({ ...profile, label }, status),
+      requiredAction: actionForRegistryCriterion({ profile: { ...profile, label }, status }),
       criterionTypes: asArray(criterion.criterionType),
       registryStream: criterion.registryStream || facts.stream,
       aiControllerAssessed: true
@@ -510,6 +590,7 @@ function buildRegistryCriteriaFindings({ registry, facts }) {
     findings,
     audit: {
       registryCriteriaCount: criteria.length,
+      registryAreas: Array.from(registryAreas),
       savedAnswerFieldCount: allFields.length,
       usedAnswerFieldCount: fieldUsage.size,
       unusedAnswerFields: unused,
@@ -698,9 +779,9 @@ function hasFinding(findings, pattern) {
   return findings.some(f => re.test(findingTitle(f)));
 }
 
-function ensureCoreFindings(findings, facts) {
+function ensureCoreFindings(findings, facts, registryAreas = new Set()) {
   const out = [...findings];
-  if (!hasFinding(out, /age/)) {
+  if (areaRelevantForSubclass('age', facts, registryAreas) && !hasFinding(out, /age/)) {
     const age = ageCriteriaAnalysis(facts);
     out.push({
       issue: 'Age requirement or exemption',
@@ -716,7 +797,7 @@ function ensureCoreFindings(findings, facts) {
       insertedByAiController: true
     });
   }
-  if (!hasFinding(out, /english/)) {
+  if (areaRelevantForSubclass('english', facts, registryAreas) && !hasFinding(out, /english/)) {
     const e = facts.englishDetails || {};
     out.push({
       issue: 'English language requirement or concession',
@@ -735,7 +816,7 @@ function ensureCoreFindings(findings, facts) {
   return out;
 }
 
-function mergeFindings(registryFindings, existingFindings, facts) {
+function mergeFindings(registryFindings, existingFindings, facts, registryAreas = new Set()) {
   const out = [];
   const seen = new Set();
   const add = (finding) => {
@@ -748,7 +829,7 @@ function mergeFindings(registryFindings, existingFindings, facts) {
   };
   registryFindings.forEach(add);
   existingFindings.forEach(add);
-  return ensureCoreFindings(out, facts);
+  return ensureCoreFindings(out, facts, registryAreas);
 }
 
 function topBlockers(findings) {
@@ -800,14 +881,15 @@ function buildViabilityOpinion(facts, findings) {
 
 function legalFrameworkSummary(facts, registry) {
   const streamPart = facts.stream ? ` ${facts.stream}` : '';
+  const family = subclassFamily(facts).replace(/_/g, ' ');
   const registryVersion = registry && (registry.schemaVersion || registry.version || registry.registryFingerprint) ? ` Registry/source snapshot: ${registry.schemaVersion || registry.version || registry.registryFingerprint}.` : '';
-  return `This preliminary assessment considered the Subclass ${facts.subclass}${streamPart} framework using the subclass criteria registry and knowledgebase source pack, including application validity, nomination-linked requirements, occupation and skills position, English, age where relevant, health, character, integrity/public-interest criteria and migration-history considerations. Exact clause references are used only where present in the source-mapped registry and remain subject to RMA verification.${registryVersion}`;
+  return `This preliminary assessment considered the Subclass ${facts.subclass}${streamPart} framework using the subclass criteria registry and knowledgebase source pack for the ${family} pathway. The controller mapped the saved assessment answers to the registry criteria for this subclass/stream, including validity, identity/location, family/sponsor/employer/nomination or pathway-specific requirements where relevant, skills/English/age/financial criteria where applicable, health, character, integrity/public-interest and migration-history considerations. Exact clause references are used only where present in the source-mapped registry and remain subject to RMA verification.${registryVersion}`;
 }
 
 function buildClientAdviceObject({ facts, findings, adviceBundle, registry, registryAssessmentAudit }) {
   const viability = buildViabilityOpinion(facts, findings);
   const priorityActionPlan = buildPriorityActionPlan(findings);
-  const pathwayStrengthAnalysis = `The selected pathway (${facts.stream || 'stream/pathway not confirmed'}) is assessed as a working pathway against the saved answers, criteria registry and knowledgebase source mapping. It should not be treated as lodgement-ready until the priority criteria and original evidence are reconciled.`;
+  const pathwayStrengthAnalysis = `The selected pathway (${facts.stream || 'stream/pathway not confirmed'}) has been screened against the saved answers, subclass criteria registry and knowledgebase source mapping. It should not be treated as lodgement-ready until the priority criteria and original evidence are reconciled.`;
   return {
     matter: {
       reference: pick(adviceBundle.assessmentId, adviceBundle.reference),
@@ -903,7 +985,7 @@ function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, 
 
   const registryAssessment = registry ? buildRegistryCriteriaFindings({ registry, facts }) : { findings: [], audit: null };
   const originalFindings = sourceFindings(adviceBundle);
-  const mergedFindings = mergeFindings(registryAssessment.findings, originalFindings, facts);
+  const mergedFindings = mergeFindings(registryAssessment.findings, originalFindings, facts, new Set(registryAssessment.audit && registryAssessment.audit.registryAreas || []));
   const enhancedFindings = mergedFindings.map((finding, index) => enhanceFinding(finding, index, facts));
   const clientAdviceObject = buildClientAdviceObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryAssessmentAudit: registryAssessment.audit });
   const internalAuditObject = buildInternalAuditObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryResult, registryAssessmentAudit: registryAssessment.audit });
