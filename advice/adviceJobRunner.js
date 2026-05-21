@@ -32,17 +32,19 @@ async function runOneAdviceJob({ generateAssessmentPdfNow, maxAttempts = 3 } = {
     return { ran: true, assessmentId: job.assessment_id, status: 'completed', result };
   } catch (err) {
     const nextAttempts = Number(job.attempts || 0) + 1;
-    const retry = nextAttempts < maxAttempts && !/requires manual review|cannot be issued|not recognised|missing or incomplete/i.test(String(err && err.message || err));
+    const message = String(err && err.message || err);
+    const deterministicRetryable = /grant criteria|criteria registry|criteria coverage|coverage validation|pathway|stream/i.test(message);
+    const retry = nextAttempts < maxAttempts && (deterministicRetryable || !/requires manual review|cannot be issued|not recognised|missing or incomplete/i.test(message));
     if (retry) {
       await query(
         `UPDATE pdf_jobs SET status='queued', last_error=$1, run_after=now() + interval '2 minutes', locked_at=NULL, updated_at=now() WHERE id=$2`,
-        [String(err && err.message || err), job.id]
+        [message, job.id]
       );
-      await query(`UPDATE assessments SET status='pdf_queued', generation_error=$1, updated_at=now() WHERE id=$2`, [String(err && err.message || err), job.assessment_id]).catch(() => null);
-      return { ran: true, assessmentId: job.assessment_id, status: 'requeued', error: String(err && err.message || err) };
+      await query(`UPDATE assessments SET status='pdf_queued', generation_error=$1, updated_at=now() WHERE id=$2`, [message, job.assessment_id]).catch(() => null);
+      return { ran: true, assessmentId: job.assessment_id, status: 'requeued', error: message };
     }
     await markAdviceManualReview(job.assessment_id, err);
-    return { ran: true, assessmentId: job.assessment_id, status: 'failed', error: String(err && err.message || err) };
+    return { ran: true, assessmentId: job.assessment_id, status: 'failed', error: message };
   }
 }
 

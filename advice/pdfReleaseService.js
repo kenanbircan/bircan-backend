@@ -36,7 +36,7 @@ async function markAdviceGenerating(assessmentId) {
 
 async function markAdviceManualReview(assessmentId, error) {
   const message = String(error && error.message ? error.message : error || 'Advice letter requires manual review before release.');
-  await query(`UPDATE assessments SET status='pdf_failed', generation_error=$1, updated_at=now() WHERE id=$2`, [message, assessmentId]).catch(() => null);
+  await query(`UPDATE assessments SET status='manual_review_required', generation_error=$1, updated_at=now() WHERE id=$2`, [message, assessmentId]).catch(() => null);
   await query(
     `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
      VALUES ($1,'failed',$2,now(),now())
