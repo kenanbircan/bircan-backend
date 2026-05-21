@@ -291,7 +291,7 @@ function ruleForCriterion(criterion = {}) {
     requirement: 'The criterion must be assessed against the applicable Migration Act, Migration Regulations, legislative instruments, policy guidance and the original evidence supplied for this matter.',
     evidence: ['Original supporting documents', 'Department records', 'subclass-specific evidence', 'current visa records'],
     consequence: 'If the evidence does not establish this criterion, the application may not be grant-ready.',
-    action: 'Map the original evidence to the clause and record any unresolved gap before final advice.'
+    action: 'Legal frame incomplete — manual RMA/legal review is required before advice-grade PDF issue.'
   };
 }
 
@@ -386,34 +386,85 @@ function statusForFacts(factsApplied) {
   return 'Requires evidence mapping';
 }
 
+
+function isLegalFrameCriterion(criterion = {}) {
+  return Boolean(criterion.legalTest || criterion.legalSource || criterion.knowledgebaseReferences || criterion.consequenceOfFailure);
+}
+
+function requireLegalFrameCriterion(criterion = {}) {
+  const id = clean(criterion.criterionId || criterion.registryCriterionId || criterion.id || criterion.clause, 'unknown criterion');
+  const missing = [];
+  if (!clean(criterion.legalTest || criterion.requirementText || criterion.legalRequirement || criterion.requirement)) missing.push('legal test');
+  if (!clean(criterion.legalSource) && !criterion.source && !criterion.sourceMap) missing.push('legal source');
+  if (criterion.missingLegalFrameParts && criterion.missingLegalFrameParts.length) missing.push(...criterion.missingLegalFrameParts);
+  if (missing.length) {
+    const err = new Error(`Senior advice engine blocked: missing knowledgebase legal frame for ${id} (${Array.from(new Set(missing)).join(', ')}).`);
+    err.code = 'SENIOR_LEGAL_FRAME_INCOMPLETE';
+    err.criterionId = id;
+    throw err;
+  }
+}
+
+function kbSourceSummary(criterion = {}) {
+  const refs = asArray(criterion.knowledgebaseReferences);
+  if (!refs.length) return clean(criterion.legalSource || 'knowledgebase legal sources');
+  const authorities = Array.from(new Set(refs.map(r => clean(r.authority)).filter(Boolean)));
+  return authorities.length ? authorities.join(', ') : clean(criterion.legalSource || 'knowledgebase legal sources');
+}
+
+function publicSafeStreamLabel(subclass, stream, registry) {
+  let s = clean(stream || registry?.defaultStream || registry?.selectedStream || '');
+  const sc = normSubclass(subclass);
+  if (/registry-controlled/i.test(s)) {
+    const keys = Object.keys(registry?.streams || {});
+    const preferred = keys.find(k => /labou?r agreement/i.test(k)) || keys[0];
+    s = preferred || (sc === '186' ? 'Labour Agreement' : 'Selected pathway');
+  }
+  if (sc === '186' && /labou?r agreement/i.test(s) && !/stream/i.test(s)) return 'Labour Agreement Stream';
+  return s;
+}
+
 function buildCriterionFinding({ criterion, assessment, corpus, familyProfile }) {
+  requireLegalFrameCriterion(criterion);
   const rule = ruleForCriterion(criterion);
-  const requirementText = summariseRequirementText(criterion.requirementText);
-  const factsApplied = factsAppliedForCriterion({ criterion, assessment, corpus, familyProfile });
-  const risk = riskForCriterion({ criterion, factsApplied });
-  const label = criterionLabel(criterion);
-  const evidence = evidenceFromCriterion(criterion, rule.evidence);
-  const legalRequirement = requirementText
-    ? `${rule.requirement} The registry text for this clause records: ${requirementText}`
-    : rule.requirement;
-  const legalConsequence = rule.consequence;
-  const actionRequired = rule.action;
+  const legalFrameMode = isLegalFrameCriterion(criterion);
+  const legalTest = summariseRequirementText(criterion.legalTest || criterion.requirementText || criterion.legalRequirement || criterion.requirement);
+  const factsApplied = factsAppliedForCriterion({ criterion: criterion.originalCriterion || criterion, assessment, corpus, familyProfile });
+  const risk = riskForCriterion({ criterion: criterion.originalCriterion || criterion, factsApplied });
+  const label = criterionLabel(criterion.originalCriterion || criterion);
+  const evidence = evidenceFromCriterion(criterion.originalCriterion || criterion, criterion.evidenceRequired || rule.evidence);
+  const sourceSummary = kbSourceSummary(criterion);
+  const legalRequirement = legalFrameMode
+    ? `${legalTest} Source control: ${clean(criterion.legalSource || sourceSummary)}.`
+    : `${rule.requirement}${legalTest ? ' The registry text for this clause records: ' + legalTest : ''}`;
+  const legalConsequence = clean(criterion.consequenceOfFailure || rule.consequence);
+  const actionRequired = clean(
+    criterion.requiredAction ||
+    criterion.actionRequired ||
+    criterion.clientAction ||
+    (risk === 'High'
+      ? `Resolve this issue against original evidence and the mapped legal frame before any positive lodgement recommendation.`
+      : `Obtain and reconcile the required evidence against the mapped legal frame before filing.`)
+  );
   const agentOpinion = risk === 'High'
-    ? `This is a senior-review issue. I would not give a final positive lodgement opinion until this point is resolved against original evidence.`
+    ? `This is a senior-review issue. I would not give a final positive lodgement opinion until the legal frame, original evidence and Departmental record position all support this requirement.`
     : risk === 'Moderate'
-      ? `This is manageable only if the missing evidence is obtained and reconciled before filing.`
-      : `This should be controlled through ordinary evidence indexing and final lodgement review.`;
+      ? `This is manageable only if the missing evidence is obtained, reconciled and checked against the mapped legal frame before filing.`
+      : `This should be controlled through evidence indexing and final lodgement review against the mapped legal frame.`;
+
+  const policyGuidance = clean(criterion.policyGuidance);
+  const sourceRefs = asArray(criterion.knowledgebaseReferences).map(r => clean(`${r.authority || 'Source'}: ${r.path || ''}`)).filter(Boolean);
 
   return {
     criterionId: clean(criterion.criterionId || criterion.id || criterion.clause),
-    registryCriterionId: clean(criterion.criterionId || criterion.id || criterion.clause),
+    registryCriterionId: clean(criterion.registryCriterionId || criterion.criterionId || criterion.id || criterion.clause),
     criterion_id: clean(criterion.criterionId || criterion.id || criterion.clause),
     clause: clean(criterion.clause),
     criterion: label,
     heading: label,
     label,
-    category: rule.label,
-    pdfSection: rule.label,
+    category: clean(criterion.issue || rule.label),
+    pdfSection: clean(criterion.issue || rule.label),
     timePoint: clean(criterion.timePoint),
     status: statusForFacts(factsApplied),
     position: statusForFacts(factsApplied),
@@ -422,10 +473,15 @@ function buildCriterionFinding({ criterion, assessment, corpus, familyProfile })
     legalRequirement,
     legislativeRequirement: legalRequirement,
     requirement: legalRequirement,
+    legalSource: clean(criterion.legalSource || sourceSummary),
+    sourceSummary,
+    policyGuidance,
+    sourceReferences: sourceRefs,
+    knowledgebaseReferences: criterion.knowledgebaseReferences || [],
     factsApplied,
     finding: `${factsApplied} ${agentOpinion}`,
     professionalFinding: `${factsApplied} ${agentOpinion}`,
-    delegateScrutiny: `A delegate is likely to test this issue by comparing the application answers with original records, prior Departmental information and any sponsor, nomination or third-party evidence.`,
+    delegateScrutiny: `A delegate is likely to test this issue by comparing the application answers with original records, prior Departmental information and the mapped legal/policy frame (${sourceSummary}).`,
     legalConsequence,
     legal_consequence: legalConsequence,
     actionRequired,
@@ -437,7 +493,9 @@ function buildCriterionFinding({ criterion, assessment, corpus, familyProfile })
     clientAction: actionRequired,
     source: criterion.source || {},
     sourceMap: criterion.sourceMap || {},
-    originalCriterion: criterion
+    originalCriterion: criterion.originalCriterion || criterion,
+    legalFrameApplied: true,
+    genericFallbackUsed: false
   };
 }
 
@@ -512,16 +570,20 @@ function finalRecommendation({ subclass, stream, familyProfile, findings, corpus
   };
 }
 
-function buildSeniorAdviceModel({ assessment = {}, adviceBundle = {}, registry = null, stream = '' } = {}) {
+function buildSeniorAdviceModel({ assessment = {}, adviceBundle = {}, registry = null, stream = '', legalFrame = null } = {}) {
   const subclass = normSubclass(adviceBundle.subclass || adviceBundle.advice?.subclass || assessment.visa_type || assessment.subclass || assessment.visaSubclass);
   if (!subclass) throw new Error('Senior advice engine blocked: subclass is missing.');
   const loaded = registry ? { registry, criteria: criteriaForStream(registry, stream || adviceBundle.stream || adviceBundle.selectedStream || adviceBundle.advice?.stream) } : resolveRegistryAndCriteria({ subclass, stream: stream || adviceBundle.stream || adviceBundle.selectedStream || adviceBundle.advice?.stream });
   const activeRegistry = loaded.registry;
-  const selectedStream = streamLabelFromRegistry(activeRegistry, stream || adviceBundle.stream || adviceBundle.selectedStream || adviceBundle.advice?.stream || assessment.selected_stream);
+  const selectedStream = publicSafeStreamLabel(subclass, stream || legalFrame?.clientFacingStream || adviceBundle.stream || adviceBundle.selectedStream || adviceBundle.advice?.stream || assessment.selected_stream, activeRegistry);
   const family = visaFamily(subclass);
   const familyProfile = FAMILY_PROFILES[family] || FAMILY_PROFILES.general;
   const corpus = answerCorpus(assessment);
-  const criteria = loaded.criteria && loaded.criteria.length ? loaded.criteria : [];
+  const legalFrameFromBundle = legalFrame || adviceBundle.legalFrame || adviceBundle.internalLegalAudit?.legalFrame || null;
+  const criteria = legalFrameFromBundle && Array.isArray(legalFrameFromBundle.criteriaFrames) && legalFrameFromBundle.criteriaFrames.length
+    ? legalFrameFromBundle.criteriaFrames
+    : (loaded.criteria && loaded.criteria.length ? loaded.criteria : []);
+  if (!criteria.length) throw new Error(`Senior advice engine blocked: no criteria/legal frames loaded for subclass ${subclass}.`);
   const findings = criteria.map(criterion => buildCriterionFinding({ criterion, assessment, corpus, familyProfile }));
   const legalIssues = buildLegalIssues({ findings, familyProfile });
   const recommendation = finalRecommendation({ subclass, stream: selectedStream, familyProfile, findings, corpus });
@@ -561,7 +623,9 @@ function buildSeniorAdviceModel({ assessment = {}, adviceBundle = {}, registry =
       criteriaLoaded: criteria.length,
       criteriaRendered: findings.length,
       supportedSubclassCount: listSupportedCriteriaRegistrySubclasses().length,
-      registrySource: activeRegistry.sourceOfTruth || activeRegistry.registryFingerprint || 'criteriaRegistry'
+      registrySource: activeRegistry.sourceOfTruth || activeRegistry.registryFingerprint || 'criteriaRegistry',
+      legalFrameApplied: Boolean(legalFrameFromBundle && legalFrameFromBundle.criteriaFrames && legalFrameFromBundle.criteriaFrames.length),
+      genericFallbackUsed: false
     },
     clientSafety: {
       noGuarantee: true,
@@ -578,7 +642,8 @@ function attachSeniorAdviceModel(adviceBundle, assessment, registryResult, regis
     assessment,
     adviceBundle: source,
     registry,
-    stream: source.stream || source.selectedStream || source.advice?.stream || assessment?.selected_stream
+    stream: source.stream || source.selectedStream || source.advice?.stream || assessment?.selected_stream,
+    legalFrame: source.legalFrame || null
   });
   source.seniorAdviceModel = model;
   source.seniorCriteriaFindings = model.seniorCriteriaFindings;
