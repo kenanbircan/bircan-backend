@@ -5671,10 +5671,61 @@ function extractAssessmentAnswerSummary(payload, maxItems = 24) {
 
 function criterionStatusFromAnswer(value, positiveText = 'The questionnaire answer is presently supportive, subject to evidence verification.') {
   const text = String(value || '').trim().toLowerCase();
-  if (!text) return { finding: 'The criterion cannot yet be confirmed from the available instructions.', tone: 'review' };
-  if (/^(yes|y|true|available|held|current|valid|approved|met|satisfied|competent|proficient|superior)/i.test(text)) return { finding: positiveText, tone: 'supportable' };
-  if (/^(no|n|false|not|none|unavailable|expired|refused|cancelled|unsure|unknown)/i.test(text)) return { finding: 'The answer raises a matter requiring clarification before any lodgement-ready advice is issued.', tone: 'risk' };
-  return { finding: 'The information has been recorded and must be reconciled against original supporting evidence.', tone: 'review' };
+  if (!text) {
+    return {
+      finding: 'The criterion cannot yet be confirmed from the available instructions.',
+      tone: 'review',
+      status: 'unclear',
+      displayStatus: 'Unclear - evidence required',
+      riskLevel: 'Medium'
+    };
+  }
+  if (/^(yes|y|true|available|held|current|valid|approved|met|satisfied|competent|proficient|superior)/i.test(text)) {
+    return {
+      finding: positiveText,
+      tone: 'supportable',
+      status: 'likely_satisfied',
+      displayStatus: 'Likely satisfied - verify evidence',
+      riskLevel: 'Low to medium'
+    };
+  }
+  if (/^(no|n|false|not|none|unavailable|expired|refused|cancelled|unsure|unknown)/i.test(text)) {
+    return {
+      finding: 'The answer raises a matter requiring clarification before any lodgement-ready advice is issued.',
+      tone: 'risk',
+      status: 'unclear',
+      displayStatus: 'Unclear / risk to resolve',
+      riskLevel: 'Medium to high'
+    };
+  }
+  return {
+    finding: 'The information has been recorded and must be reconciled against original supporting evidence.',
+    tone: 'review',
+    status: 'unclear',
+    displayStatus: 'Unclear - reconcile evidence',
+    riskLevel: 'Medium'
+  };
+}
+
+function clientFindingStatus(status) {
+  const raw = String(status || '').toLowerCase();
+  if (raw === 'satisfied') return 'Satisfied on current evidence';
+  if (raw === 'likely_satisfied') return 'Likely satisfied - verify evidence';
+  if (raw === 'not_satisfied') return 'Not satisfied on current facts';
+  if (raw === 'not_applicable') return 'Not applicable';
+  return 'Unclear - evidence required';
+}
+
+function normaliseSeniorFindingStatus({ criterionKey, answer, tone }) {
+  const text = String(answer || '').trim().toLowerCase();
+  if (!text) return { status: 'unclear', displayStatus: 'Unclear - evidence required', riskLevel: 'Medium' };
+  if (/\b(refus|cancel|criminal|convict|false|misleading|unlawful|section\s*48|8503|overstay|not available|expired|failed|no skills|not competent|below|none)\b/i.test(text)) {
+    return { status: 'unclear', displayStatus: 'Unclear / risk to resolve', riskLevel: 'High' };
+  }
+  if (/\b(yes|available|valid|approved|current|held|competent|proficient|superior|provided|attached|completed|met|satisfied)\b/i.test(text) || tone === 'supportable') {
+    return { status: 'likely_satisfied', displayStatus: 'Likely satisfied - verify evidence', riskLevel: 'Low to medium' };
+  }
+  return { status: 'unclear', displayStatus: 'Unclear - reconcile evidence', riskLevel: 'Medium' };
 }
 
 function buildSourceBackedRequirement(label, subclass, stream, legalPack) {
@@ -5812,6 +5863,7 @@ function buildCriterionFindingFromProfile(profile, context) {
   const status = criterionStatusFromAnswer(answer, 'The current instructions are supportive, subject to verification of original evidence and current legal settings.');
   const legalRequirement = buildSourceBackedRequirement(profile.criterion, subclass, stream, legalPack);
   const lowerAnswer = String(answer || '').toLowerCase();
+  let statusMeta = normaliseSeniorFindingStatus({ criterionKey, answer, tone: status.tone });
 
   let finding = answer
     ? `${status.finding} The relevant instruction currently recorded is: ${answer}.`
@@ -5873,15 +5925,34 @@ function buildCriterionFindingFromProfile(profile, context) {
     delegateRisk = /yes|refus|cancel|criminal|court|false|misleading|unlawful|section|8503/i.test(lowerAnswer) ? 'Elevated Delegate Risk' : 'Standard Requirement';
   }
 
+  if (delegateRisk === 'Elevated Delegate Risk') {
+    statusMeta = { ...statusMeta, riskLevel: 'High', displayStatus: statusMeta.status === 'likely_satisfied' ? 'Higher scrutiny - verify evidence' : statusMeta.displayStatus };
+  } else if (delegateRisk === 'Standard Requirement') {
+    statusMeta = { ...statusMeta, riskLevel: 'Low', displayStatus: answer ? 'Likely satisfied - verify evidence' : 'Standard requirement - evidence required' };
+    if (answer && statusMeta.status === 'unclear') statusMeta.status = 'likely_satisfied';
+  }
+
+  const currentPosition = answer
+    ? `Questionnaire instruction recorded: ${answer}. This is treated as an instruction only and must be reconciled against original evidence.`
+    : 'No specific supporting instruction was identified in the stored answers for this criterion. The issue remains evidence-led and must be checked before final lodgement advice.';
+
   return {
     key: profile.key,
     criterion: profile.criterion,
     answer,
+    status: statusMeta.status,
+    displayStatus: clientFindingStatus(statusMeta.status),
+    riskLevel: statusMeta.displayStatus || statusMeta.riskLevel || delegateRisk,
     finding,
     summaryFinding: finding,
+    currentPosition,
+    clientFacts: currentPosition,
     legal_consequence,
+    legalConsequence: legal_consequence,
     evidence_gap: profile.evidence,
+    evidenceGap: profile.evidence,
     recommendation: profile.recommendation,
+    requiredAction: profile.recommendation,
     legislativeRequirement: legalRequirement,
     legalRequirement,
     delegateRisk,
@@ -6419,8 +6490,10 @@ async function buildFastLegalAdviceBundle(assessment) {
   const context = { flat, subclass, stream, legalPack: legalSourcePack };
   const findings = profiles.map(profile => buildCriterionFindingFromProfile(profile, context));
   const riskSignals = JSON.stringify(findings).toLowerCase();
-  const riskLevel = /refused|cancelled|criminal|false|misleading|unlawful|section 48|8503|not resolved|not available/.test(riskSignals) ? 'HIGH' : 'MEDIUM';
-  const position = riskLevel === 'HIGH' ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'PROCEED_AFTER_EVIDENCE_REVIEW';
+  const highCount = findings.filter(f => /high|elevated|refus|cancel|criminal|false|misleading|unlawful|section 48|8503|not available/.test(JSON.stringify(f).toLowerCase())).length;
+  const supportableCount = findings.filter(f => String(f.status || '').toLowerCase() === 'likely_satisfied').length;
+  const riskLevel = highCount >= 2 ? 'HIGH' : highCount ? 'MEDIUM-HIGH' : supportableCount >= Math.ceil(findings.length / 2) ? 'MEDIUM' : 'MEDIUM';
+  const position = highCount >= 2 ? 'PROCEED_AFTER_EVIDENCE_REVIEW' : 'POSSIBLY_SUITABLE_SUBJECT_TO_EVIDENCE';
   const primaryIssue = `Whether the Subclass ${subclass}${stream ? ' — ' + stream : ''} pathway can be supported by criterion-by-criterion evidence from the applicable criteriaRegistry and knowledgebase legal-source pack, including validity, pathway-specific criteria, public-interest criteria and evidence consistency requirements.`;
   const sourceHash = crypto.createHash('sha256').update(JSON.stringify((legalSourcePack.sources || []).map(s => [s.authority, s.path, s.sha256]))).digest('hex');
 
@@ -6516,11 +6589,20 @@ async function buildFastLegalAdviceBundle(assessment) {
     },
     internalLegalAudit: {
       auditGeneratedAt: new Date().toISOString(),
-      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v1',
+      mode: 'knowledgebase-driven-criterion-by-criterion-server-bundle-v2-senior-quality',
+      engineVersion: 'senior-deterministic-advice-v2',
+      registryVersion: 'criteriaRegistry-runtime',
+      knowledgebaseVersion: legalSourcePack.snapshotId || (legalSourcePack.knowledgebaseSnapshot && legalSourcePack.knowledgebaseSnapshot.snapshotId) || 'runtime',
+      pdfTemplateVersion: 'pdf-js-senior-layout-v2',
+      fallbackUsed: true,
+      fallbackReason: 'deterministic-paid-client-release-protection',
       subclass,
       selectedStream: stream,
       criteriaAssessed: findings.map(f => f.criterion),
-      sourcesUsed: legalSourcePack.sources
+      sourcesUsed: legalSourcePack.sources,
+      sourceConfidence: (legalSourcePack.sources || []).length >= 2 ? 'medium' : 'limited',
+      qualityGateResult: { pendingPdfRendererGate: true },
+      adminWarnings: []
     },
     clientSafetyFilter: { enforced: true, removesInternalDebugLanguage: true },
     knowledgebaseEnforced: true,

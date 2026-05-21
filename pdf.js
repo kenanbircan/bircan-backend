@@ -33,7 +33,10 @@ const FORBIDDEN_CLIENT_PHRASES = [
   'Grant Criterion Control',
   'Subclass Specific Grant Criterion',
   'Map the original evidence to the clause',
-  'Primary pathway'
+  'Primary pathway',
+  'quality_flags',
+  'source hash',
+  'internalLegalAudit'
 ];
 
 function sha256(buffer) {
@@ -390,10 +393,10 @@ function keyValueTable(doc, rows, widths) {
   for (const row of rows) {
     const k = cleanClientText(text(row[0], ''));
     const v = cleanClientText(text(row[1], '—'));
-    const y = doc.y;
     const h = Math.max(doc.heightOfString(k, { width: w1 - 8 }), doc.heightOfString(v, { width: w2 - 8 })) + 10;
     ensureSpace(doc, h + 4);
-    doc.rect(doc.page.margins.left, doc.y, usable, h).fillAndStroke('#f8fafc', '#e2e8f0');
+    const y = doc.y;
+    doc.rect(doc.page.margins.left, y, usable, h).fillAndStroke('#f8fafc', '#e2e8f0');
     doc.fillColor('#26364a').font('Helvetica-Bold').fontSize(8.5).text(k, doc.page.margins.left + 6, y + 6, { width: w1 - 8 });
     doc.fillColor('#152033').font('Helvetica').fontSize(8.5).text(v, doc.page.margins.left + w1 + 6, y + 6, { width: w2 - 8, lineGap: 1.8 });
     doc.y = y + h + 3;
@@ -437,6 +440,49 @@ function bullet(doc, value) {
   doc.font('Helvetica').fontSize(9).fillColor('#182334').text('•', x, y, { width: 12 });
   doc.text(body, x + 14, y, { width: pageWidth(doc) - 14, lineGap: 2.4 });
   doc.moveDown(0.35);
+}
+
+function findingStatusLabel(finding) {
+  if (!isPlainObject(finding)) return 'Unclear - evidence required';
+  return cleanClientText(pick(
+    finding.displayStatus,
+    finding.riskLevel,
+    finding.status,
+    finding.risk,
+    finding.evidenceStatus,
+    'Unclear - evidence required'
+  ));
+}
+
+function statusBadge(doc, value) {
+  const label = cleanClientText(text(value, 'Unclear - evidence required'));
+  const x = doc.x;
+  const y = doc.y;
+  const w = Math.min(pageWidth(doc), Math.max(120, doc.widthOfString(label) + 18));
+  doc.roundedRect(x, y, w, 18, 9).fillAndStroke('#eef5ff', '#d7e7ff');
+  doc.fillColor('#174cc8').font('Helvetica-Bold').fontSize(8.2).text(label, x + 9, y + 5, { width: w - 18 });
+  doc.y = y + 24;
+}
+
+function adviceBlock(doc, label, body) {
+  const value = cleanClientText(text(body, ''));
+  if (!value) return;
+  ensureSpace(doc, 45);
+  doc.font('Helvetica-Bold').fontSize(8.4).fillColor('#344054').text(cleanClientText(label), { width: pageWidth(doc), lineGap: 1.6 });
+  doc.font('Helvetica').fontSize(9.0).fillColor('#182334').text(value, { width: pageWidth(doc), lineGap: 2.4 });
+  doc.moveDown(0.45);
+}
+
+function findingCard(doc, index, finding) {
+  ensureSpace(doc, 125);
+  h2(doc, `${index}. ${findingTitle(finding)}`);
+  statusBadge(doc, findingStatusLabel(finding));
+  adviceBlock(doc, 'Legal requirement', findingRequirement(finding) || 'The requirement must be confirmed from the applicable legal framework before final advice.');
+  adviceBlock(doc, 'Application to current instructions', findingFacts(finding) || finding.body || finding.finding || 'The current instructions require reconciliation against original evidence.');
+  adviceBlock(doc, 'Evidence still required', findingGap(finding) || 'Original evidence must be reviewed before final lodgement advice.');
+  adviceBlock(doc, 'Consequence if unresolved', findingConsequence(finding) || 'If unresolved, this issue may affect validity, eligibility, prospects or lodgement strategy.');
+  adviceBlock(doc, 'Required action', findingAction(finding) || 'Resolve before final lodgement advice is issued.');
+  rule(doc);
 }
 
 function coverPage(doc, { assessment, subclass, stream, model }) {
@@ -537,20 +583,11 @@ function writeLegalFramework(doc, model, subclass, stream) {
 
 function writeFindings(doc, findings) {
   h1(doc, '4. Application of law to the client’s facts');
-  p(doc, 'The following findings apply the identified legal requirements to the information currently available. A positive lodgement recommendation should not be issued unless the listed gaps are resolved and the evidence is internally consistent.');
+  p(doc, 'The following findings apply the identified legal requirements to the information currently available. The status labels separate matters that appear supportable from matters that remain unclear or higher risk. A final lodgement recommendation should not be issued until the listed evidence is reconciled.');
 
   const maxMain = Math.min(findings.length, 12);
   for (let i = 0; i < maxMain; i++) {
-    const f = findings[i];
-    h2(doc, `${i + 1}. ${findingTitle(f)}`);
-    keyValueTable(doc, [
-      ['Risk / status', findingRisk(f)],
-      ['Legal requirement', findingRequirement(f) || 'Legal requirement must be confirmed from the legal frame before final advice.'],
-      ['Current file position', findingFacts(f) || 'Current evidence position is not yet fully verified.'],
-      ['Evidence gap', findingGap(f) || 'Original evidence must be reviewed before final lodgement advice.'],
-      ['Consequence if unresolved', findingConsequence(f) || 'If unresolved, this issue may affect validity, eligibility, prospects or lodgement strategy.'],
-      ['Required action', findingAction(f) || 'Resolve before final lodgement advice is issued.']
-    ], [150, pageWidth(doc) - 150]);
+    findingCard(doc, i + 1, findings[i]);
   }
 }
 
@@ -631,17 +668,18 @@ function writeLimitations(doc) {
 function writeAppendix(doc, findings) {
   doc.addPage();
   h1(doc, 'Appendix A — Criterion-by-criterion lodgement-readiness matrix');
-  p(doc, 'This appendix records issue, risk, legal requirement, evidence gap and required action for file control. It is not a guarantee that each criterion is satisfied.');
+  p(doc, 'This appendix records the issue, status, requirement, evidence gap and action for file control. It is not a guarantee that each criterion is satisfied. Dense table formatting is deliberately avoided so that criterion content remains readable and is not split across pages.');
 
-  const rows = findings.map((f) => [
-    findingTitle(f),
-    findingRisk(f),
-    findingRequirement(f) || 'Requirement to be verified against legal frame.',
-    findingGap(f) || 'Evidence gap to be resolved.',
-    findingAction(f) || 'Resolve before final lodgement advice.'
-  ]);
-
-  table(doc, ['Issue / criterion', 'Risk', 'Requirement', 'Gap', 'Required action'], rows, [100, 55, 120, 120, pageWidth(doc) - 395]);
+  for (let i = 0; i < Math.min(findings.length, 18); i++) {
+    const f = findings[i];
+    ensureSpace(doc, 100);
+    doc.font('Helvetica-Bold').fontSize(9.4).fillColor('#0b2545').text(`${i + 1}. ${findingTitle(f)}`, { width: pageWidth(doc), lineGap: 1.6 });
+    doc.moveDown(0.2);
+    adviceBlock(doc, 'Status', findingStatusLabel(f));
+    adviceBlock(doc, 'Requirement', findingRequirement(f) || 'Requirement to be verified against legal frame.');
+    adviceBlock(doc, 'Gap/action', `${findingGap(f) || 'Evidence gap to be resolved.'} ${findingAction(f) || 'Resolve before final lodgement advice.'}`);
+    rule(doc);
+  }
 }
 
 function addPageNumbers(bufferPromise) {
