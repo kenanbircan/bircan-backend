@@ -1,3 +1,10 @@
+
+// TESTING MODE: RMA approval gate temporarily bypassed.
+// Keep RMA routes/migration for later, but do not require RMA approval before client PDF release during testing.
+const BM_TESTING_BYPASS_RMA_REVIEW = true;
+
+// v4 TESTING FIX: main PDF generation path also bypasses RMA gate.
+// Generated issued PDFs are marked pdf_ready during testing.
 require('dotenv').config();
 
 
@@ -334,6 +341,28 @@ function buildAssessmentPayload(body, client) {
     formVersion: b.formVersion || b.version || fp.formVersion || fp.version || '',
     payloadPolicy: 'save-full-submission-all-visa-pages-v1'
   };
+  const clientConfirmation = Boolean(
+    b.clientConfirmation || b.client_confirmation ||
+    fp.clientConfirmation || fp.client_confirmation ||
+    answers.clientConfirmation || answers.client_confirmation ||
+    answers['client-confirmation'] || answers['client-confirmation-check'] ||
+    flatAnswers.clientConfirmation || flatAnswers.client_confirmation ||
+    flatAnswers['client-confirmation'] || flatAnswers['client-confirmation-check']
+  );
+  const completeFormPayload = normaliseValue({
+    ...(isPlainObject(fp) ? fp : {}),
+    serviceType: b.serviceType || fp.serviceType || 'visa_assessment',
+    subclass: visaType,
+    stream,
+    clientEmail: normaliseEmail(b.clientEmail || b.client_email || b.email || applicantEmail || (client && client.email)),
+    plan: meta.selectedPlan,
+    answers,
+    flatAnswers,
+    evidence,
+    riskFacts,
+    clientConfirmation,
+    metadata: isPlainObject(b.metadata) ? b.metadata : isPlainObject(fp.metadata) ? fp.metadata : {}
+  });
   return {
     meta,
     subclass: visaType,
@@ -342,11 +371,14 @@ function buildAssessmentPayload(body, client) {
     applicantEmail,
     applicantName,
     plan: meta.selectedPlan,
-    clientConfirmation: Boolean(b.clientConfirmation || b.client_confirmation || fp.clientConfirmation || fp.client_confirmation),
+    clientConfirmation,
     questions,
     answers,
+    formPayload: completeFormPayload,
+    flatAnswers,
     evidence,
     riskFacts,
+    metadata: completeFormPayload.metadata || {},
     rawSubmission: normaliseValue(b)
   };
 }
@@ -386,7 +418,17 @@ function visaSubmissionFingerprint({ email, visaType, plan, payload }) {
 }
 
 function payloadAnswerCount(payload) { if (!isPlainObject(payload)) return 0; const answers = isPlainObject(payload.answers) ? payload.answers : payload; return Object.keys(flattenObject(answers)).filter(k => !/^(meta|rawSubmission)\./i.test(k)).length; }
-function payloadLooksUsable(payload) { return payloadAnswerCount(payload) >= 3; }
+function assessmentCorePayloadMissing(payload) {
+  const missing = [];
+  if (!isPlainObject(payload)) return ['payload'];
+  if (!isPlainObject(payload.answers) || payloadAnswerCount(payload) < 3) missing.push('answers');
+  if (!payload.subclass && !(payload.meta && payload.meta.subclass)) missing.push('subclass');
+  if (!payload.clientEmail && !payload.applicantEmail && !(payload.meta && payload.meta.applicantEmail)) missing.push('clientEmail');
+  if (!payload.plan && !(payload.meta && payload.meta.selectedPlan)) missing.push('plan');
+  if (payload.clientConfirmation !== true) missing.push('clientConfirmation');
+  return missing;
+}
+function payloadLooksUsable(payload) { return assessmentCorePayloadMissing(payload).filter(k => k !== 'clientConfirmation').length === 0 && payloadAnswerCount(payload) >= 3; }
 
 // A PDF is only treated as available when bytes exist and are large enough
 // to be a real issued PDF. This prevents false-positive "generated" messages.
@@ -420,9 +462,10 @@ async function verifyIssuedPdfSaved(clientOrDb, assessmentId) {
     );
     throw new Error(msg);
   }
-  if (saved.status !== 'pdf_ready') {
-    await runner.query(`UPDATE assessments SET status='pdf_ready', updated_at=now() WHERE id=$1`, [assessmentId]);
-    saved.status = 'pdf_ready';
+  if (saved.status !== 'pdf_ready' && saved.status !== 'rma_approved') {
+    const nextStatus = BM_TESTING_BYPASS_RMA_REVIEW ? 'pdf_ready' : 'rma_review_required';
+    await runner.query(`UPDATE assessments SET status=$2, updated_at=now() WHERE id=$1`, [assessmentId, nextStatus]);
+    saved.status = nextStatus;
   }
   saved.has_pdf = true;
   delete saved.pdf_bytes;
@@ -1170,8 +1213,9 @@ function buildUnifiedServiceCard(row) {
   const hasPdf = row.has_pdf === true;
   // A visa PDF can be opened only after real issued bytes exist. The final-pdf
   // route is read-only; generation happens through the queue/worker, not on open.
-  const canOpenVisaPdf = serviceType === 'visa_assessment' && paid && !locked && hasPdf;
-  const ready = paid && !locked && ((serviceType === 'visa_assessment' && hasPdf) || (serviceType === 'appeals_assessment' && hasPdf) || serviceType === 'citizenship_test');
+  const approvedForClientRelease = ['pdf_ready','rma_approved'].includes(String(row.status || '').toLowerCase());
+  const canOpenVisaPdf = serviceType === 'visa_assessment' && paid && !locked && hasPdf && approvedForClientRelease;
+  const ready = paid && !locked && ((serviceType === 'visa_assessment' && hasPdf && approvedForClientRelease) || (serviceType === 'appeals_assessment' && hasPdf) || serviceType === 'citizenship_test');
   const finalPdfUrl = canOpenVisaPdf ? buildFinalPdfUrl(row.id) : serviceType === 'appeals_assessment' && hasPdf && !locked ? `/api/appeals/${encodeURIComponent(row.id)}/final-pdf` : null;
   let actionLabel = 'Complete payment';
   if (serviceType === 'citizenship_test' && paid) actionLabel = 'Open paid exam';
@@ -2010,7 +2054,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.13-universal-all-subclasses-answer-criteria-v1',
+    version: '12.2.11-ai-controller-worker-pipeline-v1',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -2899,11 +2943,13 @@ async function handlePublicVisaAssessmentStart(req, res) {
   if (!email || !email.includes('@')) {
     return res.status(400).json({ ok: false, code: 'VALID_EMAIL_REQUIRED', error: 'Valid email is required before login.' });
   }
-  if (!payloadLooksUsable(built)) {
+  const missingCorePayload = assessmentCorePayloadMissing(built);
+  if (missingCorePayload.length) {
     return res.status(400).json({
       ok: false,
       code: 'ASSESSMENT_PAYLOAD_MISSING',
-      error: 'Assessment answers were not received by the server. Please complete the visa assessment form before login.',
+      error: 'Assessment answers, client confirmation and required handoff fields must be saved before login or checkout.',
+      missing: missingCorePayload,
       receivedKeys: Object.keys(req.body || {})
     });
   }
@@ -4624,7 +4670,7 @@ app.post('/api/assessment/repair-instant-release', requireAuth, asyncRoute(async
   await query(
     `UPDATE assessments
      SET selected_plan='instant', active_plan='instant', release_at=now(),
-         status=CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 THEN 'pdf_ready' ELSE 'pdf_queued' END,
+         status=CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 AND status IN ('pdf_ready','rma_approved') THEN 'pdf_ready' ELSE 'pdf_queued' END,
          generation_error=NULL, updated_at=now()
      WHERE id=$1`,
     [assessmentId]
@@ -5114,6 +5160,8 @@ async function finaliseStripePayment(req, res) {
 }
 
 // Aliases used by payment-complete/checkout return pages.
+app.post('/api/payments/finalise-return', asyncRoute(finaliseStripePayment));
+app.get('/api/payments/finalise-return', asyncRoute(finaliseStripePayment));
 app.post('/api/payments/finalise', asyncRoute(finaliseStripePayment));
 app.post('/api/payment/finalise', asyncRoute(finaliseStripePayment));
 app.post('/api/payments/finalize', asyncRoute(finaliseStripePayment));
@@ -7014,21 +7062,23 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
   const hash = sha256(pdf);
 
   const saved = await tx(async (client) => {
+    const nextStatus = BM_TESTING_BYPASS_RMA_REVIEW ? 'pdf_ready' : 'rma_review_required';
+    const nextJobStatus = BM_TESTING_BYPASS_RMA_REVIEW ? 'completed' : 'rma_review_required';
     const { rows: updatedRows } = await client.query(
       `UPDATE assessments
-       SET status='pdf_ready', pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
+       SET status=$5, pdf_bytes=$1, pdf_mime='application/pdf', pdf_filename=$2,
            pdf_sha256=$3, pdf_generated_at=now(), generation_error=NULL, updated_at=now()
        WHERE id=$4
        RETURNING id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan,
                  status, payment_status, pdf_bytes, pdf_filename, pdf_sha256, pdf_generated_at, created_at, updated_at,
                  true AS has_pdf`,
-      [pdf, filename, hash, assessmentId]
+      [pdf, filename, hash, assessmentId, nextStatus]
     );
     await client.query(
       `INSERT INTO pdf_jobs (assessment_id, status, last_error, created_at, updated_at)
-       VALUES ($1,'completed',NULL,now(),now())
-       ON CONFLICT (assessment_id) DO UPDATE SET status='completed', last_error=NULL, locked_at=NULL, updated_at=now()`,
-      [assessmentId]
+       VALUES ($1,$2,NULL,now(),now())
+       ON CONFLICT (assessment_id) DO UPDATE SET status=$2, last_error=NULL, locked_at=NULL, updated_at=now()`,
+      [assessmentId, nextJobStatus]
     ).catch(() => null);
     return updatedRows[0];
   });
@@ -7046,7 +7096,7 @@ function toPublicAssessment(a) {
     applicant_name: a.applicant_name,
     selected_plan: a.selected_plan,
     active_plan: a.active_plan,
-    status: hasIssuedPdfBytes(a.pdf_bytes) || a.has_pdf ? 'pdf_ready' : a.status,
+    status: (String(a.status || '').toLowerCase() === 'pdf_ready' || String(a.status || '').toLowerCase() === 'rma_approved') && (hasIssuedPdfBytes(a.pdf_bytes) || a.has_pdf) ? 'pdf_ready' : a.status,
     payment_status: a.payment_status,
     pdf_filename: a.pdf_filename,
     pdf_sha256: a.pdf_sha256,
@@ -7455,7 +7505,8 @@ async function queryDashboardFastRows(email, clientId, sessionId = '') {
            visa_type, applicant_email, applicant_name,
            effective_plan AS selected_plan,
            effective_plan AS active_plan,
-           CASE WHEN has_pdf THEN 'pdf_ready'
+           CASE WHEN has_pdf AND COALESCE(status,'') IN ('pdf_ready','rma_approved') THEN 'pdf_ready'
+                WHEN COALESCE(status,'') IN ('rma_review_required','more_information_requested') THEN COALESCE(status,'rma_review_required')
                 WHEN COALESCE(pdf_job_status,'')='failed' OR COALESCE(status,'') IN ('pdf_failed','failed') THEN 'pdf_failed'
                 WHEN COALESCE(pdf_job_status,'')='processing' OR COALESCE(status,'')='pdf_generating' THEN 'pdf_generating'
                 WHEN effective_payment_status='paid' THEN COALESCE(NULLIF(status,''),'pdf_queued')
@@ -7535,7 +7586,8 @@ async function handleDashboardFast(req, res) {
     // have been saved for that exact assessment id. Otherwise a newly paid matter can
     // be displayed as ready too early and the client may open an older generated PDF.
     const hasIssuedPdf = Boolean(row.has_pdf);
-    const canOpenPdf = paid && !locked && hasIssuedPdf;
+    const approvedForClientRelease = ['pdf_ready','rma_approved'].includes(String(row.status || '').toLowerCase());
+    const canOpenPdf = paid && !locked && hasIssuedPdf && approvedForClientRelease;
     return {
       ...row,
       release_ready: paid && !locked,
@@ -7592,7 +7644,9 @@ function dashboardV2PdfStatus(row, type) {
   const raw = String(row.status || '').toLowerCase();
   if (!paid) return 'awaiting_payment';
   if (locked) return 'release_locked';
-  if (hasPdf) return 'pdf_ready';
+  if (hasPdf && (raw === 'pdf_ready' || raw === 'rma_approved')) return 'pdf_ready';
+  if (raw === 'rma_review_required') return 'rma_review_required';
+  if (raw === 'more_information_requested') return 'more_information_requested';
   if (/failed|error|blocked/.test(raw)) return 'pdf_failed';
   if (/generating|processing|building/.test(raw)) return 'pdf_generating';
   if (/review/.test(raw)) return 'manual_review_required';
@@ -7607,6 +7661,8 @@ function dashboardV2Progress(status) {
     pdf_queued: 40,
     pdf_generating: 70,
     manual_review_required: 15,
+    rma_review_required: 85,
+    more_information_requested: 55,
     pdf_failed: 10,
     pdf_ready: 100,
     active: 100
@@ -7621,6 +7677,8 @@ function dashboardV2StatusLabel(status) {
     pdf_queued: 'Advice letter queued',
     pdf_generating: 'Advice letter generating',
     manual_review_required: 'Manual review required',
+    rma_review_required: 'RMA review required',
+    more_information_requested: 'More information requested',
     pdf_failed: 'Manual review required',
     pdf_ready: 'PDF ready',
     active: 'Active'
@@ -7906,7 +7964,7 @@ app.get('/api/account/dashboard-lite', resolveDashboardAccess, asyncRoute(handle
 app.get('/api/account/dashboard', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows: assessmentRows } = await query(
     `SELECT id, COALESCE(submission_fingerprint, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, '')))) AS duplicate_key, md5(lower(COALESCE(applicant_email, client_email, '')) || '|' || lower(COALESCE(visa_type, '')) || '|' || lower(COALESCE(active_plan, selected_plan, 'instant')) || '|' || lower(COALESCE(applicant_name, ''))) AS dashboard_duplicate_key, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name, selected_plan, active_plan,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 AND status IN ('pdf_ready','rma_approved') THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, created_at, updated_at,
             CASE
               WHEN lower(regexp_replace(COALESCE(active_plan, selected_plan, 'instant'), '[\s-]+', '', 'g')) IN ('instant','fastest') THEN now()
@@ -8076,7 +8134,7 @@ app.get('/api/account/visa/all', requireAuth, asyncRoute(async (req, res) => {
   const { rows } = await query(
     `SELECT id, 'visa_assessment' AS service_type, visa_type, applicant_email, applicant_name,
             selected_plan, active_plan,
-            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 AND status IN ('pdf_ready','rma_approved') THEN 'pdf_ready' ELSE status END AS status,
             payment_status, amount_cents, currency, stripe_session_id, stripe_payment_intent,
             created_at, updated_at,
             CASE
@@ -8272,7 +8330,7 @@ app.get('/api/assessment/:id/payload-status', requireAuth, asyncRoute(async (req
 
 app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const { rows } = await query(
-    `SELECT id, visa_type, selected_plan, active_plan, release_at, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN 'pdf_ready' ELSE status END AS status, payment_status, pdf_generated_at, pdf_filename, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
+    `SELECT id, visa_type, selected_plan, active_plan, release_at, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 AND status IN ('pdf_ready','rma_approved') THEN 'pdf_ready' ELSE status END AS status, payment_status, pdf_generated_at, pdf_filename, generation_error, CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes) > 1024 THEN true ELSE false END AS has_pdf
      FROM assessments WHERE id=$1 AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))`,
     [req.params.id, req.client.email]
   );
@@ -8282,7 +8340,8 @@ app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (
   const paid = assessment.payment_status === 'paid';
   const releaseAt = assessment.release_at ? new Date(assessment.release_at).getTime() : 0;
   const locked = !isInstantPlan(plan) && releaseAt && releaseAt > Date.now();
-  const pdfAvailable = assessment.has_pdf === true || (paid && !locked);
+  const approvedForClientRelease = ['pdf_ready','rma_approved'].includes(String(assessment.status || '').toLowerCase());
+  const pdfAvailable = assessment.has_pdf === true && paid && !locked && approvedForClientRelease;
   const token = req.dashboardAccessToken || signDashboardAccessToken(req.client);
   res.json({
     ok: true,
@@ -8398,8 +8457,14 @@ async function sendAssessmentPdf(req, res, rawId) {
       generationError: assessment.generation_error || null
     });
   }
-  if (assessment.status !== 'pdf_ready') {
-    await query(`UPDATE assessments SET status='pdf_ready', updated_at=now() WHERE id=$1`, [assessment.id]);
+  const approvedForClientRelease = ['pdf_ready','rma_approved'].includes(String(assessment.status || '').toLowerCase());
+  if (!approvedForClientRelease) {
+    return res.status(423).json({
+      ok: false,
+      locked: true,
+      status: assessment.status || 'rma_review_required',
+      error: 'The draft advice letter is awaiting RMA approval before client release.'
+    });
   }
   res.setHeader('Content-Type', assessment.pdf_mime || 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${assessment.pdf_filename || assessment.id + '.pdf'}"`);
@@ -8707,6 +8772,139 @@ app.get('/api/diagnostics/schema', asyncRoute(async (_req, res) => {
   res.json({ ok: true, tables: tables.rows });
 }));
 
+// ---- RMA review and controlled PDF release layer ----
+async function ensureRmaReviewTables() {
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS advice_outputs (
+       id bigserial PRIMARY KEY,
+       assessment_id text NOT NULL,
+       client_advice_object jsonb DEFAULT '{}'::jsonb,
+       recommendation text,
+       pdf_url text,
+       fallback_used boolean DEFAULT false,
+       version_metadata jsonb DEFAULT '{}'::jsonb,
+       created_at timestamptz DEFAULT now(),
+       updated_at timestamptz DEFAULT now()
+     )`,
+    `CREATE TABLE IF NOT EXISTS advice_audits (
+       id bigserial PRIMARY KEY,
+       assessment_id text NOT NULL,
+       internal_audit_object jsonb DEFAULT '{}'::jsonb,
+       criteria_assessed jsonb DEFAULT '[]'::jsonb,
+       answer_to_criteria_map jsonb DEFAULT '[]'::jsonb,
+       sources_used jsonb DEFAULT '[]'::jsonb,
+       warnings jsonb DEFAULT '[]'::jsonb,
+       quality_gate_result jsonb DEFAULT '{}'::jsonb,
+       created_at timestamptz DEFAULT now(),
+       updated_at timestamptz DEFAULT now()
+     )`,
+    `CREATE TABLE IF NOT EXISTS agent_reviews (
+       id bigserial PRIMARY KEY,
+       assessment_id text NOT NULL,
+       reviewed_by text,
+       reviewed_at timestamptz DEFAULT now(),
+       decision text NOT NULL,
+       comments text,
+       edited_sections jsonb DEFAULT '{}'::jsonb,
+       approval_version text,
+       created_at timestamptz DEFAULT now()
+     )`,
+    `CREATE TABLE IF NOT EXISTS document_requests (
+       id bigserial PRIMARY KEY,
+       assessment_id text NOT NULL,
+       client_email text,
+       requested_by text,
+       request_details jsonb DEFAULT '{}'::jsonb,
+       status text DEFAULT 'open',
+       created_at timestamptz DEFAULT now(),
+       updated_at timestamptz DEFAULT now()
+     )`
+  ];
+  for (const sql of statements) await query(sql);
+}
+
+function rmaPublicAssessment(row, dashboardToken) {
+  const status = String(row.status || '').toLowerCase();
+  const hasPdf = hasIssuedPdfBytes(row.pdf_bytes) || row.has_pdf === true;
+  const released = hasPdf && (status === 'pdf_ready' || status === 'rma_approved');
+  return {
+    id: row.id,
+    subclass: row.visa_type || row.subclass || null,
+    clientEmail: row.client_email || row.applicant_email || null,
+    applicantName: row.applicant_name || null,
+    status: row.status,
+    paymentStatus: row.payment_status,
+    hasDraftPdf: hasPdf,
+    canOpenPdf: released,
+    finalPdfUrl: released ? buildFinalPdfUrl(row.id, dashboardToken || '') : null,
+    generationError: row.generation_error || null,
+    formPayload: row.form_payload || null,
+    pdfGeneratedAt: row.pdf_generated_at || null
+  };
+}
+
+app.get('/api/admin/rma-review/:assessmentId', requireAdmin, asyncRoute(async (req, res) => {
+  await ensureRmaReviewTables();
+  const id = req.params.assessmentId;
+  const { rows } = await query(
+    `SELECT id, visa_type, client_email, applicant_email, applicant_name, selected_plan, active_plan,
+            status, payment_status, form_payload, generation_error, pdf_generated_at, pdf_filename,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 THEN true ELSE false END AS has_pdf
+     FROM assessments WHERE id=$1 LIMIT 1`,
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ ok: false, error: 'Assessment not found.' });
+  const audits = await query(`SELECT * FROM advice_audits WHERE assessment_id=$1 ORDER BY created_at DESC LIMIT 5`, [id]).catch(() => ({ rows: [] }));
+  const outputs = await query(`SELECT * FROM advice_outputs WHERE assessment_id=$1 ORDER BY created_at DESC LIMIT 5`, [id]).catch(() => ({ rows: [] }));
+  const reviews = await query(`SELECT * FROM agent_reviews WHERE assessment_id=$1 ORDER BY created_at DESC LIMIT 20`, [id]).catch(() => ({ rows: [] }));
+  res.json({ ok: true, matter: rmaPublicAssessment(rows[0]), audits: audits.rows, outputs: outputs.rows, reviews: reviews.rows });
+}));
+
+async function handleRmaDecision(req, res, decision) {
+  await ensureRmaReviewTables();
+  const id = req.params.assessmentId;
+  const comments = String((req.body && (req.body.comments || req.body.reason || req.body.note)) || '').trim();
+  const editedSections = isPlainObject(req.body && req.body.editedSections) ? req.body.editedSections : {};
+  const reviewedBy = String(req.headers['x-admin-email'] || req.headers['x-admin-user'] || 'admin').trim();
+  const assessmentRows = await query(
+    `SELECT id, status, payment_status, client_email, applicant_email,
+            CASE WHEN pdf_bytes IS NOT NULL AND octet_length(pdf_bytes)>1024 THEN true ELSE false END AS has_pdf
+     FROM assessments WHERE id=$1 LIMIT 1`,
+    [id]
+  );
+  const assessment = assessmentRows.rows[0];
+  if (!assessment) return res.status(404).json({ ok: false, error: 'Assessment not found.' });
+  await query(
+    `INSERT INTO agent_reviews (assessment_id, reviewed_by, decision, comments, edited_sections, approval_version)
+     VALUES ($1,$2,$3,$4,$5::jsonb,$6)`,
+    [id, reviewedBy, decision, comments || null, JSON.stringify(editedSections), `rma-review-${new Date().toISOString()}`]
+  );
+  if (decision === 'approve' || decision === 'approve_with_edits') {
+    if (!assessment.has_pdf) return res.status(409).json({ ok: false, error: 'Draft PDF does not exist. Run the advice worker first.' });
+    await query(`UPDATE assessments SET status='pdf_ready', generation_error=NULL, updated_at=now() WHERE id=$1`, [id]);
+    await query(`UPDATE pdf_jobs SET status='completed', locked_at=NULL, last_error=NULL, updated_at=now() WHERE assessment_id=$1`, [id]).catch(() => null);
+    return res.json({ ok: true, assessmentId: id, decision, status: 'pdf_ready', message: 'RMA approval recorded. Client PDF is released.' });
+  }
+  if (decision === 'request_more_information') {
+    await query(
+      `INSERT INTO document_requests (assessment_id, client_email, requested_by, request_details, status)
+       VALUES ($1,$2,$3,$4::jsonb,'open')`,
+      [id, assessment.client_email || assessment.applicant_email || null, reviewedBy, JSON.stringify({ comments, editedSections })]
+    );
+    await query(`UPDATE assessments SET status='more_information_requested', generation_error=$1, updated_at=now() WHERE id=$2`, [comments || 'Further information has been requested before advice release.', id]);
+    return res.json({ ok: true, assessmentId: id, decision, status: 'more_information_requested' });
+  }
+  await query(`UPDATE assessments SET status='manual_review_required', generation_error=$1, updated_at=now() WHERE id=$2`, [comments || 'RMA review has not approved release.', id]);
+  return res.json({ ok: true, assessmentId: id, decision, status: 'manual_review_required' });
+}
+
+app.post('/api/admin/rma-review/:assessmentId/approve', requireAdmin, asyncRoute((req, res) => handleRmaDecision(req, res, 'approve')));
+app.post('/api/admin/rma-review/:assessmentId/approve-with-edits', requireAdmin, asyncRoute((req, res) => handleRmaDecision(req, res, 'approve_with_edits')));
+app.post('/api/admin/rma-review/:assessmentId/reject', requireAdmin, asyncRoute((req, res) => handleRmaDecision(req, res, 'reject')));
+app.post('/api/admin/rma-review/:assessmentId/request-more-information', requireAdmin, asyncRoute((req, res) => handleRmaDecision(req, res, 'request_more_information')));
+
+
+
 app.use((req, res) => res.status(404).json({
   ok: false,
   code: 'ROUTE_NOT_FOUND',
@@ -8722,6 +8920,8 @@ app.use((err, req, res, next) => {
   }
   return hardening.errorHandler(err, req, res, next);
 });
+
+
 
 
 // Minimal compatibility migration that always runs before the server listens.
@@ -8778,6 +8978,7 @@ async function ensureCriticalDashboardColumns() {
 async function runStartupTasks() {
   if (BOOTSTRAP_DB) await ensureSchema();
   await ensureCriticalDashboardColumns();
+  await ensureRmaReviewTables();
   console.log('Startup database checks completed.');
 }
 
