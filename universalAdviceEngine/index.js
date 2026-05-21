@@ -112,13 +112,57 @@ function resolveUniversalStream({ subclass, rawStream, assessment = {}, registry
 function clientFacingStream(stream) {
   return clean(stream).replace(/_/g, ' ').replace(/\b\w/g, m => m.toUpperCase()).replace(/\s+Stream\s+Stream$/i, ' Stream');
 }
+
+function cleanForbiddenClientLabel(value) {
+  return /grant criterion control|subclass specific grant criterion|registry[- ]controlled pathway|primary pathway|map the original evidence/i.test(clean(value));
+}
+
+function classifyCriterionFrame(frame = {}) {
+  const hay = JSON.stringify(frame || {}).toLowerCase();
+  if (/schedule\s*1|valid application|validity|application charge|time of application|time of decision/.test(hay)) return 'Valid application requirement';
+  if (/nomination|sponsor|sponsorship|employer|approved sponsor/.test(hay)) return 'Sponsorship or nomination requirement';
+  if (/labou?r market testing|\blmt\b/.test(hay)) return 'Labour market testing requirement';
+  if (/labou?r agreement|dama|agreement terms|concession/.test(hay)) return 'Labour agreement or concession requirement';
+  if (/salary|amsr|market salary|guaranteed earnings|employment condition|contract/.test(hay)) return 'Salary and employment conditions requirement';
+  if (/occupation|anzsco|duties|genuine position|position/.test(hay)) return 'Occupation and genuine position requirement';
+  if (/skills assessment|qualification|experience|registration|licen[cs]ing|professional membership/.test(hay)) return 'Skills, qualification and registration requirement';
+  if (/english/.test(hay)) return 'English language requirement';
+  if (/age/.test(hay)) return 'Age requirement or lawful exemption';
+  if (/relationship|partner|spouse|de facto|prospective marriage|marriage|dependency/.test(hay)) return 'Relationship or family composition requirement';
+  if (/student|enrolment|coe|guardian|course|oshc/.test(hay)) return 'Student or guardian pathway requirement';
+  if (/visitor|temporary stay|genuine temporary|funds|tourist|business visitor/.test(hay)) return 'Temporary stay and visit purpose requirement';
+  if (/protection|refugee|complementary|persecution|harm|claims/.test(hay)) return 'Protection claims and credibility requirement';
+  if (/health|pic 4005|pic4005|pic 4007|pic4007/.test(hay)) return 'Health and public-interest requirement';
+  if (/character|police|security|pic 4001|pic4001/.test(hay)) return 'Character and security requirement';
+  if (/4020|integrity|bogus|false|misleading|document/.test(hay)) return 'PIC 4020 and document integrity requirement';
+  if (/special return|src|exclusion|re-entry/.test(hay)) return 'Special Return Criteria and exclusion requirement';
+  if (/family|secondary|member of family unit/.test(hay)) return 'Secondary applicant and family-member requirement';
+  if (/location|visa status|lawful status|jurisdiction|bridging/.test(hay)) return 'Location, visa status and jurisdiction requirement';
+  return 'Visa grant criterion';
+}
+
+function clientFacingIssueLabel(frame = {}) {
+  const raw = clean(frame.issue || frame.label || frame.criterion || frame.criterionId || frame.clause || '');
+  if (!raw || cleanForbiddenClientLabel(raw)) return classifyCriterionFrame(frame);
+  const titled = title(raw);
+  return cleanForbiddenClientLabel(titled) ? classifyCriterionFrame(frame) : titled;
+}
+
+function clientFacingRequiredAction(frame = {}, evidenceMissing = []) {
+  const raw = clean(frame.requiredAction || frame.action || frame.recommendation || '');
+  if (raw && !cleanForbiddenClientLabel(raw)) return raw;
+  const issue = clientFacingIssueLabel(frame).toLowerCase();
+  const evidence = evidenceMissing.length ? evidenceMissing.slice(0, 5).join('; ') : 'the original evidence required for this legal requirement';
+  return `Review ${evidence} and record a criterion-specific finding for the ${issue} before lodgement advice is finalised.`;
+}
+
 function inferRisk(frame) {
   const hay = JSON.stringify(frame || {}).toLowerCase();
   if (/valid|schedule 1|nomination|sponsor|labour agreement|salary|amsr|pic ?4020|character|health|refusal|cancellation/.test(hay)) return 'HIGH';
   return 'MANAGED';
 }
 function buildFinding({ frame, assessment, subclass, stream }) {
-  const issue = title(frame.issue || frame.criterionId || frame.clause || 'Legal requirement');
+  const issue = clientFacingIssueLabel(frame);
   const legalRequirement = clean(frame.legalTest || frame.legalRequirement || frame.requirement);
   if (!legalRequirement || /mapped migration regulations\/pam legal frame/i.test(legalRequirement)) {
     const err = new Error(`Advice-grade PDF blocked: missing criterion-level legal test for Subclass ${subclass} / ${frame.criterionId || frame.clause || issue}.`);
@@ -148,7 +192,7 @@ function buildFinding({ frame, assessment, subclass, stream }) {
     riskLevel,
     legalConsequence: consequence,
     consequenceOfFailure: consequence,
-    requiredAction: evidenceMissing.length ? `Obtain and review: ${evidenceMissing.slice(0, 5).join('; ')}.` : 'Obtain and review original evidence before final lodgement advice.',
+    requiredAction: clientFacingRequiredAction(frame, evidenceMissing),
     seniorOpinion,
     sourceConfidence: frame.sourceConfidence || 'source-mapped'
   };
@@ -244,5 +288,7 @@ module.exports = {
   buildUniversalAdviceModel,
   resolveUniversalStream,
   qualityGate,
-  clientFacingStream
+  clientFacingStream,
+  clientFacingIssueLabel,
+  classifyCriterionFrame
 };
