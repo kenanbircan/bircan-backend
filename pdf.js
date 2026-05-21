@@ -1291,6 +1291,9 @@ function v13IssuePhrase(value) {
 
 function v10BuildCriteria(advice, adviceBundle, subclass, stream) {
   const raw = ensureArray(
+    adviceBundle.seniorCriteriaFindings ||
+    adviceBundle.seniorAdviceModel?.criteriaFindings ||
+    advice?.seniorAdviceModel?.criteriaFindings ||
     adviceBundle.fullCriteriaRegistryMatrix ||
     adviceBundle.grantCriteriaFindings ||
     adviceBundle.criteriaRegistryFindings ||
@@ -2513,6 +2516,21 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       }
 
       const effectiveAdvice = getAdvice(bundleForPdf) || advice;
+      if (bundleForPdf.seniorAdviceModel && Array.isArray(bundleForPdf.seniorAdviceModel.criteriaFindings)) {
+        bundleForPdf = {
+          ...bundleForPdf,
+          seniorCriteriaFindings: bundleForPdf.seniorAdviceModel.criteriaFindings,
+          fullCriteriaRegistryMatrix: bundleForPdf.seniorAdviceModel.criteriaFindings,
+          grantCriteriaFindings: bundleForPdf.seniorAdviceModel.criteriaFindings,
+          criteriaRegistryFindings: bundleForPdf.seniorAdviceModel.criteriaFindings,
+          advice: {
+            ...(bundleForPdf.advice || effectiveAdvice || {}),
+            criterion_findings: bundleForPdf.seniorAdviceModel.criteriaFindings,
+            grantCriteriaFindings: bundleForPdf.seniorAdviceModel.criteriaFindings,
+            fullCriteriaRegistryMatrix: bundleForPdf.seniorAdviceModel.criteriaFindings
+          }
+        };
+      }
       const criteria = v10BuildCriteria(effectiveAdvice, bundleForPdf || {}, subclass, stream);
       const expectedVisibleCriteria = ensureArray(bundleForPdf.fullCriteriaRegistryMatrix || bundleForPdf.grantCriteriaFindings || effectiveAdvice.fullCriteriaRegistryMatrix || effectiveAdvice.grantCriteriaFindings || effectiveAdvice.criterion_findings || []).length;
       if (expectedVisibleCriteria && criteria.length < expectedVisibleCriteria) {

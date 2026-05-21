@@ -41,6 +41,7 @@ const pdfModule = require('./pdf');
 const decisionEngineModule = require('./migrationDecisionEngine');
 const { attachPathwayComparisonToAdviceBundle, compareMigrationPathways } = require('./migrationPathwayComparator');
 const { installClientJourneyRoutes, ensureClientJourneySchema } = require('./clientJourneyEngine');
+const { attachSeniorAdviceModel } = require('./seniorAdviceEngine');
 
 const app = express();
 app.use(hardening.requestIdMiddleware);
@@ -6071,10 +6072,15 @@ function enforceRegistryKnowledgebaseAdviceControls({ assessment, adviceBundle, 
   adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
   adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
 
-  adviceBundle.fullCriteriaRegistryMatrix = registryResult.findings;
-  adviceBundle.fullCriteriaRegistryMatrixCount = registryResult.findings.length;
+  // Senior advice engine: replace raw registry placeholder findings with
+  // fact-to-law, consequence-based findings for every registry subclass.
+  attachSeniorAdviceModel(adviceBundle, assessment, registryResult, registry);
+
+  adviceBundle.fullCriteriaRegistryMatrix = adviceBundle.seniorCriteriaFindings || adviceBundle.fullCriteriaRegistryMatrix || registryResult.findings;
+  adviceBundle.fullCriteriaRegistryMatrixCount = adviceBundle.fullCriteriaRegistryMatrix.length;
   adviceBundle.visibleCriteriaMatrixRequired = true;
-  adviceBundle.grantCriteriaFindings = registryResult.findings;
+  adviceBundle.grantCriteriaFindings = adviceBundle.seniorCriteriaFindings || registryResult.findings;
+  adviceBundle.criteriaRegistryFindings = adviceBundle.seniorCriteriaFindings || registryResult.findings;
   adviceBundle.criteriaRegistryAudit = registryResult.audit;
   adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
   adviceBundle.registryCoverageRate = registryResult.audit && registryResult.audit.registryCoverageRate;
