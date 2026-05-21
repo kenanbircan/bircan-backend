@@ -1952,7 +1952,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.7-paid-advice-deterministic-release-fallback',
+    version: '12.2.8-senior-advice-intelligence-layout-v1',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -5932,9 +5932,43 @@ function buildCriterionFindingFromProfile(profile, context) {
     if (answer && statusMeta.status === 'unclear') statusMeta.status = 'likely_satisfied';
   }
 
-  const currentPosition = answer
-    ? `Questionnaire instruction recorded: ${answer}. This is treated as an instruction only and must be reconciled against original evidence.`
-    : 'No specific supporting instruction was identified in the stored answers for this criterion. The issue remains evidence-led and must be checked before final lodgement advice.';
+  function professionalCurrentPosition() {
+    if (!answer) {
+      return 'The stored assessment does not contain enough criterion-specific information to treat this issue as lodgement-ready. The issue remains evidence-led and must be checked before final advice.';
+    }
+    const safeAnswer = String(answer).replace(/\s+/g, ' ').trim();
+    if (criterionKey === 'employment' && /^\d+(\.\d+)?$/.test(safeAnswer)) {
+      return `A numeric employment-related value was recorded (${safeAnswer}). Before relying on it, confirm whether it represents weekly hours, months/years of employment, age, salary fragment or another intake field. Employment continuity should be reconstructed from objective payroll, tax, superannuation and visa/work-rights records.`;
+    }
+    if (criterionKey === 'salary') {
+      return `The remuneration figure recorded is ${safeAnswer}. It should be tested against the nomination record, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.`;
+    }
+    if (criterionKey === 'english') {
+      return `The English evidence recorded is ${safeAnswer}. The original result, test type, component scores, validity date, exemption basis or concession must be verified before final advice.`;
+    }
+    if (criterionKey === 'sponsor' || criterionKey === 'genuineposition' || criterionKey === 'genuine_position') {
+      return `The employer/nomination instruction recorded is ${safeAnswer}. It should be reconciled against the nomination file, business operations, position description, organisational chart and evidence of genuine ongoing need.`;
+    }
+    if (criterionKey === 'occupation' || criterionKey === 'directentry' || criterionKey === 'direct_entry') {
+      return `The occupation/skills instruction recorded is ${safeAnswer}. It should be reconciled against the nominated occupation, duties, qualifications, skills assessment, licensing and employment evidence.`;
+    }
+    if (criterionKey === 'health') {
+      return /yes|issue|condition|medical/i.test(lowerAnswer)
+        ? `A health-related matter was recorded (${safeAnswer}). It should be reviewed before any final lodgement recommendation.`
+        : 'No health issue was disclosed in the assessment response, subject to standard health declarations, examinations and family-member checks.';
+    }
+    if (criterionKey === 'character' || criterionKey === 'migrationhistory' || criterionKey === 'migration_history') {
+      return /yes|refus|cancel|criminal|court|false|misleading|unlawful|section|8503/i.test(lowerAnswer)
+        ? `An adverse character, integrity or immigration-history matter was recorded (${safeAnswer}). Departmental records and original documents must be reviewed before lodgement strategy is finalised.`
+        : 'No adverse character, integrity or immigration-history issue was disclosed in the assessment response, subject to police clearances, Departmental records and document-consistency checks.';
+    }
+    if (criterionKey === 'stream') {
+      return `The selected pathway is recorded as ${safeAnswer}. It should be confirmed as legally available and strategically appropriate before lodgement.`;
+    }
+    return `The current instruction recorded for this issue is ${safeAnswer}. It should be reconciled against original evidence before any lodgement-ready advice is issued.`;
+  }
+
+  const currentPosition = professionalCurrentPosition();
 
   return {
     key: profile.key,

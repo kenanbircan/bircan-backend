@@ -607,6 +607,17 @@ function writeEvidence(doc, model) {
   }
 }
 
+function riskCard(doc, index, finding) {
+  ensureSpace(doc, 92);
+  doc.font('Helvetica-Bold').fontSize(9.6).fillColor('#0b2545')
+    .text(`${index}. ${findingTitle(finding)}`, { width: pageWidth(doc), lineGap: 1.8 });
+  doc.moveDown(0.15);
+  adviceBlock(doc, 'Risk/status', findingRisk(finding) || findingStatusLabel(finding));
+  adviceBlock(doc, 'Professional consequence', findingConsequence(finding) || 'If unresolved, this issue may affect validity, eligibility, prospects or lodgement strategy.');
+  adviceBlock(doc, 'Required action', findingAction(finding) || 'Resolve before final advice.');
+  rule(doc);
+}
+
 function writeRisk(doc, model, findings) {
   h1(doc, '6. Risk assessment');
   const riskSummary = pick(
@@ -616,15 +627,10 @@ function writeRisk(doc, model, findings) {
   );
   p(doc, riskSummary);
 
-  const rows = [];
-  for (const f of findings.slice(0, 16)) {
-    rows.push([
-      findingRisk(f),
-      findingTitle(f),
-      findingConsequence(f) || findingAction(f) || 'Resolve before final advice.'
-    ]);
+  const material = findings.slice(0, 12);
+  for (let i = 0; i < material.length; i++) {
+    riskCard(doc, i + 1, material[i]);
   }
-  if (rows.length) table(doc, ['Risk/status', 'Issue', 'Professional consequence'], rows, [90, 180, pageWidth(doc) - 270]);
 }
 
 function writeActionPlan(doc, model) {
@@ -653,6 +659,17 @@ function writeRecommendation(doc, model, subclass, stream) {
     `Based on the information presently available, I do not recommend immediate lodgement of the Subclass ${subclass} — ${stream} application until the identified legal requirements, evidence gaps and public-interest matters have been reviewed and reconciled.`
   );
   p(doc, rec);
+
+  const findings = normaliseArray(pick(model.eligibilityFindings, model.criteriaFindings, model.seniorCriteriaFindings, model.grantCriteriaFindings));
+  const priority = findings
+    .filter(f => /unclear|risk|high|medium|evidence|required|reconcile/i.test(`${findingStatusLabel(f)} ${findingRisk(f)} ${findingConsequence(f)}`))
+    .slice(0, 5)
+    .map(f => findingTitle(f))
+    .filter(Boolean);
+  if (priority.length) {
+    p(doc, `The most material issues to resolve before lodgement are: ${priority.join('; ')}.`, { bold: true });
+  }
+
   p(doc, 'This position protects the client from avoidable refusal risk, unnecessary cost and a weaker future migration record. The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.');
 }
 
