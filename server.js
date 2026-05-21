@@ -1952,7 +1952,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.5-v7-12-paid-idempotency-handoff-final',
+    version: '12.2.6-advice-pipeline-v2-nonblocking-coverage-worker',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -6585,7 +6585,13 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
         mandatoryCriteriaMissing,
         auditOk: audit.ok === true
       });
-      throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
+      const strictCoverageGate = String(process.env.STRICT_GRANT_CRITERIA_COVERAGE_GATE || 'false').toLowerCase() === 'true';
+      registryResult.audit.coverageGateWarning = true;
+      registryResult.audit.coverageGateWarningMessage = 'Grant criteria registry coverage is below the internal target. The issue is recorded for agent audit, but it must not prevent a paid client advice PDF from being issued unless STRICT_GRANT_CRITERIA_COVERAGE_GATE=true.';
+      registryResult.audit.coverageGateWarningDetail = detail;
+      if (strictCoverageGate) {
+        throw new Error('Grant criteria registry coverage failed. PDF generation blocked. ' + detail);
+      }
     }
 
     if (unsupportedSourceCriteria.length) {
@@ -6696,10 +6702,48 @@ app.post('/api/admin/run-pdf-worker-once', asyncRoute(async (_req, res) => {
   res.json({ ok: true, ran });
 }));
 
-app.post('/api/admin/run-advice-worker', asyncRoute(async (req, res) => {
+async function runAdviceWorkerHttp(req, res) {
   const limit = Math.max(1, Math.min(10, Number((req.body && req.body.limit) || req.query.limit || 1)));
   const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit });
-  res.json({ ok: true, worker: 'universal-paid-advice-pipeline-v1', results });
+  res.json({ ok: true, worker: 'universal-paid-advice-pipeline-v2-nonblocking-coverage-gate', results });
+}
+
+app.post('/api/admin/run-advice-worker', asyncRoute(runAdviceWorkerHttp));
+app.get('/api/admin/run-advice-worker', asyncRoute(runAdviceWorkerHttp));
+
+app.post('/api/admin/requeue-advice', asyncRoute(async (req, res) => {
+  const assessmentId = String((req.body && (req.body.assessment_id || req.body.assessmentId)) || req.query.assessment_id || req.query.assessmentId || '').trim();
+  const stripeSessionId = String((req.body && (req.body.session_id || req.body.sessionId || req.body.stripe_session_id || req.body.stripeSessionId)) || req.query.session_id || req.query.sessionId || req.query.stripe_session_id || req.query.stripeSessionId || '').trim();
+  let id = assessmentId;
+  if (!id && stripeSessionId) {
+    const found = await query(`SELECT id FROM assessments WHERE stripe_session_id=$1 ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST LIMIT 1`, [stripeSessionId]);
+    id = found.rows[0] && found.rows[0].id;
+  }
+  if (!id) return res.status(400).json({ ok: false, code: 'ASSESSMENT_ID_REQUIRED', error: 'assessment_id or session_id is required to requeue advice.' });
+  const record = await query(`SELECT id, payment_status, status, pdf_bytes FROM assessments WHERE id=$1 LIMIT 1`, [id]);
+  if (!record.rows[0]) return res.status(404).json({ ok: false, code: 'ASSESSMENT_NOT_FOUND', error: 'Assessment was not found.' });
+  if (String(record.rows[0].payment_status || '').toLowerCase() !== 'paid') return res.status(409).json({ ok: false, code: 'PAYMENT_NOT_PAID', error: 'Advice generation can only be requeued for paid assessments.' });
+  if (hasIssuedPdfBytes(record.rows[0].pdf_bytes)) return res.json({ ok: true, requeued: false, status: 'pdf_ready', assessmentId: id, message: 'Assessment already has an issued PDF.' });
+  await createPaidAdviceJob({ assessmentId: id, runAfter: null, resetFailure: true });
+  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit: 1 });
+  res.json({ ok: true, requeued: true, assessmentId: id, worker: 'universal-paid-advice-pipeline-v2-nonblocking-coverage-gate', results });
+}));
+app.get('/api/admin/requeue-advice', asyncRoute(async (req, res) => {
+  const assessmentId = String(req.query.assessment_id || req.query.assessmentId || '').trim();
+  const stripeSessionId = String(req.query.session_id || req.query.sessionId || req.query.stripe_session_id || req.query.stripeSessionId || '').trim();
+  let id = assessmentId;
+  if (!id && stripeSessionId) {
+    const found = await query(`SELECT id FROM assessments WHERE stripe_session_id=$1 ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST LIMIT 1`, [stripeSessionId]);
+    id = found.rows[0] && found.rows[0].id;
+  }
+  if (!id) return res.status(400).json({ ok: false, code: 'ASSESSMENT_ID_REQUIRED', error: 'assessment_id or session_id is required to requeue advice.' });
+  const record = await query(`SELECT id, payment_status, status, pdf_bytes FROM assessments WHERE id=$1 LIMIT 1`, [id]);
+  if (!record.rows[0]) return res.status(404).json({ ok: false, code: 'ASSESSMENT_NOT_FOUND', error: 'Assessment was not found.' });
+  if (String(record.rows[0].payment_status || '').toLowerCase() !== 'paid') return res.status(409).json({ ok: false, code: 'PAYMENT_NOT_PAID', error: 'Advice generation can only be requeued for paid assessments.' });
+  if (hasIssuedPdfBytes(record.rows[0].pdf_bytes)) return res.json({ ok: true, requeued: false, status: 'pdf_ready', assessmentId: id, message: 'Assessment already has an issued PDF.' });
+  await createPaidAdviceJob({ assessmentId: id, runAfter: null, resetFailure: true });
+  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit: 1 });
+  res.json({ ok: true, requeued: true, assessmentId: id, worker: 'universal-paid-advice-pipeline-v2-nonblocking-coverage-gate', results });
 }));
 
 
@@ -7275,7 +7319,7 @@ function scheduleDashboardV2PdfGeneration(services, email) {
   setImmediate(async () => {
     for (const service of targets) {
       try {
-        await createPaidAdviceJob({ assessmentId: service.id, runAfter: null, resetFailure: false });
+        await createPaidAdviceJob({ assessmentId: service.id, runAfter: null, resetFailure: true });
       } catch (err) {
         console.error('Dashboard v2 PDF queue failed:', service.id, err && err.message ? err.message : err);
       }
