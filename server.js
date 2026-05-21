@@ -6702,10 +6702,39 @@ app.post('/api/admin/run-pdf-worker-once', asyncRoute(async (_req, res) => {
   res.json({ ok: true, ran });
 }));
 
+async function resolveAdviceAssessmentId(req) {
+  const body = req.body || {};
+  const assessmentId = String(body.assessment_id || body.assessmentId || req.query.assessment_id || req.query.assessmentId || '').trim();
+  const stripeSessionId = String(body.session_id || body.sessionId || body.stripe_session_id || body.stripeSessionId || req.query.session_id || req.query.sessionId || req.query.stripe_session_id || req.query.stripeSessionId || '').trim();
+  if (assessmentId) return assessmentId;
+  if (!stripeSessionId) return '';
+  const found = await query(`
+    SELECT id
+    FROM assessments
+    WHERE stripe_session_id=$1
+    ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST
+    LIMIT 1`, [stripeSessionId]);
+  return found.rows[0] && found.rows[0].id || '';
+}
+
 async function runAdviceWorkerHttp(req, res) {
   const limit = Math.max(1, Math.min(10, Number((req.body && req.body.limit) || req.query.limit || 1)));
-  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit });
-  res.json({ ok: true, worker: 'universal-paid-advice-pipeline-v2-nonblocking-coverage-gate', results });
+  const assessmentId = await resolveAdviceAssessmentId(req);
+
+  // If a specific assessment/session is supplied, ensure the job table is aligned with
+  // the dashboard assessment status before running. This fixes the case where the
+  // assessment is pdf_queued but pdf_jobs was still completed/failed/processing.
+  if (assessmentId) {
+    await createPaidAdviceJob({ assessmentId, runAfter: null, resetFailure: true });
+  }
+
+  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit, assessmentId: assessmentId || undefined });
+  res.json({
+    ok: true,
+    worker: 'universal-paid-advice-pipeline-v3-direct-session-selector',
+    assessmentId: assessmentId || null,
+    results
+  });
 }
 
 app.post('/api/admin/run-advice-worker', asyncRoute(runAdviceWorkerHttp));
