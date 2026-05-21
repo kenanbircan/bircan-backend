@@ -6,6 +6,7 @@ const { buildKnowledgebaseLegalPack, assertKnowledgebasePack, extractVisaSubclas
 const { loadCriteriaRegistry, listSupportedCriteriaRegistrySubclasses } = require('./criteriaRegistry');
 const { validateCriteriaCoverage, buildRegistryBackedFindings } = require('./validators/criteriaCoverageValidator');
 const { loadLegalFrame } = require('./legalFrameLoader');
+const { buildSeniorAdviceModel } = require('./seniorAdviceEngine');
 const DEFAULT_MODEL = process.env.OPENAI_ADVICE_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = 'https://api.openai.com/v1/responses';
@@ -570,19 +571,42 @@ async function generateMigrationAdvice(assessment){
     legalPack: legalSourcePack,
     facts
   });
+  const seniorAdviceModel = buildSeniorAdviceModel({
+    assessment: assessmentForAdvice,
+    adviceBundle: {
+      facts,
+      rules,
+      legalSourcePack,
+      legalFrame,
+      criteriaRegistry,
+      advice: validatedAdvice,
+      subclass,
+      stream: selectedStream || legalPack.selectedStream || legalFrame.clientFacingStream || legalFrame.stream
+    },
+    registry: criteriaRegistry,
+    stream: selectedStream || legalPack.selectedStream || legalFrame.clientFacingStream || legalFrame.stream,
+    legalFrame
+  });
+  const legalFrameFindings = Array.isArray(seniorAdviceModel.criteriaFindings) ? seniorAdviceModel.criteriaFindings : [];
+  if (!legalFrameFindings.length) {
+    throw new Error(`Advice-grade PDF blocked: no knowledgebase legal-frame findings generated for subclass ${subclass}.`);
+  }
   validatedAdvice.seniorAgentNarrative = {
     standard: 'Senior migration-agent advice standard',
     clientFacingPurpose: 'The advice must read as a professional letter to the client, not as an internal registry report.',
     requiredTone: 'firm, careful, commercial and legally controlled',
-    lodgementPosition: validatedAdvice.executive_summary || validatedAdvice.recommendation || 'Lodgement should not be recommended until original evidence and current-law checks support that position.',
-    nextProfessionalStep: 'Proceed to a formal evidence review and lodgement-readiness assessment before filing.'
+    lodgementPosition: seniorAdviceModel.finalRecommendation && seniorAdviceModel.finalRecommendation.lodgementPosition || validatedAdvice.executive_summary || validatedAdvice.recommendation || 'Lodgement should not be recommended until original evidence and current-law checks support that position.',
+    nextProfessionalStep: seniorAdviceModel.executiveOpinion && seniorAdviceModel.executiveOpinion.nextStep || 'Proceed to a formal evidence review and lodgement-readiness assessment before filing.'
   };
-  validatedAdvice.criterion_findings = registryBacked.findings;
-  validatedAdvice.grantCriteriaFindings = registryBacked.findings;
+  validatedAdvice.seniorAdviceModel = seniorAdviceModel;
+  validatedAdvice.criterion_findings = legalFrameFindings;
+  validatedAdvice.grantCriteriaFindings = legalFrameFindings;
+  validatedAdvice.fullCriteriaRegistryMatrix = legalFrameFindings;
   const criteriaCoverage = validateCriteriaCoverage(criteriaRegistry, {
     advice: validatedAdvice,
-    grantCriteriaFindings: registryBacked.findings,
-    criteriaRegistryFindings: registryBacked.findings
+    grantCriteriaFindings: legalFrameFindings,
+    criteriaRegistryFindings: legalFrameFindings,
+    seniorCriteriaFindings: legalFrameFindings
   }, legalSourcePack, facts);
   criteriaCoverage.totalRegistryCriteria = registryBacked.audit.totalRegistryCriteria;
   criteriaCoverage.mandatoryOrTriggeredRequired = registryBacked.audit.mandatoryOrTriggeredRequired;
@@ -597,7 +621,7 @@ async function generateMigrationAdvice(assessment){
   internalLegalAudit.criteriaRegistry = { registryVersion: criteriaRegistry.registryVersion || criteriaRegistry.version, subclass: criteriaRegistry.subclass, mandatoryCriteriaCount: criteriaRegistry.mandatoryCriteriaCount, sourceFile: criteriaRegistry.sourceFile };
   internalLegalAudit.legalFrame = { subclass: legalFrame.subclass, stream: legalFrame.stream, snapshotHash: legalFrame.snapshotHash, validation: legalFrame.validation, knowledgeAudit: legalFrame.knowledgeAudit };
   internalLegalAudit.criteriaCoverage = criteriaCoverage;
-  const bundle = {facts,rules,matrix,criteriaRegistry,legalFrame,legalFrameSnapshotHash:legalFrame.snapshotHash,criteriaCoverage,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
+  const bundle = {facts,rules,matrix,criteriaRegistry,legalFrame,seniorAdviceModel,seniorCriteriaFindings:legalFrameFindings,grantCriteriaFindings:legalFrameFindings,criteriaRegistryFindings:legalFrameFindings,fullCriteriaRegistryMatrix:legalFrameFindings,legalFrameSnapshotHash:legalFrame.snapshotHash,criteriaCoverage,legalSourcePack,legalVersionLock,contradictionFlags,evidenceSufficiencyMatrix,clientSafetyFilter,universalLegalGraph,researchGradeStrategicLayer,internalLegalAudit,advice:validatedAdvice,model:DEFAULT_MODEL,knowledgebaseEnforced:true,criteriaRegistryEnforced:true,knowledgebaseLegalFrameApplied:true,genericFallbackAllowed:false,subclassFirstGate:true,legalHierarchyEnforced:true,dynamicKnowledgebaseLawUpdates:true,finalProductionControls:true,researchGradeStrategicIntelligence:true};
   assertFinalProductionControls(bundle);
   assertDynamicKnowledgebaseControls(bundle);
   assertResearchGradeControls(bundle);

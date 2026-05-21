@@ -1,10 +1,10 @@
 {
   "name": "bircan-final-self-migrating-server",
-  "version": "10.7.0-senior-advice-engine-all-subclasses",
+  "version": "10.8.0-knowledgebase-legal-frame-senior-advice",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check db.js && node --check pdf.js && node --check adviceEngine.js && node --check knowledgebaseLoader.js && node --check migrationDecisionEngine.js && node --check seniorAdviceEngine/index.js && node test-senior-advice-engine.js"
+    "check": "node --check server.js && node --check db.js && node --check pdf.js && node --check adviceEngine.js && node --check knowledgebaseLoader.js && node --check migrationDecisionEngine.js && node --check seniorAdviceEngine/index.js && node test-senior-advice-engine.js && node test-knowledgebase-legal-frame-engine.js"
   },
   "engines": {
     "node": "20.x"

@@ -1896,16 +1896,18 @@ If the evidence remains consistent after review, the matter may progress to fina
 // structure instead of the former criteria-engine/report layout.
 function bmPathwayLabel(subclass, stream) {
   const s = cleanText(subclass || '');
-  const st = cleanText(stream || '').replace(/\s+Stream$/i, '').trim();
-  if (!st) return `Subclass ${s}`;
   const sc = String(s || '').replace(/[^0-9]/g, '');
+  let st = cleanText(stream || '').replace(/\s+Stream$/i, '').trim();
+  if (/registry-controlled pathway/i.test(st) && sc === '186') st = 'Labour Agreement';
+  if (/registry-controlled pathway/i.test(st)) st = 'Selected pathway';
+  if (!st) return `Subclass ${s}`;
   const family = v11VisaFamily(sc);
   const suffix = family === 'employer' ? ' Stream' : '';
   return `Subclass ${s} — ${st}${suffix}`;
 }
 
 function bmAgreementMatter(subclass, stream) {
-  return /186/.test(String(subclass || '')) && /labou?r agreement/i.test(String(stream || ''));
+  return /186/.test(String(subclass || '')) && (/labou?r agreement/i.test(String(stream || '')) || /registry-controlled pathway/i.test(String(stream || '')));
 }
 
 function bmWriteNumberedList(doc, items) {
@@ -1982,9 +1984,17 @@ function bmEvidenceRows(family) {
       { priority: 'Priority 6', category: 'Family members and document quality', documents: 'Family-member identity documents, relationship evidence, dependency evidence where relevant, certified translations, certified copies and final evidence index.' }
     ];
   }
+  if (family === 'partner') {
+    return [
+      { priority: 'Priority 1', category: 'Relationship and intention evidence', documents: 'Applicant and sponsor relationship statements, chronology of the relationship, evidence of contact and meetings, photographs, travel records, communication records, evidence of genuine intention to marry or live together where relevant, and independent supporting material.' },
+      { priority: 'Priority 2', category: 'Sponsor eligibility and prior history', documents: 'Sponsor citizenship, permanent residence or eligible New Zealand citizen evidence, sponsor identity evidence, prior sponsorship history, character material where required, and any evidence relevant to sponsorship limitations.' },
+      { priority: 'Priority 3', category: 'Legal capacity and personal status', documents: 'Passports, birth records where relevant, divorce/death certificates for any prior marriage, current location/status records, visa history, and documents confirming legal capacity to marry where relevant.' },
+      { priority: 'Priority 4', category: 'Public interest and document quality', documents: 'Health, character, PIC/SRC, prior refusal/cancellation, certified translation and document-integrity evidence for the applicant and relevant family members.' }
+    ];
+  }
   return [
-    { priority: 'Priority 1', category: 'Pathway evidence', documents: 'Documents proving the selected visa subclass, stream and any threshold prerequisite such as invitation, nomination, sponsorship, relationship, enrolment or activity approval.' },
-    { priority: 'Priority 2', category: 'Applicant eligibility', documents: 'Identity documents, visa history, current location/status, qualifications, employment history, English evidence and any subclass-specific eligibility material.' },
+    { priority: 'Priority 1', category: 'Pathway evidence', documents: 'Documents proving the selected subclass, stream and pathway-specific legal prerequisites identified in the knowledgebase legal frame.' },
+    { priority: 'Priority 2', category: 'Applicant eligibility', documents: 'Identity documents, visa history, current location/status and subclass-specific eligibility material required by the legal frame.' },
     { priority: 'Priority 3', category: 'Public interest and document quality', documents: 'Health, character, PIC/SRC, prior refusal/cancellation, certified translation and document-integrity evidence.' }
   ];
 }
@@ -2340,13 +2350,17 @@ function bmWriteFactsEvidenceStatus(doc, assessment, adviceBundle, facts, subcla
 
 function bmWriteLegalFrameworkApplied(doc, subclass, stream, family) {
   writeTitle(doc, '3. Legal framework applied', { gold: true });
+  const sc = String(subclass || '').replace(/[^0-9]/g, '');
+  const is300 = sc === '300';
   writePara(doc, family === 'employer'
-    ? 'The assessment should be controlled by the Subclass 186 Labour Agreement Stream requirements, Schedule 1 validity requirements, the relevant Schedule 2 criteria, the employer nomination framework, public-interest criteria, and the exact terms of the executed Labour Agreement. The Labour Agreement is central because it may define the permitted occupations, employer coverage, location restrictions, concessions, salary arrangements, ceilings and special conditions.'
-    : 'The assessment should be controlled by the selected subclass and stream, Schedule 1 validity requirements, relevant Schedule 2 criteria, public-interest criteria and any pathway-specific prerequisite such as sponsorship, nomination, invitation, relationship, enrolment or activity approval.', { size: 9.6 });
+    ? 'The assessment is controlled by the Subclass 186 Labour Agreement Stream requirements, Schedule 1 validity requirements, the relevant Schedule 2 grant criteria, the employer nomination framework, public-interest criteria, and the exact terms of the executed Labour Agreement. The Labour Agreement is central because it may define permitted occupations, employer coverage, location restrictions, concessions, salary arrangements, ceilings and special conditions.'
+    : is300
+      ? 'The assessment is controlled by the Subclass 300 Prospective Marriage requirements, Schedule 1 validity requirements, relevant Schedule 2 grant criteria, public-interest criteria, sponsor eligibility and relationship evidence. The central legal questions are whether the prospective marriage pathway is available, whether the parties have a genuine intention and legal capacity to marry, whether the sponsor position is supportable, and whether the public-interest position is clear.'
+      : 'The assessment is controlled by the selected subclass and stream, Schedule 1 validity requirements, relevant Schedule 2 grant criteria, public-interest criteria and the pathway-specific legal prerequisites identified from the knowledgebase legal frame.', { size: 9.6 });
   bmWriteCompactTable(doc, ['Control point', 'What must be established', 'Why it matters'], [
     ['Validity', 'The application can be validly made in the selected stream with the correct application settings and pathway linkage.', 'A validity defect can prevent the application from being properly considered.'],
-    [family === 'employer' ? 'Labour Agreement' : 'Pathway control', family === 'employer' ? 'The agreement is current, applies to the employer and role, permits the occupation and supports any concession relied upon.' : 'The pathway is legally available and supported by threshold evidence.', 'If this foundation is missing, the application strategy is not safe.'],
-    [family === 'employer' ? 'Nomination' : 'Applicant criteria', family === 'employer' ? 'The nomination is consistent with the agreement, employer evidence, occupation, salary, location and role.' : 'The applicant satisfies the required criteria for the selected subclass and stream.', 'The final advice must be based on verified criteria, not assumptions.'],
+    [family === 'employer' ? 'Labour Agreement' : is300 ? 'Prospective marriage pathway' : 'Pathway control', family === 'employer' ? 'The agreement is current, applies to the employer and role, permits the occupation and supports any concession relied upon.' : is300 ? 'The parties can support the prospective marriage pathway, including sponsor eligibility, intention and capacity to marry, and relationship evidence.' : 'The pathway is legally available and supported by threshold evidence.', 'If this foundation is missing, the application strategy is not safe.'],
+    [family === 'employer' ? 'Nomination' : is300 ? 'Relationship and sponsor evidence' : 'Applicant criteria', family === 'employer' ? 'The nomination is consistent with the agreement, employer evidence, occupation, salary, location and role.' : is300 ? 'The relationship history, future intention, legal capacity, sponsor status and supporting documents are consistent and credible.' : 'The applicant satisfies the required criteria for the selected subclass and stream.', 'The final advice must be based on verified criteria, not assumptions.'],
     ['Public interest', 'Health, character, integrity, visa history and family-member issues are clear or manageable.', 'Public-interest problems can still defeat an otherwise viable pathway.']
   ], [110, 235, 150]);
 }
@@ -2436,8 +2450,14 @@ function bmWritePublicInterestIntegrityFamily(doc, family) {
 
 function bmWriteGeneralPathwayAnalysis(doc, subclass, stream, criteria) {
   writeTitle(doc, '4. Pathway analysis', { gold: true });
-  writePara(doc, 'The selected pathway should be tested against the relevant legal criteria, original evidence and Departmental records. The advice remains preliminary until the file is converted into a lodgement-ready evidence brief.', { size: 9.6 });
-  ensureArray(criteria).slice(0, 8).forEach(c => writeBullet(doc, `${clientFriendlyCriterionLabel(c.criterion)}: ${v12CompactAction(c)}`));
+  writePara(doc, 'The following findings are drawn from the knowledgebase legal frame and the available intake facts. They remain preliminary until original evidence is reviewed, but they are not merely registry placeholders.', { size: 9.6 });
+  ensureArray(criteria).slice(0, 8).forEach(c => {
+    const issue = clientFriendlyCriterionLabel(c.criterion || c.label || c.heading);
+    const requirement = cleanText(c.legalRequirement || c.legislativeRequirement || c.requirement);
+    const finding = cleanText(c.factsApplied || c.professionalFinding || c.finding);
+    const consequence = cleanText(c.legalConsequence || c.legal_consequence);
+    writeBullet(doc, `${issue}: ${finding || requirement}${consequence ? ' Legal consequence: ' + consequence : ''}`);
+  });
 }
 
 function bmWriteRiskAssessment(doc, pathwayLabel, family) {
@@ -2491,7 +2511,10 @@ function buildAssessmentPdfBufferV10(assessment, adviceBundle) {
       const clientEmail = cleanText(assessment.client_email || deepPick(facts, ['clientEmail', 'client_email'], applicantEmail));
 
       let bundleForPdf = adviceBundle || {};
-      if ((!bundleForPdf.grantCriteriaFindings || !Array.isArray(bundleForPdf.grantCriteriaFindings)) && criteriaCoverageValidator) {
+      if (bundleForPdf && bundleForPdf.genericFallbackAllowed === false && !bundleForPdf.seniorAdviceModel && !Array.isArray(bundleForPdf.seniorCriteriaFindings)) {
+        throw new Error(`PDF blocked: senior knowledgebase legal-frame model is missing for Subclass ${cleanText(subclass)}.`);
+      }
+      if ((!bundleForPdf.grantCriteriaFindings || !Array.isArray(bundleForPdf.grantCriteriaFindings)) && criteriaCoverageValidator && bundleForPdf.genericFallbackAllowed !== false) {
         try {
           const registry = criteriaCoverageValidator.loadCriteriaRegistry(subclass);
           const registryResult = criteriaCoverageValidator.buildRegistryBackedFindings({

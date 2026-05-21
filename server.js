@@ -5923,6 +5923,11 @@ function pushRegistryPathway(out, value, sourceKey = '') {
     if (direct) pushRegistryPathway(out, direct, sourceKey);
     for (const [k, v] of Object.entries(value)) {
       const nk = normalisePathwayKey(k);
+      // When traversing a registry.streams/pathways object, the object key itself is
+      // the client-facing stream/pathway name (for example "Labour Agreement").
+      if (/(streams|pathways|routes|branches|visa_streams|assessment_streams)/i.test(String(sourceKey || '')) && k && !/^\d+$/.test(k)) {
+        pushRegistryPathway(out, k, sourceKey);
+      }
       if (/(stream|pathway|route|category|branch|visa_stream|assessment_stream)/i.test(k)) {
         if (typeof v === 'object') pushRegistryPathway(out, v, k);
         else pushRegistryPathway(out, v, k);
@@ -5992,6 +5997,11 @@ function registryDefaultPathwayLabel(subclass, registry, allowed) {
   if (allowed && allowed.length === 1) return allowed[0].label;
   const sc = String(subclass || '').replace(/\D/g, '');
   const titleText = JSON.stringify({ title: registry && (registry.title || registry.name || registry.description || (registry.metadata && registry.metadata.title)) }).toLowerCase();
+  if (sc === '186') {
+    const streams = Object.keys((registry && registry.streams) || {});
+    const labour = streams.find(k => /labou?r agreement/i.test(k));
+    if (labour) return labour;
+  }
   if (sc === '300' || /prospective\s+marriage/.test(titleText)) return 'Prospective Marriage';
   if (['309','820','801','100'].includes(sc) || /partner/.test(titleText)) return 'Partner';
   if (['866','785','790'].includes(sc) || /protection/.test(titleText)) return 'Protection';
