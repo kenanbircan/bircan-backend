@@ -6711,40 +6711,60 @@ async function runAdviceWorkerHttp(req, res) {
 app.post('/api/admin/run-advice-worker', asyncRoute(runAdviceWorkerHttp));
 app.get('/api/admin/run-advice-worker', asyncRoute(runAdviceWorkerHttp));
 
-app.post('/api/admin/requeue-advice', asyncRoute(async (req, res) => {
-  const assessmentId = String((req.body && (req.body.assessment_id || req.body.assessmentId)) || req.query.assessment_id || req.query.assessmentId || '').trim();
-  const stripeSessionId = String((req.body && (req.body.session_id || req.body.sessionId || req.body.stripe_session_id || req.body.stripeSessionId)) || req.query.session_id || req.query.sessionId || req.query.stripe_session_id || req.query.stripeSessionId || '').trim();
+async function requeueAdviceHttp(req, res) {
+  const body = req.body || {};
+  const assessmentId = String(body.assessment_id || body.assessmentId || req.query.assessment_id || req.query.assessmentId || '').trim();
+  const stripeSessionId = String(body.session_id || body.sessionId || body.stripe_session_id || body.stripeSessionId || req.query.session_id || req.query.sessionId || req.query.stripe_session_id || req.query.stripeSessionId || '').trim();
+
   let id = assessmentId;
   if (!id && stripeSessionId) {
-    const found = await query(`SELECT id FROM assessments WHERE stripe_session_id=$1 ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST LIMIT 1`, [stripeSessionId]);
+    // Fast lookup only. Do not run PDF generation inside this browser/admin request.
+    const found = await query(`
+      SELECT id
+      FROM assessments
+      WHERE stripe_session_id=$1
+      ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST
+      LIMIT 1`, [stripeSessionId]);
     id = found.rows[0] && found.rows[0].id;
   }
-  if (!id) return res.status(400).json({ ok: false, code: 'ASSESSMENT_ID_REQUIRED', error: 'assessment_id or session_id is required to requeue advice.' });
-  const record = await query(`SELECT id, payment_status, status, pdf_bytes FROM assessments WHERE id=$1 LIMIT 1`, [id]);
-  if (!record.rows[0]) return res.status(404).json({ ok: false, code: 'ASSESSMENT_NOT_FOUND', error: 'Assessment was not found.' });
-  if (String(record.rows[0].payment_status || '').toLowerCase() !== 'paid') return res.status(409).json({ ok: false, code: 'PAYMENT_NOT_PAID', error: 'Advice generation can only be requeued for paid assessments.' });
-  if (hasIssuedPdfBytes(record.rows[0].pdf_bytes)) return res.json({ ok: true, requeued: false, status: 'pdf_ready', assessmentId: id, message: 'Assessment already has an issued PDF.' });
-  await createPaidAdviceJob({ assessmentId: id, runAfter: null, resetFailure: true });
-  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit: 1 });
-  res.json({ ok: true, requeued: true, assessmentId: id, worker: 'universal-paid-advice-pipeline-v2-nonblocking-coverage-gate', results });
-}));
-app.get('/api/admin/requeue-advice', asyncRoute(async (req, res) => {
-  const assessmentId = String(req.query.assessment_id || req.query.assessmentId || '').trim();
-  const stripeSessionId = String(req.query.session_id || req.query.sessionId || req.query.stripe_session_id || req.query.stripeSessionId || '').trim();
-  let id = assessmentId;
-  if (!id && stripeSessionId) {
-    const found = await query(`SELECT id FROM assessments WHERE stripe_session_id=$1 ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST LIMIT 1`, [stripeSessionId]);
-    id = found.rows[0] && found.rows[0].id;
+
+  if (!id) {
+    return res.status(400).json({ ok: false, code: 'ASSESSMENT_ID_REQUIRED', error: 'assessment_id or session_id is required to requeue advice.' });
   }
-  if (!id) return res.status(400).json({ ok: false, code: 'ASSESSMENT_ID_REQUIRED', error: 'assessment_id or session_id is required to requeue advice.' });
-  const record = await query(`SELECT id, payment_status, status, pdf_bytes FROM assessments WHERE id=$1 LIMIT 1`, [id]);
-  if (!record.rows[0]) return res.status(404).json({ ok: false, code: 'ASSESSMENT_NOT_FOUND', error: 'Assessment was not found.' });
-  if (String(record.rows[0].payment_status || '').toLowerCase() !== 'paid') return res.status(409).json({ ok: false, code: 'PAYMENT_NOT_PAID', error: 'Advice generation can only be requeued for paid assessments.' });
-  if (hasIssuedPdfBytes(record.rows[0].pdf_bytes)) return res.json({ ok: true, requeued: false, status: 'pdf_ready', assessmentId: id, message: 'Assessment already has an issued PDF.' });
+
+  const record = await query(`
+    SELECT id, payment_status, status,
+           CASE WHEN pdf_bytes IS NULL THEN 0 ELSE octet_length(pdf_bytes) END AS pdf_size
+    FROM assessments
+    WHERE id=$1
+    LIMIT 1`, [id]);
+
+  const row = record.rows[0];
+  if (!row) return res.status(404).json({ ok: false, code: 'ASSESSMENT_NOT_FOUND', error: 'Assessment was not found.' });
+  if (String(row.payment_status || '').toLowerCase() !== 'paid') {
+    return res.status(409).json({ ok: false, code: 'PAYMENT_NOT_PAID', error: 'Advice generation can only be requeued for paid assessments.' });
+  }
+  if (Number(row.pdf_size || 0) > 1024) {
+    return res.json({ ok: true, requeued: false, status: 'pdf_ready', assessmentId: id, message: 'Assessment already has an issued PDF.' });
+  }
+
   await createPaidAdviceJob({ assessmentId: id, runAfter: null, resetFailure: true });
-  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit: 1 });
-  res.json({ ok: true, requeued: true, assessmentId: id, worker: 'universal-paid-advice-pipeline-v2-nonblocking-coverage-gate', results });
-}));
+
+  // Critical fix: return immediately. PDF generation must be run by /api/admin/run-advice-worker
+  // or by the background worker, otherwise Render/browser requests can hold DB connections and timeout.
+  return res.json({
+    ok: true,
+    requeued: true,
+    assessmentId: id,
+    status: 'pdf_queued',
+    workerRequired: true,
+    workerUrl: '/api/admin/run-advice-worker?limit=1',
+    message: 'Advice job has been requeued. Run the advice worker separately, then refresh the dashboard.'
+  });
+}
+
+app.post('/api/admin/requeue-advice', asyncRoute(requeueAdviceHttp));
+app.get('/api/admin/requeue-advice', asyncRoute(requeueAdviceHttp));
 
 
 function dashboardServiceType(value) {
