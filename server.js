@@ -5884,6 +5884,84 @@ function buildCriterionFindingFromProfile(profile, context) {
 // the controlling legal source for every subclass before a client PDF is issued.
 const REGISTRY_CONTROLLED_ADVICE_PATCH = 'registry-knowledgebase-controls-all-visa-pdf-v1';
 
+/**
+ * Client-facing advice bundle hardening.
+ * Raw criteriaRegistry findings are an internal audit/checklist only. They must
+ * not be assigned to PDF-facing fields, because registry rows may contain
+ * engine labels such as "Grant Criterion Control" or generic actions such as
+ * "Map the original evidence to the clause...".
+ */
+function bmArrayWithItems(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function bmSeniorFindingsFromBundle(adviceBundle) {
+  const candidates = [
+    adviceBundle && adviceBundle.seniorCriteriaFindings,
+    adviceBundle && adviceBundle.seniorGrantCriteriaFindings,
+    adviceBundle && adviceBundle.criteriaFindings,
+    adviceBundle && adviceBundle.grantCriteriaFindings,
+    adviceBundle && adviceBundle.seniorAdviceModel && adviceBundle.seniorAdviceModel.criteriaFindings,
+    adviceBundle && adviceBundle.seniorAdviceModel && adviceBundle.seniorAdviceModel.grantCriteriaFindings,
+    adviceBundle && adviceBundle.seniorAdviceModel && adviceBundle.seniorAdviceModel.seniorCriteriaFindings,
+    adviceBundle && adviceBundle.advice && adviceBundle.advice.seniorCriteriaFindings,
+    adviceBundle && adviceBundle.advice && adviceBundle.advice.seniorAdviceModel && adviceBundle.advice.seniorAdviceModel.criteriaFindings,
+    adviceBundle && adviceBundle.advice && adviceBundle.advice.seniorAdviceModel && adviceBundle.advice.seniorAdviceModel.grantCriteriaFindings
+  ];
+  return candidates.find(bmArrayWithItems) || [];
+}
+
+function bmMoveRegistryFindingsToInternalAuditOnly(adviceBundle, registryResult, extra = {}) {
+  adviceBundle.internalLegalAudit = adviceBundle.internalLegalAudit || { auditGeneratedAt: new Date().toISOString() };
+  adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult && registryResult.audit;
+  adviceBundle.internalLegalAudit.criteriaRegistryFindings = registryResult && Array.isArray(registryResult.findings)
+    ? registryResult.findings
+    : [];
+  adviceBundle.internalLegalAudit.rawRegistryFindingsClientFacing = false;
+  adviceBundle.internalLegalAudit.registryFindingsUse = 'internal-audit-only';
+  adviceBundle.internalLegalAudit.patch = 'server-registry-findings-internal-only-v1';
+  Object.assign(adviceBundle.internalLegalAudit, extra || {});
+  return adviceBundle.internalLegalAudit.criteriaRegistryFindings;
+}
+
+function bmPromoteSeniorFindingsForClientPdf(adviceBundle, registryResult, context = {}) {
+  adviceBundle.advice = adviceBundle.advice || {};
+  const seniorFindings = bmSeniorFindingsFromBundle(adviceBundle);
+
+  if (!bmArrayWithItems(seniorFindings)) {
+    const subclass = context.subclass || adviceBundle.subclass || adviceBundle.advice.subclass || '';
+    throw Object.assign(
+      new Error(`Advice-grade PDF blocked: senior advice model did not produce client-facing criteria findings for Subclass ${subclass}. Registry findings were kept internal and cannot be rendered as advice.`),
+      { statusCode: 500, code: 'SENIOR_CRITERIA_FINDINGS_MISSING' }
+    );
+  }
+
+  bmMoveRegistryFindingsToInternalAuditOnly(adviceBundle, registryResult, context);
+
+  // PDF-facing fields receive senior findings only.
+  adviceBundle.seniorCriteriaFindings = seniorFindings;
+  adviceBundle.clientFacingCriteriaFindings = seniorFindings;
+  adviceBundle.grantCriteriaFindings = seniorFindings;
+  adviceBundle.criteriaRegistryFindings = seniorFindings;
+  adviceBundle.fullCriteriaRegistryMatrix = seniorFindings;
+  adviceBundle.fullCriteriaRegistryMatrixCount = seniorFindings.length;
+
+  adviceBundle.advice.seniorCriteriaFindings = seniorFindings;
+  adviceBundle.advice.grantCriteriaFindings = seniorFindings;
+  adviceBundle.advice.criterion_findings = seniorFindings;
+  adviceBundle.advice.fullCriteriaRegistryMatrix = seniorFindings;
+
+  adviceBundle.rawRegistryFindingsClientFacing = false;
+  adviceBundle.registryFindingsMovedToInternalAudit = true;
+  adviceBundle.genericFallbackAllowed = false;
+  adviceBundle.subclassSpecificAdviceRequired = true;
+  adviceBundle.knowledgebaseFirstAdvice = true;
+
+  return seniorFindings;
+}
+
+
+
 function normalisePathwayKey(value) {
   return String(value || '')
     .trim()
@@ -6077,29 +6155,32 @@ function enforceRegistryKnowledgebaseAdviceControls({ assessment, adviceBundle, 
   adviceBundle.advice.pathway = pathwayControl.label;
   adviceBundle.advice.title = `Professional Migration Advice – Subclass ${subclass}${pathwayControl.label ? ' — ' + pathwayControl.label : ''}`;
   adviceBundle.advice.registryControlledPathway = pathwayControl;
-  adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
-  adviceBundle.advice.criterion_findings = registryResult.findings;
-  adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
   adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
 
-  // Senior advice engine: replace raw registry placeholder findings with
-  // fact-to-law, consequence-based findings for every registry subclass.
+  // Raw registry findings are audit material only. They are deliberately not
+  // assigned to client-facing advice/PDF fields.
+  bmMoveRegistryFindingsToInternalAuditOnly(adviceBundle, registryResult, {
+    registryControlledPathway: pathwayControl,
+    genericFallbackAllowed: false,
+    patch: REGISTRY_CONTROLLED_ADVICE_PATCH
+  });
+
+  // Senior advice engine: produce fact-to-law, consequence-based findings.
   attachSeniorAdviceModel(adviceBundle, assessment, registryResult, registry);
 
-  adviceBundle.fullCriteriaRegistryMatrix = adviceBundle.seniorCriteriaFindings || adviceBundle.fullCriteriaRegistryMatrix || registryResult.findings;
-  adviceBundle.fullCriteriaRegistryMatrixCount = adviceBundle.fullCriteriaRegistryMatrix.length;
+  // Promote only senior findings to PDF-facing fields. If the senior model is
+  // missing, block PDF generation instead of rendering raw registry rows.
+  bmPromoteSeniorFindingsForClientPdf(adviceBundle, registryResult, {
+    subclass,
+    registryControlledPathway: pathwayControl,
+    genericFallbackAllowed: false,
+    patch: REGISTRY_CONTROLLED_ADVICE_PATCH
+  });
+
   adviceBundle.visibleCriteriaMatrixRequired = true;
-  adviceBundle.grantCriteriaFindings = adviceBundle.seniorCriteriaFindings || registryResult.findings;
-  adviceBundle.criteriaRegistryFindings = adviceBundle.seniorCriteriaFindings || registryResult.findings;
   adviceBundle.criteriaRegistryAudit = registryResult.audit;
   adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
   adviceBundle.registryCoverageRate = registryResult.audit && registryResult.audit.registryCoverageRate;
-
-  adviceBundle.internalLegalAudit = adviceBundle.internalLegalAudit || { auditGeneratedAt: new Date().toISOString() };
-  adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
-  adviceBundle.internalLegalAudit.registryControlledPathway = pathwayControl;
-  adviceBundle.internalLegalAudit.genericFallbackAllowed = false;
-  adviceBundle.internalLegalAudit.patch = REGISTRY_CONTROLLED_ADVICE_PATCH;
 
   return adviceBundle;
 }
@@ -6421,19 +6502,29 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
       registryResult.audit.sourceSupportWarningMessage = 'One or more registry criteria requested additional source-category support. This is recorded for agent audit but does not block issue of the preliminary advice letter.';
     }
 
-    adviceBundle.fullCriteriaRegistryMatrix = registryResult.findings;
-    adviceBundle.fullCriteriaRegistryMatrixCount = registryResult.findings.length;
+    // Raw registry findings are internal audit material only. Do not assign them
+    // to PDF-facing advice fields.
+    adviceBundle.advice = adviceBundle.advice || {};
+    adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
+    bmMoveRegistryFindingsToInternalAuditOnly(adviceBundle, registryResult, {
+      subclass: registrySubclass,
+      genericFallbackAllowed: false,
+      patch: 'server-generateAssessmentPdfNow-registry-internal-only-v1'
+    });
+
+    // Build/promote senior findings for the actual PDF model. If this does not
+    // produce client-facing findings, block rather than issuing a registry report.
+    attachSeniorAdviceModel(adviceBundle, assessmentForAdvice, registryResult, registry);
+    bmPromoteSeniorFindingsForClientPdf(adviceBundle, registryResult, {
+      subclass: registrySubclass,
+      genericFallbackAllowed: false,
+      patch: 'server-generateAssessmentPdfNow-senior-findings-only-v1'
+    });
+
     adviceBundle.visibleCriteriaMatrixRequired = true;
-    adviceBundle.grantCriteriaFindings = registryResult.findings;
     adviceBundle.criteriaRegistryAudit = registryResult.audit;
     adviceBundle.grantCriteriaCoverageAudit = registryResult.audit;
     adviceBundle.registryCoverageRate = registryResult.audit.registryCoverageRate;
-    adviceBundle.advice = adviceBundle.advice || {};
-    adviceBundle.advice.grantCriteriaFindings = registryResult.findings;
-    adviceBundle.advice.criterion_findings = registryResult.findings;
-    adviceBundle.advice.fullCriteriaRegistryMatrix = registryResult.findings;
-    adviceBundle.advice.criteriaRegistryAudit = registryResult.audit;
-    adviceBundle.internalLegalAudit.criteriaRegistryAudit = registryResult.audit;
 
     try {
       const auditDir = process.env.LEGAL_AUDIT_DIR || path.join(process.cwd(), 'legal-audits');
