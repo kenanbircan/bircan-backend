@@ -2060,7 +2060,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.12-worker-timeout-background-v5-testing',
+    version: '12.2.13-fast-payment-finalise-v6-testing',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -5120,6 +5120,279 @@ app.post('/api/citizenship/start-free', asyncRoute(handleFreeCitizenshipExamStar
 app.post('/api/citizenship/submit-exam', asyncRoute(handleFreeCitizenshipExamSubmit));
 
 
+
+// ---- v6 permanent fast payment finalisation: return dashboard identity before any slow worker/audit ----
+const BIRCAN_PAYMENT_FINALISE_FAST_PATCH = 'payment-finalise-fast-dashboard-token-v6';
+
+function promiseTimeout(promise, ms, label = 'operation') {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`${label} timed out after ${ms}ms`), { code: 'TIMEOUT' })), ms);
+    })
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function stripeSessionIdFromRequest(req) {
+  return String(
+    (req.body && (req.body.sessionId || req.body.session_id || req.body.checkoutSessionId || req.body.checkout_session_id)) ||
+    (req.query && (req.query.session_id || req.query.sessionId || req.query.checkoutSessionId || req.query.checkout_session_id)) ||
+    ''
+  ).trim();
+}
+
+async function lookupPaidMatterByStripeSession(sessionId) {
+  if (!sessionId) return null;
+  const { rows } = await query(
+    `SELECT a.id AS assessment_id,
+            a.client_id,
+            COALESCE(NULLIF(a.client_email,''), NULLIF(a.applicant_email,'')) AS client_email,
+            a.selected_plan,
+            a.active_plan,
+            a.status,
+            a.payment_status,
+            a.stripe_session_id,
+            a.pdf_bytes IS NOT NULL AS has_pdf,
+            a.pdf_generated_at,
+            ss.id AS service_session_id
+     FROM assessments a
+     LEFT JOIN LATERAL (
+       SELECT id
+       FROM service_sessions
+       WHERE service_type='visa_assessment'
+         AND (stripe_session_id=$1 OR service_ref=a.id)
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+       LIMIT 1
+     ) ss ON true
+     WHERE a.stripe_session_id=$1
+     ORDER BY a.updated_at DESC NULLS LAST, a.created_at DESC NULLS LAST
+     LIMIT 1`,
+    [sessionId]
+  );
+  return rows[0] || null;
+}
+
+async function findClientForPaidMatter(email, clientId = null) {
+  if (clientId) {
+    const byId = (await query('SELECT id, email, name FROM clients WHERE id=$1 LIMIT 1', [clientId])).rows[0];
+    if (byId) return byId;
+  }
+  const e = normaliseEmail(email);
+  if (!e) return null;
+  return (await query('SELECT id, email, name FROM clients WHERE lower(email)=lower($1) LIMIT 1', [e])).rows[0] || null;
+}
+
+function paidMatterRedirectUrl({ sessionId, assessmentId, serviceSessionId }) {
+  const params = new URLSearchParams();
+  params.set('payment', 'verified');
+  if (assessmentId) params.set('assessment_id', assessmentId);
+  if (serviceSessionId) params.set('service_session_id', serviceSessionId);
+  if (sessionId) params.set('session_id', sessionId);
+  return `${APP_BASE_URL}/account-dashboard.html?${params.toString()}`;
+}
+
+function sendFastDashboardFinaliseResponse(res, { sessionId, assessmentId, serviceSessionId, plan, client, paid = true, source = 'database' }) {
+  if (client) setSessionCookie(res, sign(client));
+  const dashboardAccessToken = client ? signDashboardAccessToken(client) : null;
+  return res.json({
+    ok: true,
+    fastFinalise: true,
+    patch: BIRCAN_PAYMENT_FINALISE_FAST_PATCH,
+    status: paid ? 'paid' : 'pending',
+    paid,
+    paymentLinked: paid,
+    service: 'visa_assessment',
+    sessionId,
+    stripeSessionId: sessionId,
+    assessmentId: assessmentId || null,
+    serviceSessionId: serviceSessionId || null,
+    plan: plan || null,
+    pdfReady: false,
+    adviceQueued: true,
+    client: client ? { id: client.id, email: client.email, name: client.name || null } : null,
+    clientEmail: client ? client.email : null,
+    dashboardAccessToken,
+    accessToken: dashboardAccessToken,
+    redirectUrl: paidMatterRedirectUrl({ sessionId, assessmentId, serviceSessionId }),
+    source
+  });
+}
+
+async function fastAttachPaidVisaSession(session) {
+  const md = (session && session.metadata) || {};
+  const assessmentId = String(md.assessment_id || md.service_ref || session.client_reference_id || '').trim();
+  const serviceSessionId = String(md.service_session_id || '').trim();
+  const email = normaliseEmail(md.client_email || session.customer_email || '');
+  if (!assessmentId) throw Object.assign(new Error('Stripe session is missing assessment_id metadata.'), { statusCode: 400 });
+  if (!email) throw Object.assign(new Error('Stripe session is missing client email.'), { statusCode: 400 });
+
+  const paid = !session.payment_status || session.payment_status === 'paid' || session.status === 'complete';
+  if (!paid) throw Object.assign(new Error(`Stripe session is not paid yet. Current status: ${session.payment_status || session.status || 'unknown'}`), { statusCode: 409 });
+
+  const paidPlan = safePlan(md.plan || 'instant');
+  const client = await findClientForPaidMatter(email);
+
+  const updated = await tx(async (db) => {
+    const assessmentRow = (await db.query('SELECT * FROM assessments WHERE id=$1 FOR UPDATE', [assessmentId])).rows[0];
+    if (!assessmentRow) throw Object.assign(new Error(`Assessment not found for Stripe session ${session.id}`), { statusCode: 404 });
+
+    const nextStatus = assessmentRow.pdf_bytes ? 'pdf_ready' : (isInstantPlan(paidPlan) ? 'pdf_queued' : 'release_scheduled');
+    const updatedAssessment = (await db.query(
+      `UPDATE assessments
+       SET client_id=COALESCE($1, client_id),
+           client_email=$2,
+           applicant_email=COALESCE(NULLIF(applicant_email,''), NULLIF(client_email,''), $2),
+           status=$3,
+           payment_status='paid',
+           stripe_session_id=$4,
+           stripe_payment_intent=$5,
+           amount_cents=$6,
+           currency=$7,
+           selected_plan=$8,
+           active_plan=$8,
+           release_at=${releaseIntervalSqlForPlan(paidPlan)},
+           generation_error=NULL,
+           updated_at=now()
+       WHERE id=$9
+       RETURNING id, client_id, client_email, selected_plan, active_plan, status, payment_status, pdf_bytes IS NOT NULL AS has_pdf`,
+      [
+        client && client.id ? client.id : null,
+        email,
+        nextStatus,
+        session.id,
+        session.payment_intent || null,
+        session.amount_total || null,
+        session.currency || 'aud',
+        paidPlan,
+        assessmentId
+      ]
+    )).rows[0];
+
+    await db.query(
+      `UPDATE service_sessions
+       SET client_id=COALESCE($1, client_id),
+           client_email=$2,
+           status='paid',
+           payment_status='paid',
+           stripe_session_id=$3,
+           selected_plan=COALESCE(selected_plan, $4),
+           metadata=COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+           updated_at=now()
+       WHERE id=$6
+          OR (service_type='visa_assessment' AND service_ref=$7)
+          OR stripe_session_id=$3`,
+      [
+        client && client.id ? client.id : null,
+        email,
+        session.id,
+        paidPlan,
+        JSON.stringify({
+          finalise_fast_patch: BIRCAN_PAYMENT_FINALISE_FAST_PATCH,
+          finalise_fast_at: new Date().toISOString(),
+          stripe_session_id: session.id,
+          assessment_id: assessmentId,
+          service_session_id: serviceSessionId || null,
+          client_email: email,
+          plan: paidPlan
+        }),
+        serviceSessionId || null,
+        assessmentId
+      ]
+    );
+
+    if (!updatedAssessment.has_pdf) {
+      await db.query(
+        `INSERT INTO pdf_jobs (assessment_id, status, run_after)
+         VALUES ($1,'queued',(SELECT COALESCE(release_at, now()) FROM assessments WHERE id=$1))
+         ON CONFLICT (assessment_id) DO UPDATE SET
+           status='queued',
+           run_after=(SELECT COALESCE(release_at, now()) FROM assessments WHERE id=$1),
+           locked_at=NULL,
+           last_error=NULL,
+           updated_at=now()`,
+        [assessmentId]
+      );
+    }
+
+    return updatedAssessment;
+  });
+
+  // Payment audit and advice worker are intentionally background-only.
+  setImmediate(() => {
+    recordPaymentAuditSafe(assessmentId, email, session).catch(err => {
+      console.error('Background payment audit failed:', err && err.message ? err.message : err);
+    });
+    createPaidAdviceJob({ assessmentId, runAfter: null, resetFailure: true }).then(() => {
+      return runDueAdviceJobs({ generateAssessmentPdfNow, limit: 1, assessmentId });
+    }).catch(err => {
+      console.error('Background advice queue/worker kick failed:', err && err.message ? err.message : err);
+    });
+  });
+
+  return {
+    attached: true,
+    type: 'visa_assessment',
+    assessmentId,
+    serviceSessionId,
+    email,
+    client,
+    plan: paidPlan,
+    assessment: updated
+  };
+}
+
+async function finaliseStripePaymentFast(req, res) {
+  if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
+
+  const sessionId = stripeSessionIdFromRequest(req);
+  if (!sessionId || String(sessionId).includes('{CHECKOUT_SESSION_ID}')) {
+    return res.status(400).json({ ok: false, error: 'Valid Stripe session_id is required.' });
+  }
+
+  // First, if webhook/previous finalise already attached the paid matter, return immediately.
+  const existing = await lookupPaidMatterByStripeSession(sessionId).catch(() => null);
+  if (existing && existing.payment_status === 'paid') {
+    const client = await findClientForPaidMatter(existing.client_email, existing.client_id);
+    return sendFastDashboardFinaliseResponse(res, {
+      sessionId,
+      assessmentId: existing.assessment_id,
+      serviceSessionId: existing.service_session_id,
+      plan: existing.active_plan || existing.selected_plan,
+      client,
+      source: 'existing_paid_database_record'
+    });
+  }
+
+  let session = await promiseTimeout(
+    stripe.checkout.sessions.retrieve(sessionId),
+    Number(process.env.STRIPE_FINALISE_TIMEOUT_MS || 8000),
+    'Stripe checkout session retrieval'
+  );
+
+  session = await normalisePaidStripeSessionForAttachment(session);
+  const md = session.metadata || {};
+  const serviceType = normaliseServiceType(md.service_type || '');
+
+  if (serviceType === 'visa_assessment' || md.assessment_id || /^sub_/.test(String(session.client_reference_id || ''))) {
+    const result = await fastAttachPaidVisaSession(session);
+    return sendFastDashboardFinaliseResponse(res, {
+      sessionId,
+      assessmentId: result.assessmentId,
+      serviceSessionId: result.serviceSessionId,
+      plan: result.plan,
+      client: result.client,
+      source: 'fast_stripe_verified_attach'
+    });
+  }
+
+  // Non-visa services keep existing behaviour.
+  return finaliseStripePayment(req, res);
+}
+
+
 async function finaliseStripePayment(req, res) {
   if (!stripe) return res.status(500).json({ ok: false, error: 'Stripe is not configured.' });
 
@@ -5166,12 +5439,12 @@ async function finaliseStripePayment(req, res) {
 }
 
 // Aliases used by payment-complete/checkout return pages.
-app.post('/api/payments/finalise-return', asyncRoute(finaliseStripePayment));
-app.get('/api/payments/finalise-return', asyncRoute(finaliseStripePayment));
-app.post('/api/payments/finalise', asyncRoute(finaliseStripePayment));
-app.post('/api/payment/finalise', asyncRoute(finaliseStripePayment));
-app.post('/api/payments/finalize', asyncRoute(finaliseStripePayment));
-app.get('/api/payments/finalise', asyncRoute(finaliseStripePayment));
+app.post('/api/payments/finalise-return', asyncRoute(finaliseStripePaymentFast));
+app.get('/api/payments/finalise-return', asyncRoute(finaliseStripePaymentFast));
+app.post('/api/payments/finalise', asyncRoute(finaliseStripePaymentFast));
+app.post('/api/payment/finalise', asyncRoute(finaliseStripePaymentFast));
+app.post('/api/payments/finalize', asyncRoute(finaliseStripePaymentFast));
+app.get('/api/payments/finalise', asyncRoute(finaliseStripePaymentFast));
 
 async function generatePdfResponse(req, res, assessmentId) {
   const result = await generateAssessmentPdfNow(assessmentId, req.client.email, { force: Boolean(req.body && (req.body.force || req.body.regenerate || req.body.clearExistingPdf)) });
