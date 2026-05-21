@@ -42,6 +42,11 @@ const decisionEngineModule = require('./migrationDecisionEngine');
 const { attachPathwayComparisonToAdviceBundle, compareMigrationPathways } = require('./migrationPathwayComparator');
 const { installClientJourneyRoutes, ensureClientJourneySchema } = require('./clientJourneyEngine');
 const { attachSeniorAdviceModel } = require('./seniorAdviceEngine');
+const { createPaidAdviceJob, runOneAdviceJob, runDueAdviceJobs } = require('./advice/adviceJobRunner');
+const { normaliseAssessment } = require('./advice/intakeNormalizer');
+const { loadSubclassRegistry, validateAssessmentPathway } = require('./advice/criteriaRegistryService');
+const { runEligibilityEngine } = require('./advice/eligibilityEngine');
+const { buildAdviceLetter } = require('./advice/adviceBuilder');
 
 const app = express();
 app.use(hardening.requestIdMiddleware);
@@ -4445,13 +4450,21 @@ async function attachPaidSession(session, options = {}) {
   let pdfResult = null;
   const paidPlanForGeneration = safePlan((session.metadata || {}).plan || 'instant');
   if (options.triggerGeneration && isInstantPlan(paidPlanForGeneration)) {
-    if (options.waitForPdf) {
+    await createPaidAdviceJob({ assessmentId, runAfter: null, resetFailure: true }).catch(err => {
+      console.error('Advice job queue failed:', err && err.message ? err.message : err);
+    });
+
+    // Production rule: payment finalisation must not block on legal advice/PDF rendering.
+    // Only enable the old inline wait for local debugging via ALLOW_INLINE_ADVICE_GENERATION=true.
+    if (options.waitForPdf && String(process.env.ALLOW_INLINE_ADVICE_GENERATION || 'false').toLowerCase() === 'true') {
       pdfResult = await generateAssessmentPdfNow(assessmentId, email);
     } else {
-      setImmediate(() => generateAssessmentPdfNow(assessmentId).catch(err => console.error('Immediate PDF generation failed:', err.message)));
+      setImmediate(() => runDueAdviceJobs({ generateAssessmentPdfNow, limit: 1 }).catch(err => {
+        console.error('Advice worker kick failed:', err && err.message ? err.message : err);
+      }));
     }
   }
-  return { attached: true, type: 'visa_assessment', assessmentId, plan: paidPlanForGeneration, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
+  return { attached: true, type: 'visa_assessment', assessmentId, plan: paidPlanForGeneration, adviceQueued: true, pdfReady: Boolean(pdfResult && pdfResult.has_pdf !== false), pdf: pdfResult, paymentAudit };
 }
 
 app.post('/api/assessment/verify-payment', asyncRoute(async (req, res) => {
@@ -6487,6 +6500,21 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     throw new Error(msg);
   }
 
+  // Universal paid-advice pipeline gate: normalise intake, load subclass registry,
+  // validate pathway/stream, and produce an eligibility/risk finding object before
+  // the legacy renderer is allowed to build the final PDF. This keeps legal logic
+  // outside the dashboard/payment routes and makes failures deterministic.
+  const normalisedIntake = normaliseAssessment(assessment);
+  const subclassRegistry = loadSubclassRegistry(normalisedIntake.subclass);
+  validateAssessmentPathway(normalisedIntake, subclassRegistry);
+  const eligibilityFindings = runEligibilityEngine(normalisedIntake, subclassRegistry);
+  const universalAdviceObject = buildAdviceLetter({
+    assessment: normalisedIntake,
+    registry: subclassRegistry,
+    findings: eligibilityFindings
+  });
+  assessment.universalAdvicePipeline = universalAdviceObject;
+
   await query(
     `UPDATE assessments
      SET status='pdf_generating',
@@ -6659,35 +6687,19 @@ function toPublicAssessment(a) {
 }
 
 async function runOnePdfJob() {
-  const job = await tx(async (client) => {
-    const { rows } = await client.query(
-      `SELECT * FROM pdf_jobs
-       WHERE status='queued' AND run_after <= now()
-       ORDER BY created_at ASC
-       FOR UPDATE SKIP LOCKED
-       LIMIT 1`
-    );
-    if (!rows[0]) return null;
-    await client.query(`UPDATE pdf_jobs SET status='processing', locked_at=now(), attempts=attempts+1, updated_at=now() WHERE id=$1`, [rows[0].id]);
-    return rows[0];
-  });
-  if (!job) return false;
-  try {
-    await generateAssessmentPdfNow(job.assessment_id);
-  } catch (err) {
-    const nextAttempts = Number(job.attempts || 0) + 1;
-    const retry = nextAttempts < 3;
-    await query(
-      `UPDATE pdf_jobs SET status=$1, last_error=$2, run_after=now() + interval '2 minutes', updated_at=now() WHERE id=$3`,
-      [retry ? 'queued' : 'failed', err.message, job.id]
-    );
-  }
-  return true;
+  const result = await runOneAdviceJob({ generateAssessmentPdfNow });
+  return Boolean(result && result.ran);
 }
 
 app.post('/api/admin/run-pdf-worker-once', asyncRoute(async (_req, res) => {
   const ran = await runOnePdfJob();
   res.json({ ok: true, ran });
+}));
+
+app.post('/api/admin/run-advice-worker', asyncRoute(async (req, res) => {
+  const limit = Math.max(1, Math.min(10, Number((req.body && req.body.limit) || req.query.limit || 1)));
+  const results = await runDueAdviceJobs({ generateAssessmentPdfNow, limit });
+  res.json({ ok: true, worker: 'universal-paid-advice-pipeline-v1', results });
 }));
 
 
@@ -7263,21 +7275,7 @@ function scheduleDashboardV2PdfGeneration(services, email) {
   setImmediate(async () => {
     for (const service of targets) {
       try {
-        await query(
-          `INSERT INTO pdf_jobs (assessment_id, status, run_after)
-           VALUES ($1,'queued',now())
-           ON CONFLICT (assessment_id) DO UPDATE
-             SET status=CASE WHEN pdf_jobs.status='failed' THEN pdf_jobs.status ELSE 'queued' END, run_after=now(), locked_at=NULL, updated_at=now()`,
-          [service.id]
-        );
-        await query(
-          `UPDATE assessments
-           SET status=CASE WHEN status IN ('pdf_ready','advice_ready') THEN status ELSE 'pdf_queued' END,
-               generation_error=generation_error,
-               updated_at=now()
-           WHERE id=$1 AND payment_status='paid' AND (pdf_bytes IS NULL OR octet_length(pdf_bytes) <= 1024)`,
-          [service.id]
-        ).catch(() => null);
+        await createPaidAdviceJob({ assessmentId: service.id, runAfter: null, resetFailure: false });
       } catch (err) {
         console.error('Dashboard v2 PDF queue failed:', service.id, err && err.message ? err.message : err);
       }
