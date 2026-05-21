@@ -90,6 +90,145 @@ function findValue(flat, patterns = []) {
   return '';
 }
 
+
+function normaliseToken(value) {
+  return String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+function parseNumber(value) {
+  const m = String(value == null ? '' : value).match(/-?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+
+function findAnyValue(flat, patterns = []) {
+  const entries = Object.entries(flat || {});
+  const hits = [];
+  for (const pattern of patterns) {
+    const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
+    for (const [key, value] of entries) {
+      if (re.test(key) && value !== undefined && value !== null && String(value).trim() !== '') hits.push([key, value]);
+    }
+  }
+  return hits;
+}
+
+function extractAge(flat, assessment = {}) {
+  const direct = pick(
+    assessment.age,
+    assessment.applicant_age,
+    assessment.applicantAge,
+    findValue(flat, [/\bage\b/i, /applicant.*age/i])
+  );
+  let age = parseNumber(direct);
+  if (Number.isFinite(age) && age > 0 && age < 120) return age;
+
+  const dob = pick(
+    assessment.date_of_birth,
+    assessment.dateOfBirth,
+    findValue(flat, [/date.*birth/i, /dob/i])
+  );
+  if (dob) {
+    const d = new Date(dob);
+    if (!Number.isNaN(d.getTime())) {
+      const now = new Date();
+      age = now.getFullYear() - d.getFullYear();
+      const beforeBirthday = now.getMonth() < d.getMonth() || (now.getMonth() === d.getMonth() && now.getDate() < d.getDate());
+      if (beforeBirthday) age -= 1;
+      if (age > 0 && age < 120) return age;
+    }
+  }
+  return null;
+}
+
+function extractEnglishDetails(flat, assessment = {}) {
+  const all = findAnyValue(flat, [/english/i, /ielts/i, /pte/i, /toefl/i, /cambridge/i, /cae/i, /oet/i]);
+  const joined = all.map(([k, v]) => `${k}: ${v}`).join(' | ');
+  const raw = text(pick(assessment.english, assessment.english_test, assessment.englishEvidence, joined), '');
+  const rawLower = raw.toLowerCase();
+  const testType = /pte/.test(rawLower) ? 'PTE Academic' : /ielts/.test(rawLower) ? 'IELTS' : /toefl/.test(rawLower) ? 'TOEFL iBT' : /oet/.test(rawLower) ? 'OET' : /cambridge|cae/.test(rawLower) ? 'Cambridge C1 Advanced' : raw ? raw : '';
+
+  const scoreFields = {};
+  for (const [key, value] of all) {
+    const k = key.toLowerCase();
+    const n = parseNumber(value);
+    if (!Number.isFinite(n)) continue;
+    if (/listen/.test(k)) scoreFields.listening = n;
+    else if (/read/.test(k)) scoreFields.reading = n;
+    else if (/writ/.test(k)) scoreFields.writing = n;
+    else if (/speak/.test(k)) scoreFields.speaking = n;
+    else if (/overall|total|score/.test(k) && scoreFields.overall === undefined) scoreFields.overall = n;
+  }
+
+  // Also parse compact strings like "IELTS L6 R6 W6 S6".
+  const compact = String(raw);
+  const compactPairs = [
+    ['listening', /(?:listening|listen|\bL\b)\s*[:=]?\s*(\d+(?:\.\d+)?)/i],
+    ['reading', /(?:reading|read|\bR\b)\s*[:=]?\s*(\d+(?:\.\d+)?)/i],
+    ['writing', /(?:writing|write|\bW\b)\s*[:=]?\s*(\d+(?:\.\d+)?)/i],
+    ['speaking', /(?:speaking|speak|\bS\b)\s*[:=]?\s*(\d+(?:\.\d+)?)/i]
+  ];
+  for (const [name, re] of compactPairs) {
+    const m = compact.match(re);
+    if (m && scoreFields[name] === undefined) scoreFields[name] = Number(m[1]);
+  }
+
+  const validity = pick(findValue(flat, [/english.*valid/i, /test.*date/i, /expiry/i]), assessment.english_test_date, assessment.englishTestDate);
+  const exemption = pick(findValue(flat, [/english.*exempt/i, /passport.*english/i, /concession/i]), assessment.englishExemption);
+  const componentScores = ['listening', 'reading', 'writing', 'speaking'].map(k => scoreFields[k]).filter(v => Number.isFinite(v));
+
+  let status = 'unclear';
+  let reason = 'English evidence must be verified from the original test report, component scores and validity period.';
+  if (exemption && /yes|true|exempt|passport|concession/i.test(String(exemption))) {
+    status = 'likely_satisfied';
+    reason = 'An English exemption/concession was indicated, but supporting evidence must be verified.';
+  } else if (/ielts/i.test(testType) && componentScores.length === 4) {
+    const pass = componentScores.every(v => v >= 6);
+    status = pass ? 'likely_satisfied' : 'not_satisfied_or_high_risk';
+    reason = pass ? 'IELTS component scores appear to meet a competent-English style threshold, subject to original report and validity checks.' : 'One or more IELTS component scores appear below the usual competent-English threshold; verify whether an exemption or concession applies.';
+  } else if (/pte/i.test(testType) && componentScores.length === 4) {
+    const pass = componentScores.every(v => v >= 50);
+    status = pass ? 'likely_satisfied' : 'not_satisfied_or_high_risk';
+    reason = pass ? 'PTE component scores appear to meet a competent-English style threshold, subject to original report and validity checks.' : 'One or more PTE component scores appear below the usual competent-English threshold; verify whether an exemption or concession applies.';
+  } else if (raw && !/^yes$/i.test(raw.trim())) {
+    status = 'unclear';
+    reason = 'English evidence was identified, but component scores, validity and any exemption/concession still require verification.';
+  }
+
+  return { raw, testType, scores: scoreFields, validity, exemption, status, reason };
+}
+
+function ageCriteriaAnalysis(facts) {
+  const age = facts.age;
+  if (!Number.isFinite(age)) {
+    return {
+      status: 'unclear',
+      displayStatus: 'Unclear - age evidence required',
+      riskLevel: 'High',
+      clientFacts: 'The applicant’s age was not clearly identified from the stored assessment data. Age must be confirmed because it may be a material Subclass 186 issue unless an exemption or concession applies.',
+      consequence: 'If the applicant is outside the applicable age setting and no exemption/concession applies, the pathway may not be viable.',
+      requiredAction: 'Confirm date of birth, age at the relevant time, and whether any age exemption or concession applies.'
+    };
+  }
+  if (age < 45) {
+    return {
+      status: 'likely_satisfied',
+      displayStatus: 'Likely satisfied - verify evidence',
+      riskLevel: 'Low to medium',
+      clientFacts: `The applicant’s recorded age is ${age}. On the present information, the age position appears potentially supportable, subject to passport/date-of-birth evidence and timing checks.`,
+      consequence: 'The age issue appears manageable if original identity documents confirm the recorded age and timing.',
+      requiredAction: 'Verify passport/date of birth and confirm age at the relevant application/decision time before final advice.'
+    };
+  }
+  return {
+    status: 'not_satisfied_or_high_risk',
+    displayStatus: 'High risk - exemption/concession required',
+    riskLevel: 'High',
+    clientFacts: `The applicant’s recorded age is ${age}. This may create a material Subclass 186 risk unless an exemption, concession or alternative pathway is available.`,
+    consequence: 'If the applicable age requirement is not met and no exemption/concession applies, the application may not be viable.',
+    requiredAction: 'Confirm exact age, applicable stream settings and any available age exemption/concession before relying on this pathway.'
+  };
+}
+
 function extractFacts(assessment = {}) {
   const payload = assessmentPayload(assessment);
   const flat = flattenObject(payload);
@@ -116,6 +255,8 @@ function extractFacts(assessment = {}) {
     duties: findValue(flat, [/duties/i, /aligned/i]),
     skills: findValue(flat, [/skills.*assessment/i, /qualification/i, /trade/i, /licen[cs]/i]),
     english: findValue(flat, [/english/i, /ielts/i, /pte/i, /toefl/i]),
+    englishDetails: extractEnglishDetails(flat, assessment),
+    age: extractAge(flat, assessment),
     salary: findValue(flat, [/salary/i, /remuneration/i, /market.*salary/i]),
     health: findValue(flat, [/health/i, /medical/i]),
     character: findValue(flat, [/character/i, /criminal/i, /police/i]),
@@ -167,14 +308,14 @@ function displayStatusFor(finding) {
 function materialityFor(title) {
   const lower = String(title || '').toLowerCase();
   if (/nomination|sponsor|employer|genuine position|operational/.test(lower)) return 'primary';
-  if (/skill|occupation|anzsco|english|salary|market|stream|pathway/.test(lower)) return 'material';
+  if (/skill|occupation|anzsco|english|salary|market|stream|pathway|age/.test(lower)) return 'material';
   if (/health|character|integrity|migration|refusal|cancellation/.test(lower)) return 'public-interest';
   return 'supporting';
 }
 
 function riskLevelFor(title, status) {
   const lower = `${title} ${status}`.toLowerCase();
-  if (/nomination|sponsor|skills|occupation|english|salary|stream|pathway/.test(lower) && /unclear|risk|required/.test(lower)) return 'High';
+  if (/nomination|sponsor|skills|occupation|english|salary|stream|pathway|age/.test(lower) && /unclear|risk|required|not_satisfied/.test(lower)) return 'High';
   if (/health|character|migration|integrity/.test(lower) && /unclear|risk|required/.test(lower)) return 'Medium to high';
   if (/likely|satisfied/.test(lower)) return 'Low to medium';
   return 'Medium';
@@ -189,6 +330,7 @@ function requirementFor(title, subclass, stream, existing) {
   if (/employment|work history|continuity/.test(lower)) return 'The employment history must be reconstructed from objective records and tested against the selected stream, nominated occupation and any relevant continuity or experience requirement.';
   if (/salary|market/.test(lower)) return 'The remuneration position must be consistent with the nomination, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.';
   if (/english/.test(lower)) return 'The applicant must hold acceptable English evidence, exemption evidence or concession evidence that is valid at the relevant time for the selected stream.';
+  if (/age/.test(lower)) return 'The applicant must satisfy the applicable age setting for the selected Subclass 186 stream, or identify a valid exemption, concession or alternative pathway before lodgement.';
   if (/validity|identity/.test(lower)) return 'The application must be validly made, including correct identity, location, visa-status and any stream-specific validity prerequisites before grant criteria are assessed.';
   if (/health/.test(lower)) return 'The applicant and included family members must satisfy the applicable health requirements or address any health-related concern before final advice is relied upon.';
   if (/character|integrity/.test(lower)) return 'The applicant must satisfy character and integrity requirements, including truthful disclosure and consistency across documents and Departmental records.';
@@ -209,7 +351,13 @@ function factAnalysisFor(title, facts, existing) {
     return 'Employment continuity should be reconstructed from objective payroll, tax, superannuation, leave and visa/work-rights records rather than treated as established from questionnaire wording alone.';
   }
   if (/salary|market/.test(lower)) return facts.salary ? `The remuneration figure recorded is ${clean(facts.salary)}. It should be tested against the nomination record, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.` : 'The salary and market salary position requires confirmation from the nomination, contract, payroll and market evidence.';
-  if (/english/.test(lower)) return facts.english ? `The English evidence recorded is ${clean(facts.english)}. The original result, test type, component scores, validity date, exemption basis or concession must be verified before final advice.` : 'The English position has not been verified from original test or exemption evidence.';
+  if (/english/.test(lower)) {
+    const e = facts.englishDetails || {};
+    const scoreBits = e.scores ? Object.entries(e.scores).filter(([,v]) => Number.isFinite(v)).map(([k,v]) => `${k} ${v}`).join(', ') : '';
+    const base = e.raw ? `The English evidence recorded is ${clean(e.testType || e.raw)}${scoreBits ? ` (${scoreBits})` : ''}.` : 'The English position has not been verified from original test or exemption evidence.';
+    return `${base} ${e.reason || 'The original result, test type, component scores, validity date, exemption basis or concession must be verified before final advice.'}`;
+  }
+  if (/age/.test(lower)) return ageCriteriaAnalysis(facts).clientFacts;
   if (/health/.test(lower)) return /yes|issue|condition|medical/i.test(String(facts.health || '')) ? 'A health issue may have been disclosed and must be reviewed before final lodgement advice.' : 'No health issue was disclosed in the assessment response, subject to standard health declarations, examinations and family-member checks.';
   if (/character|integrity|migration|compliance/.test(lower)) return /yes|refus|cancel|criminal|convict|section|8503/i.test(`${facts.character} ${facts.migrationHistory}`) ? 'An adverse character, integrity or migration-history issue may require strategy before lodgement.' : 'No adverse character, integrity or immigration-history issue was disclosed in the assessment response, subject to police clearances, Departmental records and document-consistency checks.';
   if (existingText) return existingText;
@@ -226,7 +374,7 @@ function actionFor(finding) {
   return clean(pick(finding.requiredAction, finding.action, finding.recommendation, finding.seniorOpinion, finding.agentOpinion, finding.professionalPosition, 'Resolve before final lodgement advice.'));
 }
 
-function consequenceFor(title, finding, status) {
+function consequenceFor(title, finding, status, facts = {}) {
   const existing = isPlainObject(finding) ? clean(pick(finding.consequence, finding.legalConsequence, finding.consequenceOfFailure, finding.riskIfMissing, finding.whyItMatters)) : '';
   if (existing) return existing;
   const lower = String(title || '').toLowerCase();
@@ -234,6 +382,7 @@ function consequenceFor(title, finding, status) {
   if (/skill|occupation|anzsco/.test(lower)) return 'If the skills, occupation, registration/licensing or qualification evidence cannot be verified, the Direct Entry pathway may not be lodgement-ready.';
   if (/salary|market/.test(lower)) return 'If salary or market salary evidence cannot be reconciled, the nomination and stream position may become vulnerable.';
   if (/english/.test(lower)) return 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession.';
+  if (/age/.test(lower)) return ageCriteriaAnalysis(facts).consequence;
   if (/health/.test(lower)) return 'Health issues may affect timing, evidence strategy or final lodgement advice depending on Departmental assessment.';
   if (/character|integrity|migration/.test(lower)) return 'If Departmental records differ from the instructions, the matter may require strategy before lodgement.';
   return /likely/i.test(status) ? 'The issue appears potentially supportable, subject to original evidence confirming the instructions.' : 'The criterion may be capable of being satisfied, but only if supporting documents confirm the instructions and no inconsistent records emerge.';
@@ -256,14 +405,14 @@ function enhanceFinding(finding, index, facts) {
     legalRequirement: requirementFor(title, facts.subclass, facts.stream, existingRequirement),
     clientFacts: factAnalysisFor(title, facts, existingFacts),
     evidenceGap: evidenceFor(finding),
-    consequence: consequenceFor(title, finding, displayStatus),
+    consequence: consequenceFor(title, finding, displayStatus, facts),
     requiredAction: actionFor(finding),
     aiControllerEnhanced: true
   };
 }
 
 function topBlockers(findings) {
-  const priorityOrder = ['nomination', 'sponsor', 'employer', 'direct entry', 'skill', 'occupation', 'anzsco', 'salary', 'market', 'english', 'stream', 'pathway'];
+  const priorityOrder = ['nomination', 'sponsor', 'employer', 'direct entry', 'skill', 'occupation', 'anzsco', 'salary', 'market', 'english', 'age', 'stream', 'pathway'];
   const scored = findings.map(f => {
     const title = f.title || f.issue || '';
     const lower = title.toLowerCase();
@@ -378,6 +527,7 @@ function buildInternalAuditObject({ facts, findings, adviceBundle, registry, reg
     criteriaAssessed: findings.map(f => ({ issue: f.title || f.issue, status: f.status, riskLevel: f.riskLevel, materiality: f.materiality })),
     sourcesUsed: Array.isArray(legalPack.sources) ? legalPack.sources.map(s => ({ authority: s.authority, title: s.title, path: s.path, sha256: s.sha256 })).slice(0, 50) : [],
     sourceConfidence: { subclass: facts.subclass ? 'medium' : 'low', stream: facts.stream ? 'medium' : 'low' },
+    extractedAssessmentFacts: { age: facts.age || null, english: facts.englishDetails || null, salary: facts.salary || null, occupation: facts.occupation || null },
     coverageWarnings: asArray(registryResult && registryResult.audit && (registryResult.audit.coverageGateWarningMessage || registryResult.audit.sourceSupportWarningMessage)).filter(Boolean),
     fallbackUsed: Boolean(adviceBundle.fallbackUsed || adviceBundle.deterministicFallbackUsed),
     fallbackReason: pick(adviceBundle.fallbackReason, adviceBundle.primaryPipelineFailure, null),
@@ -397,12 +547,55 @@ function buildInternalAuditObject({ facts, findings, adviceBundle, registry, reg
   };
 }
 
+
+function hasFinding(findings, pattern) {
+  const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
+  return findings.some(f => re.test(findingTitle(f)));
+}
+
+function ensureCoreFindings(findings, facts) {
+  const out = [...findings];
+  if (facts.subclass === '186' && !hasFinding(out, /age/)) {
+    const age = ageCriteriaAnalysis(facts);
+    out.push({
+      issue: 'Age requirement or exemption',
+      title: 'Age requirement or exemption',
+      status: age.status,
+      displayStatus: age.displayStatus,
+      riskLevel: age.riskLevel,
+      legalRequirement: requirementFor('Age requirement or exemption', facts.subclass, facts.stream),
+      clientFacts: age.clientFacts,
+      evidenceGap: 'Passport/date-of-birth evidence and any age exemption, concession or pathway-specific material.',
+      consequence: age.consequence,
+      requiredAction: age.requiredAction,
+      insertedByAiController: true
+    });
+  }
+  if (facts.subclass === '186' && !hasFinding(out, /english/)) {
+    const e = facts.englishDetails || {};
+    out.push({
+      issue: 'English language requirement or concession',
+      title: 'English language requirement or concession',
+      status: e.status === 'likely_satisfied' ? 'likely_satisfied' : e.status === 'not_satisfied_or_high_risk' ? 'not_satisfied_or_high_risk' : 'unclear',
+      displayStatus: e.status === 'likely_satisfied' ? 'Likely satisfied - verify evidence' : e.status === 'not_satisfied_or_high_risk' ? 'High risk - English threshold not confirmed' : 'Unclear - evidence required',
+      riskLevel: e.status === 'likely_satisfied' ? 'Low to medium' : 'High',
+      legalRequirement: requirementFor('English language requirement or concession', facts.subclass, facts.stream),
+      clientFacts: factAnalysisFor('English language requirement or concession', facts, ''),
+      evidenceGap: 'Original English test report showing test type, component scores and validity date, or exemption/concession evidence.',
+      consequence: 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession.',
+      requiredAction: 'Verify English component scores, validity and any exemption/concession before final lodgement advice.',
+      insertedByAiController: true
+    });
+  }
+  return out;
+}
+
 function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, registry = null, registryResult = null } = {}) {
   const facts = extractFacts(assessment);
   facts.subclass = facts.subclass || normaliseSubclass(pick(adviceBundle.subclass, adviceBundle.advice && adviceBundle.advice.subclass));
   facts.stream = facts.stream || normaliseStream(pick(adviceBundle.stream, adviceBundle.selectedStream, adviceBundle.clientFacingStream, adviceBundle.advice && adviceBundle.advice.stream));
 
-  const originalFindings = sourceFindings(adviceBundle);
+  const originalFindings = ensureCoreFindings(sourceFindings(adviceBundle), facts);
   const enhancedFindings = originalFindings.map((finding, index) => enhanceFinding(finding, index, facts));
   const clientAdviceObject = buildClientAdviceObject({ facts, findings: enhancedFindings, adviceBundle });
   const internalAuditObject = buildInternalAuditObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryResult });
