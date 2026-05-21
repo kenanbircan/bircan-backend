@@ -3,16 +3,18 @@
 /**
  * Bircan Migration AI Migration Advice Controller
  *
- * This is the deterministic senior migration-agent / solicitor-style orchestration
- * layer. It does not handle payment, dashboard display or PDF formatting. It takes
- * the already-paid assessment/advice bundle and produces:
+ * v2 converts the controller from a wording enhancer into a deterministic
+ * criteria-assessment orchestration layer. It reads the full saved assessment
+ * payload, maps all available answers to the selected subclass/stream registry
+ * and knowledgebase-backed criteria, then produces:
  *   1. a clientAdviceObject for pdf.js; and
  *   2. an internalAuditObject for admin/legal control.
  *
- * pdf.js should render the client object only.
+ * The controller does not handle payment, dashboard display or PDF formatting.
+ * pdf.js must render the client object only.
  */
 
-const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v1-20260522';
+const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v2-all-answers-registry-criteria-20260522';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -59,10 +61,33 @@ function flattenObject(input, prefix = '', out = {}) {
   return out;
 }
 
-function assessmentPayload(assessment = {}) {
-  const payload = isPlainObject(assessment.form_payload) ? assessment.form_payload : {};
+function safeParseJson(value) {
+  if (!value) return {};
+  if (isPlainObject(value)) return value;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch (_err) { return {}; }
+  }
+  return {};
+}
+
+function assessmentPayloadRoot(assessment = {}) {
+  return safeParseJson(pick(
+    assessment.form_payload,
+    assessment.formPayload,
+    assessment.raw_answers,
+    assessment.answers,
+    assessment.payload,
+    {}
+  ));
+}
+
+function assessmentAnswers(assessment = {}) {
+  const payload = assessmentPayloadRoot(assessment);
   if (isPlainObject(payload.answers)) return payload.answers;
+  if (isPlainObject(payload.formPayload) && isPlainObject(payload.formPayload.answers)) return payload.formPayload.answers;
   if (isPlainObject(payload.formPayload)) return payload.formPayload;
+  if (isPlainObject(payload.flatAnswers)) return payload.flatAnswers;
+  if (isPlainObject(payload.rawSubmission) && isPlainObject(payload.rawSubmission.answers)) return payload.rawSubmission.answers;
   if (isPlainObject(payload.rawSubmission)) return payload.rawSubmission;
   return payload;
 }
@@ -80,19 +105,17 @@ function normaliseStream(value) {
   return raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function findValue(flat, patterns = []) {
-  const entries = Object.entries(flat || {});
-  for (const pattern of patterns) {
-    const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
-    const hit = entries.find(([key, value]) => re.test(key) && value !== undefined && value !== null && String(value).trim() !== '');
-    if (hit) return hit[1];
-  }
-  return '';
+function normaliseKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-
-function normaliseToken(value) {
-  return String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+function normaliseYesNo(value) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase();
+  if (!raw) return '';
+  if (/^(yes|true|y|1|held|available|completed|successful)$/i.test(raw)) return 'yes';
+  if (/^(no|false|n|0|none|not applicable|na|n\/a)$/i.test(raw)) return 'no';
+  if (/unsure|unknown|in progress|part|partial|maybe/i.test(raw)) return 'unclear';
+  return raw;
 }
 
 function parseNumber(value) {
@@ -100,67 +123,102 @@ function parseNumber(value) {
   return m ? Number(m[0]) : null;
 }
 
+function answerEntries(flat = {}) {
+  return Object.entries(flat || {}).filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '');
+}
+
+function findValue(flat, patterns = []) {
+  const entries = answerEntries(flat);
+  for (const pattern of patterns) {
+    const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
+    const hit = entries.find(([key]) => re.test(key));
+    if (hit) return hit[1];
+  }
+  return '';
+}
+
 function findAnyValue(flat, patterns = []) {
-  const entries = Object.entries(flat || {});
+  const entries = answerEntries(flat);
   const hits = [];
+  const seen = new Set();
   for (const pattern of patterns) {
     const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
     for (const [key, value] of entries) {
-      if (re.test(key) && value !== undefined && value !== null && String(value).trim() !== '') hits.push([key, value]);
+      if (seen.has(key)) continue;
+      if (re.test(key)) {
+        seen.add(key);
+        hits.push([key, value]);
+      }
     }
   }
   return hits;
 }
 
-function extractAge(flat, assessment = {}) {
-  const direct = pick(
-    assessment.age,
-    assessment.applicant_age,
-    assessment.applicantAge,
-    findValue(flat, [/\bage\b/i, /applicant.*age/i])
-  );
-  let age = parseNumber(direct);
-  if (Number.isFinite(age) && age > 0 && age < 120) return age;
+function exactAnswer(flat, ...keys) {
+  const wanted = keys.map(normaliseKey);
+  for (const [key, value] of Object.entries(flat || {})) {
+    if (wanted.includes(normaliseKey(key))) return value;
+  }
+  return '';
+}
 
+function dateAge(dateValue, reference = new Date()) {
+  if (!dateValue) return null;
+  const d = new Date(dateValue);
+  if (Number.isNaN(d.getTime())) return null;
+  let age = reference.getFullYear() - d.getFullYear();
+  const beforeBirthday = reference.getMonth() < d.getMonth() || (reference.getMonth() === d.getMonth() && reference.getDate() < d.getDate());
+  if (beforeBirthday) age -= 1;
+  return age > 0 && age < 120 ? age : null;
+}
+
+function extractAge(flat, assessment = {}) {
   const dob = pick(
     assessment.date_of_birth,
     assessment.dateOfBirth,
+    exactAnswer(flat, 'date-of-birth', 'dateOfBirth', 'dob'),
     findValue(flat, [/date.*birth/i, /dob/i])
   );
-  if (dob) {
-    const d = new Date(dob);
-    if (!Number.isNaN(d.getTime())) {
-      const now = new Date();
-      age = now.getFullYear() - d.getFullYear();
-      const beforeBirthday = now.getMonth() < d.getMonth() || (now.getMonth() === d.getMonth() && now.getDate() < d.getDate());
-      if (beforeBirthday) age -= 1;
-      if (age > 0 && age < 120) return age;
-    }
-  }
-  return null;
+  const ageFromDob = dateAge(dob);
+  const explicit = pick(
+    exactAnswer(flat, 'age-at-application', 'ageAtApplication', 'ageAtAssessment', 'applicantAge'),
+    assessment.age,
+    assessment.applicant_age,
+    assessment.applicantAge,
+    findValue(flat, [/age.*application/i, /applicant.*age/i, /\bage\b/i])
+  );
+  const age = parseNumber(explicit);
+  const exemption = pick(
+    exactAnswer(flat, 'age-exemption-discussed', 'age-exemption-category', 'ageExemptionClaimed', 'ageExemptionBasis'),
+    findValue(flat, [/age.*exemption/i, /age.*concession/i])
+  );
+  return {
+    age: Number.isFinite(age) && age > 0 && age < 120 ? age : ageFromDob,
+    dateOfBirth: dob || '',
+    ageAtApplication: Number.isFinite(age) && age > 0 && age < 120 ? age : null,
+    exemption,
+    fields: ['date-of-birth', 'age-at-application', 'age-exemption-discussed', 'age-exemption-category'].filter(k => exactAnswer(flat, k) !== '')
+  };
 }
 
 function extractEnglishDetails(flat, assessment = {}) {
   const all = findAnyValue(flat, [/english/i, /ielts/i, /pte/i, /toefl/i, /cambridge/i, /cae/i, /oet/i]);
   const joined = all.map(([k, v]) => `${k}: ${v}`).join(' | ');
-  const raw = text(pick(assessment.english, assessment.english_test, assessment.englishEvidence, joined), '');
+  const testCompleted = pick(exactAnswer(flat, 'english-test-completed', 'englishTestCompleted'), findValue(flat, [/english.*completed/i]));
+  const testTypeRaw = pick(exactAnswer(flat, 'english-test-type', 'englishTestType'), assessment.english_test_type, assessment.englishTestType, findValue(flat, [/english.*type/i, /test.*type/i]));
+  const raw = text(pick(testTypeRaw, assessment.english, assessment.english_test, assessment.englishEvidence, joined), '');
   const rawLower = raw.toLowerCase();
   const testType = /pte/.test(rawLower) ? 'PTE Academic' : /ielts/.test(rawLower) ? 'IELTS' : /toefl/.test(rawLower) ? 'TOEFL iBT' : /oet/.test(rawLower) ? 'OET' : /cambridge|cae/.test(rawLower) ? 'Cambridge C1 Advanced' : raw ? raw : '';
 
-  const scoreFields = {};
-  for (const [key, value] of all) {
-    const k = key.toLowerCase();
-    const n = parseNumber(value);
-    if (!Number.isFinite(n)) continue;
-    if (/listen/.test(k)) scoreFields.listening = n;
-    else if (/read/.test(k)) scoreFields.reading = n;
-    else if (/writ/.test(k)) scoreFields.writing = n;
-    else if (/speak/.test(k)) scoreFields.speaking = n;
-    else if (/overall|total|score/.test(k) && scoreFields.overall === undefined) scoreFields.overall = n;
-  }
+  const scoreFields = {
+    listening: parseNumber(pick(exactAnswer(flat, 'english-listening', 'englishListening'), findValue(flat, [/english.*listen/i, /listening/i]))),
+    reading: parseNumber(pick(exactAnswer(flat, 'english-reading', 'englishReading'), findValue(flat, [/english.*read/i, /reading/i]))),
+    writing: parseNumber(pick(exactAnswer(flat, 'english-writing', 'englishWriting'), findValue(flat, [/english.*writ/i, /writing/i]))),
+    speaking: parseNumber(pick(exactAnswer(flat, 'english-speaking', 'englishSpeaking'), findValue(flat, [/english.*speak/i, /speaking/i]))),
+    overall: parseNumber(pick(exactAnswer(flat, 'english-overall', 'overallScore'), findValue(flat, [/english.*overall/i, /overall.*score/i])))
+  };
 
-  // Also parse compact strings like "IELTS L6 R6 W6 S6".
-  const compact = String(raw);
+  const compact = String(raw || joined);
   const compactPairs = [
     ['listening', /(?:listening|listen|\bL\b)\s*[:=]?\s*(\d+(?:\.\d+)?)/i],
     ['reading', /(?:reading|read|\bR\b)\s*[:=]?\s*(\d+(?:\.\d+)?)/i],
@@ -169,100 +227,294 @@ function extractEnglishDetails(flat, assessment = {}) {
   ];
   for (const [name, re] of compactPairs) {
     const m = compact.match(re);
-    if (m && scoreFields[name] === undefined) scoreFields[name] = Number(m[1]);
+    if (m && !Number.isFinite(scoreFields[name])) scoreFields[name] = Number(m[1]);
   }
 
-  const validity = pick(findValue(flat, [/english.*valid/i, /test.*date/i, /expiry/i]), assessment.english_test_date, assessment.englishTestDate);
-  const exemption = pick(findValue(flat, [/english.*exempt/i, /passport.*english/i, /concession/i]), assessment.englishExemption);
+  const testDate = pick(exactAnswer(flat, 'english-test-date', 'englishTestDate'), findValue(flat, [/english.*date/i, /test.*date/i]));
+  const passportEnglishCountry = pick(exactAnswer(flat, 'passport-english-country', 'passportEnglishCountry'), findValue(flat, [/passport.*english.*country/i]));
+  const exemption = pick(exactAnswer(flat, 'english-exemption-claimed', 'englishExemptionClaimed'), findValue(flat, [/english.*exempt/i, /concession/i]));
+  const docsAvailable = pick(exactAnswer(flat, 'english-docs-available', 'englishDocsAvailable'), findValue(flat, [/english.*doc/i]));
   const componentScores = ['listening', 'reading', 'writing', 'speaking'].map(k => scoreFields[k]).filter(v => Number.isFinite(v));
 
   let status = 'unclear';
   let reason = 'English evidence must be verified from the original test report, component scores and validity period.';
-  if (exemption && /yes|true|exempt|passport|concession/i.test(String(exemption))) {
+  if (normaliseYesNo(passportEnglishCountry) === 'yes' || /yes|true|exempt|passport|concession/i.test(String(exemption || ''))) {
     status = 'likely_satisfied';
-    reason = 'An English exemption/concession was indicated, but supporting evidence must be verified.';
+    reason = 'An English exemption/concession or passport-country indicator was recorded, subject to verifying the supporting evidence and current instrument settings.';
   } else if (/ielts/i.test(testType) && componentScores.length === 4) {
     const pass = componentScores.every(v => v >= 6);
     status = pass ? 'likely_satisfied' : 'not_satisfied_or_high_risk';
-    reason = pass ? 'IELTS component scores appear to meet a competent-English style threshold, subject to original report and validity checks.' : 'One or more IELTS component scores appear below the usual competent-English threshold; verify whether an exemption or concession applies.';
+    reason = pass ? 'Recorded IELTS component scores appear to meet a competent-English style threshold, subject to original report and validity checks.' : 'One or more recorded IELTS component scores appear below the usual competent-English threshold; verify whether a concession/exemption applies.';
   } else if (/pte/i.test(testType) && componentScores.length === 4) {
     const pass = componentScores.every(v => v >= 50);
     status = pass ? 'likely_satisfied' : 'not_satisfied_or_high_risk';
-    reason = pass ? 'PTE component scores appear to meet a competent-English style threshold, subject to original report and validity checks.' : 'One or more PTE component scores appear below the usual competent-English threshold; verify whether an exemption or concession applies.';
+    reason = pass ? 'Recorded PTE component scores appear to meet a competent-English style threshold, subject to original report and validity checks.' : 'One or more recorded PTE component scores appear below the usual competent-English threshold; verify whether a concession/exemption applies.';
+  } else if (normaliseYesNo(testCompleted) === 'no') {
+    status = 'unclear';
+    reason = 'No completed English test was recorded; an exemption, concession or test strategy must be confirmed.';
   } else if (raw && !/^yes$/i.test(raw.trim())) {
     status = 'unclear';
     reason = 'English evidence was identified, but component scores, validity and any exemption/concession still require verification.';
   }
 
-  return { raw, testType, scores: scoreFields, validity, exemption, status, reason };
-}
-
-function ageCriteriaAnalysis(facts) {
-  const age = facts.age;
-  if (!Number.isFinite(age)) {
-    return {
-      status: 'unclear',
-      displayStatus: 'Unclear - age evidence required',
-      riskLevel: 'High',
-      clientFacts: 'The applicant’s age was not clearly identified from the stored assessment data. Age must be confirmed because it may be a material Subclass 186 issue unless an exemption or concession applies.',
-      consequence: 'If the applicant is outside the applicable age setting and no exemption/concession applies, the pathway may not be viable.',
-      requiredAction: 'Confirm date of birth, age at the relevant time, and whether any age exemption or concession applies.'
-    };
-  }
-  if (age < 45) {
-    return {
-      status: 'likely_satisfied',
-      displayStatus: 'Likely satisfied - verify evidence',
-      riskLevel: 'Low to medium',
-      clientFacts: `The applicant’s recorded age is ${age}. On the present information, the age position appears potentially supportable, subject to passport/date-of-birth evidence and timing checks.`,
-      consequence: 'The age issue appears manageable if original identity documents confirm the recorded age and timing.',
-      requiredAction: 'Verify passport/date of birth and confirm age at the relevant application/decision time before final advice.'
-    };
-  }
-  return {
-    status: 'not_satisfied_or_high_risk',
-    displayStatus: 'High risk - exemption/concession required',
-    riskLevel: 'High',
-    clientFacts: `The applicant’s recorded age is ${age}. This may create a material Subclass 186 risk unless an exemption, concession or alternative pathway is available.`,
-    consequence: 'If the applicable age requirement is not met and no exemption/concession applies, the application may not be viable.',
-    requiredAction: 'Confirm exact age, applicable stream settings and any available age exemption/concession before relying on this pathway.'
-  };
+  return { raw, testCompleted, testType, testDate, scores: scoreFields, passportEnglishCountry, exemption, docsAvailable, status, reason };
 }
 
 function extractFacts(assessment = {}) {
-  const payload = assessmentPayload(assessment);
-  const flat = flattenObject(payload);
+  const root = assessmentPayloadRoot(assessment);
+  const answers = assessmentAnswers(assessment);
+  const flat = flattenObject(answers);
+  const flatRoot = flattenObject(root);
+  const allFlat = { ...flatRoot, ...flat };
+  const ageInfo = extractAge(allFlat, assessment);
   const subclass = normaliseSubclass(pick(
     assessment.visa_type,
     assessment.subclass,
     assessment.visa_subclass,
-    findValue(flat, [/subclass/i, /visa.*type/i])
+    root.subclass,
+    root.visaSubclass,
+    root.visaType,
+    findValue(allFlat, [/subclass/i, /visa.*type/i])
   ));
   const stream = normaliseStream(pick(
     assessment.stream,
     assessment.selected_stream,
     assessment.visa_stream,
-    findValue(flat, [/selected.*stream/i, /stream/i, /pathway/i])
+    root.stream,
+    root.selectedStream,
+    root.visaStream,
+    root.pathway,
+    findValue(allFlat, [/selected.*stream/i, /stream/i, /pathway/i])
   ));
 
   return {
     subclass,
     stream,
-    applicantName: pick(assessment.applicant_name, assessment.applicantName, findValue(flat, [/applicant.*name/i, /^name$/i])),
-    clientEmail: pick(assessment.client_email, assessment.applicant_email, assessment.email, findValue(flat, [/email/i])),
-    employer: findValue(flat, [/employer.*name/i, /current.*employer/i, /sponsor.*name/i]),
-    occupation: findValue(flat, [/occupation/i, /job.*title/i, /anzsco/i]),
-    duties: findValue(flat, [/duties/i, /aligned/i]),
-    skills: findValue(flat, [/skills.*assessment/i, /qualification/i, /trade/i, /licen[cs]/i]),
-    english: findValue(flat, [/english/i, /ielts/i, /pte/i, /toefl/i]),
-    englishDetails: extractEnglishDetails(flat, assessment),
-    age: extractAge(flat, assessment),
-    salary: findValue(flat, [/salary/i, /remuneration/i, /market.*salary/i]),
-    health: findValue(flat, [/health/i, /medical/i]),
-    character: findValue(flat, [/character/i, /criminal/i, /police/i]),
-    migrationHistory: findValue(flat, [/refus/i, /cancel/i, /section\s*48/i, /8503/i, /unlawful/i, /migration.*history/i]),
-    identity: findValue(flat, [/passport/i, /identity/i]),
-    rawFlat: flat
+    applicantName: pick(assessment.applicant_name, assessment.applicantName, root.applicantName, root.fullName, exactAnswer(allFlat, 'full-name'), findValue(allFlat, [/applicant.*name/i, /^name$/i])),
+    clientEmail: pick(assessment.client_email, assessment.applicant_email, assessment.email, root.clientEmail, root.email, exactAnswer(allFlat, 'email-address'), findValue(allFlat, [/email/i])),
+    employer: pick(exactAnswer(allFlat, 'employer-name', 'current-employer'), findValue(allFlat, [/employer.*name/i, /current.*employer/i, /sponsor.*name/i])),
+    occupation: pick(exactAnswer(allFlat, 'occupation-title', 'nominated-position-title', 'anzsco-code-known'), findValue(allFlat, [/occupation/i, /job.*title/i, /anzsco/i])),
+    duties: pick(exactAnswer(allFlat, 'daily-duties', 'nominated-duties', 'current-role-summary'), findValue(allFlat, [/duties/i, /aligned/i])),
+    skills: pick(exactAnswer(allFlat, 'skills-assessment-status', 'highest-qualification', 'qualification-field', 'skills-assessing-authority'), findValue(allFlat, [/skills.*assessment/i, /qualification/i, /trade/i, /licen[cs]/i])),
+    english: findValue(allFlat, [/english/i, /ielts/i, /pte/i, /toefl/i]),
+    englishDetails: extractEnglishDetails(allFlat, assessment),
+    age: ageInfo.age,
+    ageInfo,
+    salary: pick(exactAnswer(allFlat, 'salary-offered', 'annual-earnings-last-year', 'similar-role-salary'), findValue(allFlat, [/salary/i, /remuneration/i, /market.*salary/i])),
+    health: pick(exactAnswer(allFlat, 'serious-medical', 'healthIssuesDisclosed'), findValue(allFlat, [/health/i, /medical/i])),
+    character: pick(exactAnswer(allFlat, 'criminal-history', 'pending-matter'), findValue(allFlat, [/character/i, /criminal/i, /police/i])),
+    migrationHistory: pick(exactAnswer(allFlat, 'visa-refused', 'visa-cancelled', 'section48-mentioned', 'unlawful-status', 'overstayed'), findValue(allFlat, [/refus/i, /cancel/i, /section\s*48/i, /8503/i, /unlawful/i, /migration.*history/i])),
+    identity: pick(exactAnswer(allFlat, 'passport-available', 'passport-expiry'), findValue(allFlat, [/passport/i, /identity/i])),
+    rootPayload: root,
+    answers,
+    rawFlat: allFlat,
+    answerCount: answerEntries(allFlat).length
+  };
+}
+
+function registryStreamKey(registry, stream) {
+  if (!registry || !registry.streams) return '';
+  const wanted = normaliseStream(stream);
+  if (registry.streams[wanted]) return wanted;
+  const key = Object.keys(registry.streams).find(k => normaliseStream(k) === wanted);
+  return key || '';
+}
+
+function registryGrantCriteria(registry, stream) {
+  const out = [];
+  const seen = new Set();
+  if (!registry || !registry.streams) return out;
+  const add = (criteria, label) => {
+    for (const c of asArray(criteria)) {
+      const id = c && (c.criterionId || c.clause || c.id || `${label}-${out.length}`);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ ...(isPlainObject(c) ? c : { requirementText: text(c) }), registryStream: label });
+    }
+  };
+  const common = registry.streams.common_or_secondary || registry.streams.common || registry.streams.Common;
+  if (common) add(common.grantCriteria || common.criteria || common, 'common_or_secondary');
+  const key = registryStreamKey(registry, stream);
+  if (key && registry.streams[key]) add(registry.streams[key].grantCriteria || registry.streams[key].criteria || [], key);
+  if (!out.length) {
+    for (const [label, data] of Object.entries(registry.streams)) add(data.grantCriteria || data.criteria || [], label);
+  }
+  return out;
+}
+
+const AREA_PROFILES = [
+  { area: 'stream_pathway', label: 'Subclass and stream/pathway', patterns: [/selected.*stream/i, /stream/i, /pathway/i, /labour.*agreement/i, /dama/i], types: /stream|pathway|labour_agreement/ },
+  { area: 'nomination', label: 'Sponsoring employer and nomination position', patterns: [/sponsor/i, /employer/i, /nomination/i, /nominator/i, /business/i, /position/i, /genuine/i, /abn/i, /contract/i, /ongoing/i], types: /nomination|sponsor|employer|genuine/ },
+  { area: 'occupation_skills', label: 'Occupation, ANZSCO, skills and licensing', patterns: [/occupation/i, /anzsco/i, /duties/i, /skill/i, /qualification/i, /licen[cs]/i, /assess/i, /authority/i, /training/i], types: /skill|occupation|anzsco|licen|registration/ },
+  { area: 'employment', label: 'Employment history and work rights', patterns: [/employment/i, /employed/i, /work/i, /hours/i, /start/i, /payroll/i, /reference/i, /visa.*right/i], types: /employment|work|salary_employment/ },
+  { area: 'salary', label: 'Salary, market salary and employment conditions', patterns: [/salary/i, /remuneration/i, /market/i, /super/i, /award/i, /enterprise/i, /allowance/i, /deduction/i, /bank/i, /tax/i], types: /salary|market|remuneration/ },
+  { area: 'english', label: 'English language requirement or concession', patterns: [/english/i, /ielts/i, /pte/i, /toefl/i, /oet/i, /cambridge/i, /passport.*country/i, /concession/i], types: /english/ },
+  { area: 'age', label: 'Age requirement or exemption', patterns: [/date.*birth/i, /dob/i, /age/i, /high.*income/i, /earnings/i], types: /age/ },
+  { area: 'identity_location', label: 'Application validity, identity and location/status', patterns: [/passport/i, /identity/i, /name.*change/i, /currently.*australia/i, /current.*country/i, /current.*visa/i, /visa.*expiry/i, /bridging/i, /condition/i, /location/i], types: /location_status|identity|validity/ },
+  { area: 'health', label: 'Health requirements', patterns: [/health/i, /medical/i, /treatment/i, /hap/i], types: /health/ },
+  { area: 'character_integrity', label: 'Character, integrity and adverse history', patterns: [/character/i, /criminal/i, /police/i, /offen/i, /convict/i, /pending/i, /false/i, /fraud/i, /identity/i, /integrity/i, /paid.*sponsor/i], types: /character|integrity|public_interest|health_character/ },
+  { area: 'migration_history', label: 'Migration history, refusals and compliance', patterns: [/refus/i, /cancel/i, /section\s*48/i, /8503/i, /unlawful/i, /overstay/i, /breach/i, /tribunal/i, /appeal/i, /visa.*history/i], types: /migration|compliance|public_interest/ },
+  { area: 'family', label: 'Family members and secondary applicants', patterns: [/partner/i, /dependent/i, /dependant/i, /child/i, /family/i, /custody/i], types: /relationship_family|family|secondary/ },
+  { area: 'evidence', label: 'Evidence readiness', patterns: [/available/i, /docs/i, /document/i, /evidence/i, /records/i, /payslip/i, /tax/i, /super/i, /resume/i, /reference/i], types: /evidence/ }
+];
+
+function profileForCriterion(criterion) {
+  const hay = `${criterion.clause || ''} ${criterion.criterionId || ''} ${asArray(criterion.criterionType).join(' ')} ${criterion.requirementText || ''}`;
+  return AREA_PROFILES.find(p => p.types.test(hay)) || AREA_PROFILES.find(p => p.area === 'evidence');
+}
+
+function fieldsForProfile(flat, profile, criterion = {}) {
+  const fields = new Map();
+  const required = [];
+  const intake = criterion.intakeMapping || criterion.pdfMapping && criterion.pdfMapping.intakeMapping || {};
+  for (const f of asArray(intake.requiredFields)) required.push(f);
+  for (const field of required) {
+    const direct = exactAnswer(flat, field);
+    if (direct !== '') fields.set(field, direct);
+  }
+  for (const [key, value] of answerEntries(flat)) {
+    if (profile.patterns.some(re => re.test(key))) fields.set(key, value);
+  }
+  return Array.from(fields.entries()).slice(0, 18);
+}
+
+function fieldSummary(fields, limit = 8) {
+  if (!fields.length) return '';
+  return fields.slice(0, limit).map(([k, v]) => `${k}: ${clean(v)}`).join('; ');
+}
+
+function hasPositiveEvidence(fields, profile) {
+  if (!fields.length) return false;
+  const positive = fields.filter(([, value]) => ['yes', 'held', 'completed', 'successful', 'available'].includes(normaliseYesNo(value)) || String(value || '').trim().length > 2);
+  if (profile.area === 'english') return false; // handled separately
+  if (profile.area === 'age') return false; // handled separately
+  return positive.length >= Math.min(2, fields.length);
+}
+
+function hasAdverseAnswer(fields, profile) {
+  const hay = fields.map(([k, v]) => `${k}=${v}`).join(' | ').toLowerCase();
+  if (profile.area === 'nomination' && /has-australian-sponsor\s*=\s*no|role-full-time\s*=\s*no|role-ongoing\s*=\s*no|paid-for-sponsorship\s*=\s*yes/.test(hay)) return true;
+  if (profile.area === 'occupation_skills' && /skills-assessment-status\s*=\s*no|skills-assessment-successful\s*=\s*no|licence-refused\s*=\s*yes/.test(hay)) return true;
+  if (profile.area === 'english') return /english-test-completed\s*=\s*no/.test(hay);
+  if (profile.area === 'health') return /serious-medical\s*=\s*yes|medical.*yes/.test(hay);
+  if (profile.area === 'character_integrity') return /criminal-history\s*=\s*yes|pending-matter\s*=\s*yes|false-document-concern\s*=\s*yes|paid-for-sponsorship\s*=\s*yes/.test(hay);
+  if (profile.area === 'migration_history') return /visa-refused\s*=\s*yes|visa-cancelled\s*=\s*yes|unlawful-status\s*=\s*yes|overstayed\s*=\s*yes|breached-conditions\s*=\s*yes|section48-mentioned\s*=\s*yes/.test(hay);
+  return false;
+}
+
+function sourceLabelForCriterion(criterion, registry) {
+  const source = criterion.sourceMap || criterion.source || {};
+  const file = source.knowledgebaseFile || source.legalFrame || source.pamFile || source.pamDoc || (registry && registry.sourceOfTruth && registry.sourceOfTruth.pams) || 'knowledgebase source pack';
+  const confidence = source.extractionConfidence || source.sourceConfidence || 'source-mapped registry requires RMA verification';
+  return `${criterion.clause || criterion.criterionId || 'criterion'} — ${file} (${confidence})`;
+}
+
+function evidenceTextForCriterion(criterion, profile) {
+  const rules = asArray(criterion.evidenceRules);
+  const relevant = rules.map(r => r.documentGroup || r.document || r.proves).filter(Boolean).slice(0, 4);
+  if (relevant.length) return relevant.join('; ');
+  if (profile.area === 'english') return 'Original English test report, passport exemption evidence or concession evidence.';
+  if (profile.area === 'age') return 'Passport/date of birth and any age exemption/concession evidence.';
+  if (profile.area === 'nomination') return 'Nomination, employer, position description, contract, organisation chart and business need evidence.';
+  return 'Original supporting evidence must be reviewed and reconciled before final lodgement advice.';
+}
+
+function requirementFromCriterion(criterion, profile, facts) {
+  const req = clean(criterion.requirementText || criterion.requirement || '');
+  if (req) return req.length > 520 ? `${req.slice(0, 520).replace(/\s+\S*$/, '')}…` : req;
+  return requirementFor(profile.label, facts.subclass, facts.stream, '');
+}
+
+function statusForRegistryCriterion({ criterion, profile, fields, facts }) {
+  if (profile.area === 'english') {
+    const e = facts.englishDetails || {};
+    return {
+      status: e.status === 'likely_satisfied' ? 'likely_satisfied' : e.status === 'not_satisfied_or_high_risk' ? 'not_satisfied_or_high_risk' : 'unclear',
+      displayStatus: e.status === 'likely_satisfied' ? 'Likely satisfied - verify evidence' : e.status === 'not_satisfied_or_high_risk' ? 'High risk - English threshold not confirmed' : 'Unclear - evidence required',
+      riskLevel: e.status === 'likely_satisfied' ? 'Low to medium' : 'High'
+    };
+  }
+  if (profile.area === 'age') {
+    const a = ageCriteriaAnalysis(facts);
+    return { status: a.status, displayStatus: a.displayStatus, riskLevel: a.riskLevel };
+  }
+  if (hasAdverseAnswer(fields, profile)) return { status: 'not_satisfied_or_high_risk', displayStatus: 'High risk - adverse answer requires review', riskLevel: 'High' };
+  if (hasPositiveEvidence(fields, profile)) return { status: 'likely_satisfied', displayStatus: 'Likely satisfied - verify evidence', riskLevel: 'Low to medium' };
+  return { status: 'unclear', displayStatus: 'Unclear - evidence required', riskLevel: /nomination|skill|english|age|salary|stream/i.test(profile.area) ? 'High' : 'Medium' };
+}
+
+function clientFactsForRegistryCriterion({ criterion, profile, fields, facts }) {
+  if (profile.area === 'english') return factAnalysisFor('English language requirement or concession', facts, '');
+  if (profile.area === 'age') return ageCriteriaAnalysis(facts).clientFacts;
+  const summary = fieldSummary(fields, 8);
+  if (!summary) return `No clear answer fields were mapped to this ${profile.label.toLowerCase()} criterion from the stored assessment payload. Follow-up and original evidence are required.`;
+  return `The stored assessment answers mapped to this criterion include: ${summary}. These answers are not treated as final proof until reconciled against original evidence and current legal settings.`;
+}
+
+function actionForRegistryCriterion({ profile, status }) {
+  if (profile.area === 'english') return 'Verify original English test report, component scores, test date/validity and any exemption or concession evidence.';
+  if (profile.area === 'age') return ageCriteriaAnalysis({ age: null }).requiredAction.replace('Confirm date of birth', 'Confirm date of birth, recorded age');
+  if (profile.area === 'nomination') return 'Build and reconcile the employer nomination file, including business need, genuine position, contract, duties and capacity evidence.';
+  if (profile.area === 'occupation_skills') return 'Reconcile occupation, ANZSCO, duties, qualifications, skills assessment, registration/licensing and employment evidence.';
+  if (profile.area === 'salary') return 'Reconcile salary, contract, payroll, superannuation, market salary and any threshold/concession material.';
+  if (profile.area === 'health') return 'Review health disclosures and obtain health examination/medical evidence if required.';
+  if (profile.area === 'character_integrity') return 'Review police checks, character disclosures, integrity issues and document consistency before final advice.';
+  if (profile.area === 'migration_history') return 'Review visa history, refusals, cancellations, conditions and Departmental records before lodgement strategy.';
+  if (status.status === 'likely_satisfied') return 'Verify the recorded answers against original documents before final lodgement advice.';
+  return 'Obtain missing information and original evidence before treating this criterion as satisfied.';
+}
+
+function consequenceForRegistryCriterion(profile, status) {
+  if (/high|not_satisfied/i.test(`${status.riskLevel} ${status.status}`)) {
+    return `${profile.label} is a material risk area. If the answers are not supported by original evidence or current legal settings, the pathway may be unsuitable or require a different strategy.`;
+  }
+  return `${profile.label} appears potentially supportable on the stored answers, but it remains subject to original evidence, Departmental records and current-law verification.`;
+}
+
+function buildRegistryCriteriaFindings({ registry, facts }) {
+  const criteria = registryGrantCriteria(registry, facts.stream);
+  const findings = [];
+  const fieldUsage = new Map();
+  for (const criterion of criteria) {
+    const profile = profileForCriterion(criterion);
+    const fields = fieldsForProfile(facts.rawFlat, profile, criterion);
+    fields.forEach(([k]) => fieldUsage.set(k, (fieldUsage.get(k) || 0) + 1));
+    const status = statusForRegistryCriterion({ criterion, profile, fields, facts });
+    const issue = `${profile.label}${criterion.clause ? ` — clause ${criterion.clause}` : ''}`;
+    findings.push({
+      issue,
+      title: issue,
+      criterionId: criterion.criterionId || criterion.id || criterion.clause || issue,
+      clause: criterion.clause || null,
+      sourceArea: sourceLabelForCriterion(criterion, registry),
+      sourceConfidence: criterion.sourceMap && criterion.sourceMap.extractionConfidence || 'registry-source-mapped-needs-rma-verification',
+      answerFieldsUsed: fields.map(([field]) => field),
+      mappedAnswerSummary: fieldSummary(fields, 10),
+      status: status.status,
+      displayStatus: status.displayStatus,
+      riskLevel: status.riskLevel,
+      materiality: materialityFor(issue),
+      legalRequirement: requirementFromCriterion(criterion, profile, facts),
+      clientFacts: clientFactsForRegistryCriterion({ criterion, profile, fields, facts }),
+      evidenceGap: evidenceTextForCriterion(criterion, profile),
+      consequence: consequenceForRegistryCriterion(profile, status),
+      requiredAction: actionForRegistryCriterion({ profile, status }),
+      criterionTypes: asArray(criterion.criterionType),
+      registryStream: criterion.registryStream || facts.stream,
+      aiControllerAssessed: true
+    });
+  }
+  const allFields = answerEntries(facts.rawFlat).map(([k]) => k);
+  const unused = allFields.filter(k => !fieldUsage.has(k) && !/^meta\.|rawSubmission\./i.test(k)).slice(0, 200);
+  return {
+    findings,
+    audit: {
+      registryCriteriaCount: criteria.length,
+      savedAnswerFieldCount: allFields.length,
+      usedAnswerFieldCount: fieldUsage.size,
+      unusedAnswerFields: unused,
+      fieldUsage: Object.fromEntries(Array.from(fieldUsage.entries()).slice(0, 250))
+    }
   };
 }
 
@@ -298,6 +550,7 @@ function findingStatus(finding) {
 }
 
 function displayStatusFor(finding) {
+  if (finding && finding.displayStatus) return clean(finding.displayStatus);
   const raw = findingStatus(finding);
   if (/not[_\s-]?satisfied|adverse|high|risk|refus|cancel/.test(raw)) return 'Unclear / risk to resolve';
   if (/likely|satisfied|supportable|low/.test(raw)) return 'Likely satisfied - verify evidence';
@@ -309,14 +562,14 @@ function materialityFor(title) {
   const lower = String(title || '').toLowerCase();
   if (/nomination|sponsor|employer|genuine position|operational/.test(lower)) return 'primary';
   if (/skill|occupation|anzsco|english|salary|market|stream|pathway|age/.test(lower)) return 'material';
-  if (/health|character|integrity|migration|refusal|cancellation/.test(lower)) return 'public-interest';
+  if (/health|character|integrity|migration|refusal|cancellation|public interest/.test(lower)) return 'public-interest';
   return 'supporting';
 }
 
 function riskLevelFor(title, status) {
   const lower = `${title} ${status}`.toLowerCase();
-  if (/nomination|sponsor|skills|occupation|english|salary|stream|pathway|age/.test(lower) && /unclear|risk|required|not_satisfied/.test(lower)) return 'High';
-  if (/health|character|migration|integrity/.test(lower) && /unclear|risk|required/.test(lower)) return 'Medium to high';
+  if (/nomination|sponsor|skills|occupation|english|salary|stream|pathway|age/.test(lower) && /unclear|risk|required|not_satisfied|high/.test(lower)) return 'High';
+  if (/health|character|migration|integrity/.test(lower) && /unclear|risk|required|high/.test(lower)) return 'Medium to high';
   if (/likely|satisfied/.test(lower)) return 'Low to medium';
   return 'Medium';
 }
@@ -326,11 +579,11 @@ function requirementFor(title, subclass, stream, existing) {
   if (existing && !/^the requirement must be assessed under/i.test(existing)) return clean(existing);
   if (/stream|pathway/.test(lower)) return `The selected Subclass ${subclass}${stream ? ` ${stream}` : ''} pathway must be legally available on the facts and strategically appropriate having regard to the applicant, sponsor and evidence position.`;
   if (/sponsor|employer|nomination|genuine position|operational/.test(lower)) return 'The nomination and employer file must support a genuine, available and properly documented role connected to the business operations, position duties and ongoing need.';
-  if (/direct entry|skill|occupation|anzsco/.test(lower)) return 'The applicant’s occupation, duties, qualifications, employment history, skills assessment and any licensing or registration evidence must support the selected Direct Entry pathway.';
+  if (/direct entry|skill|occupation|anzsco/.test(lower)) return 'The applicant’s occupation, duties, qualifications, employment history, skills assessment and any licensing or registration evidence must support the selected pathway.';
   if (/employment|work history|continuity/.test(lower)) return 'The employment history must be reconstructed from objective records and tested against the selected stream, nominated occupation and any relevant continuity or experience requirement.';
   if (/salary|market/.test(lower)) return 'The remuneration position must be consistent with the nomination, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.';
   if (/english/.test(lower)) return 'The applicant must hold acceptable English evidence, exemption evidence or concession evidence that is valid at the relevant time for the selected stream.';
-  if (/age/.test(lower)) return 'The applicant must satisfy the applicable age setting for the selected Subclass 186 stream, or identify a valid exemption, concession or alternative pathway before lodgement.';
+  if (/age/.test(lower)) return 'The applicant must satisfy the applicable age setting for the selected stream, or identify a valid exemption, concession or alternative pathway before lodgement.';
   if (/validity|identity/.test(lower)) return 'The application must be validly made, including correct identity, location, visa-status and any stream-specific validity prerequisites before grant criteria are assessed.';
   if (/health/.test(lower)) return 'The applicant and included family members must satisfy the applicable health requirements or address any health-related concern before final advice is relied upon.';
   if (/character|integrity/.test(lower)) return 'The applicant must satisfy character and integrity requirements, including truthful disclosure and consistency across documents and Departmental records.';
@@ -338,23 +591,52 @@ function requirementFor(title, subclass, stream, existing) {
   return `The issue must be assessed under the Subclass ${subclass}${stream ? ` ${stream}` : ''} legal framework and reconciled against original evidence before final lodgement advice.`;
 }
 
+function ageCriteriaAnalysis(facts) {
+  const age = facts.age;
+  const exemption = facts.ageInfo && facts.ageInfo.exemption;
+  if (!Number.isFinite(age)) {
+    return {
+      status: 'unclear',
+      displayStatus: 'Unclear - age evidence required',
+      riskLevel: 'High',
+      clientFacts: 'The applicant’s age was not clearly identified from the stored assessment data. Age must be confirmed because it may be material unless an exemption or concession applies.',
+      consequence: 'If the applicant is outside the applicable age setting and no exemption/concession applies, the pathway may not be viable.',
+      requiredAction: 'Confirm date of birth, age at the relevant time, and whether any age exemption or concession applies.'
+    };
+  }
+  if (age < 45 || /yes|medical|academic|scientist|technical|long-term|high-income|labour|dama/i.test(String(exemption || ''))) {
+    return {
+      status: 'likely_satisfied',
+      displayStatus: 'Likely satisfied - verify evidence',
+      riskLevel: age < 45 ? 'Low to medium' : 'Medium to high',
+      clientFacts: `The applicant’s recorded age is ${age}${exemption ? ` and the intake records an age exemption/concession indicator: ${clean(exemption)}.` : '.'} On the present information, the age position appears potentially supportable, subject to original evidence and current pathway settings.`,
+      consequence: 'The age issue appears manageable if original identity documents and any exemption/concession evidence confirm the recorded position.',
+      requiredAction: 'Verify passport/date of birth, timing and any age exemption/concession evidence before final advice.'
+    };
+  }
+  return {
+    status: 'not_satisfied_or_high_risk',
+    displayStatus: 'High risk - exemption/concession required',
+    riskLevel: 'High',
+    clientFacts: `The applicant’s recorded age is ${age}. This may create a material risk unless an exemption, concession or alternative pathway is available.`,
+    consequence: 'If the applicable age requirement is not met and no exemption/concession applies, the application may not be viable.',
+    requiredAction: 'Confirm exact age, applicable stream settings and any available age exemption/concession before relying on this pathway.'
+  };
+}
+
 function factAnalysisFor(title, facts, existing) {
   const lower = String(title || '').toLowerCase();
   const existingText = clean(existing || '');
-  if (/stream|pathway/.test(lower)) return facts.stream ? `The selected pathway is recorded as ${facts.stream}. At this stage it should be treated as potentially available, but it must be confirmed against the nomination, skills and visa-history evidence before it is adopted as the lodgement pathway.` : 'The selected pathway has not been clearly confirmed from the stored assessment record.';
-  if (/sponsor|employer|nomination/.test(lower)) return facts.employer ? `The employer/nomination instruction identifies ${clean(facts.employer)}. The first practical issue is whether the nomination file, business records, position description and evidence of genuine ongoing need support that instruction.` : 'The employer/nomination position requires confirmation from the nomination file and employer evidence.';
-  if (/direct entry|skill/.test(lower)) return facts.skills ? `The skills/qualification information recorded is ${clean(facts.skills)}. It should be tested against the nominated occupation, skills-assessment pathway, licensing/registration and employment evidence before Direct Entry is relied upon.` : 'The Direct Entry skills position requires confirmation through the skills-assessment, qualifications, licensing and employment evidence.';
-  if (/occupation|anzsco/.test(lower)) return facts.duties || facts.occupation ? `The occupation/duties information appears potentially supportive, but the actual duties must be mapped to the nominated occupation and supported by references, qualifications and any required registration or licensing.` : 'The nominated occupation and ANZSCO alignment are not yet sufficiently established on the stored facts.';
-  if (/employment|work history|continuity/.test(lower)) {
-    const numeric = existingText.match(/\b\d{1,3}\b/);
-    if (numeric) return `A numeric value was present in the intake (${numeric[0]}). It has not been treated as employment history unless confirmed by the file. Employment continuity should be reconstructed from payroll, tax, superannuation and visa/work-rights records.`;
-    return 'Employment continuity should be reconstructed from objective payroll, tax, superannuation, leave and visa/work-rights records rather than treated as established from questionnaire wording alone.';
-  }
+  if (/stream|pathway/.test(lower)) return facts.stream ? `The selected pathway is recorded as ${facts.stream}. It must be confirmed against the nomination, skills, visa-history and source-mapped stream criteria before it is adopted as the lodgement pathway.` : 'The selected pathway has not been clearly confirmed from the stored assessment record.';
+  if (/sponsor|employer|nomination/.test(lower)) return facts.employer ? `The employer/nomination instruction identifies ${clean(facts.employer)}. The nomination file, business records, position description and evidence of genuine ongoing need must support that instruction.` : 'The employer/nomination position requires confirmation from the nomination file and employer evidence.';
+  if (/direct entry|skill/.test(lower)) return facts.skills ? `The skills/qualification information recorded is ${clean(facts.skills)}. It should be tested against the nominated occupation, skills-assessment pathway, licensing/registration and employment evidence before the stream is relied upon.` : 'The skills position requires confirmation through skills-assessment, qualifications, licensing and employment evidence.';
+  if (/occupation|anzsco/.test(lower)) return facts.duties || facts.occupation ? `The occupation/duties information appears potentially supportive, but actual duties must be mapped to the nominated occupation and supported by references, qualifications and any required registration or licensing.` : 'The nominated occupation and ANZSCO alignment are not yet sufficiently established on the stored facts.';
+  if (/employment|work history|continuity/.test(lower)) return 'Employment continuity should be reconstructed from objective payroll, tax, superannuation, leave and visa/work-rights records rather than treated as established from questionnaire wording alone.';
   if (/salary|market/.test(lower)) return facts.salary ? `The remuneration figure recorded is ${clean(facts.salary)}. It should be tested against the nomination record, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.` : 'The salary and market salary position requires confirmation from the nomination, contract, payroll and market evidence.';
   if (/english/.test(lower)) {
     const e = facts.englishDetails || {};
     const scoreBits = e.scores ? Object.entries(e.scores).filter(([,v]) => Number.isFinite(v)).map(([k,v]) => `${k} ${v}`).join(', ') : '';
-    const base = e.raw ? `The English evidence recorded is ${clean(e.testType || e.raw)}${scoreBits ? ` (${scoreBits})` : ''}.` : 'The English position has not been verified from original test or exemption evidence.';
+    const base = e.raw || e.testType ? `The English evidence recorded is ${clean(e.testType || e.raw)}${scoreBits ? ` (${scoreBits})` : ''}${e.testDate ? `, test date ${clean(e.testDate)}` : ''}.` : 'The English position has not been verified from original test or exemption evidence.';
     return `${base} ${e.reason || 'The original result, test type, component scores, validity date, exemption basis or concession must be verified before final advice.'}`;
   }
   if (/age/.test(lower)) return ageCriteriaAnalysis(facts).clientFacts;
@@ -374,15 +656,15 @@ function actionFor(finding) {
   return clean(pick(finding.requiredAction, finding.action, finding.recommendation, finding.seniorOpinion, finding.agentOpinion, finding.professionalPosition, 'Resolve before final lodgement advice.'));
 }
 
-function consequenceFor(title, finding, status, facts = {}) {
+function consequenceFor(title, finding, status) {
   const existing = isPlainObject(finding) ? clean(pick(finding.consequence, finding.legalConsequence, finding.consequenceOfFailure, finding.riskIfMissing, finding.whyItMatters)) : '';
   if (existing) return existing;
   const lower = String(title || '').toLowerCase();
   if (/nomination|sponsor|employer|genuine/.test(lower)) return 'If the nomination, genuine-position or employer-capacity evidence is inconsistent or incomplete, the nomination may become the central refusal risk.';
-  if (/skill|occupation|anzsco/.test(lower)) return 'If the skills, occupation, registration/licensing or qualification evidence cannot be verified, the Direct Entry pathway may not be lodgement-ready.';
+  if (/skill|occupation|anzsco/.test(lower)) return 'If the skills, occupation, registration/licensing or qualification evidence cannot be verified, the selected pathway may not be lodgement-ready.';
   if (/salary|market/.test(lower)) return 'If salary or market salary evidence cannot be reconciled, the nomination and stream position may become vulnerable.';
-  if (/english/.test(lower)) return 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession.';
-  if (/age/.test(lower)) return ageCriteriaAnalysis(facts).consequence;
+  if (/english/.test(lower)) return 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession for the selected stream.';
+  if (/age/.test(lower)) return ageCriteriaAnalysis({ age: null }).consequence;
   if (/health/.test(lower)) return 'Health issues may affect timing, evidence strategy or final lodgement advice depending on Departmental assessment.';
   if (/character|integrity|migration/.test(lower)) return 'If Departmental records differ from the instructions, the matter may require strategy before lodgement.';
   return /likely/i.test(status) ? 'The issue appears potentially supportable, subject to original evidence confirming the instructions.' : 'The criterion may be capable of being satisfied, but only if supporting documents confirm the instructions and no inconsistent records emerge.';
@@ -398,26 +680,84 @@ function enhanceFinding(finding, index, facts) {
     issue: title,
     title,
     sequence: index + 1,
-    status: /likely/i.test(displayStatus) ? 'likely_satisfied' : /not applicable/i.test(displayStatus) ? 'not_applicable' : 'unclear',
+    status: /likely/i.test(displayStatus) ? 'likely_satisfied' : /not applicable/i.test(displayStatus) ? 'not_applicable' : /not_satisfied|high risk/i.test(String(finding.status || displayStatus)) ? 'not_satisfied_or_high_risk' : 'unclear',
     displayStatus,
-    riskLevel: riskLevelFor(title, displayStatus),
-    materiality: materialityFor(title),
+    riskLevel: finding.riskLevel || riskLevelFor(title, displayStatus),
+    materiality: finding.materiality || materialityFor(title),
     legalRequirement: requirementFor(title, facts.subclass, facts.stream, existingRequirement),
     clientFacts: factAnalysisFor(title, facts, existingFacts),
     evidenceGap: evidenceFor(finding),
-    consequence: consequenceFor(title, finding, displayStatus, facts),
+    consequence: consequenceFor(title, finding, displayStatus),
     requiredAction: actionFor(finding),
     aiControllerEnhanced: true
   };
 }
 
+function hasFinding(findings, pattern) {
+  const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
+  return findings.some(f => re.test(findingTitle(f)));
+}
+
+function ensureCoreFindings(findings, facts) {
+  const out = [...findings];
+  if (!hasFinding(out, /age/)) {
+    const age = ageCriteriaAnalysis(facts);
+    out.push({
+      issue: 'Age requirement or exemption',
+      title: 'Age requirement or exemption',
+      status: age.status,
+      displayStatus: age.displayStatus,
+      riskLevel: age.riskLevel,
+      legalRequirement: requirementFor('Age requirement or exemption', facts.subclass, facts.stream),
+      clientFacts: age.clientFacts,
+      evidenceGap: 'Passport/date-of-birth evidence and any age exemption, concession or pathway-specific material.',
+      consequence: age.consequence,
+      requiredAction: age.requiredAction,
+      insertedByAiController: true
+    });
+  }
+  if (!hasFinding(out, /english/)) {
+    const e = facts.englishDetails || {};
+    out.push({
+      issue: 'English language requirement or concession',
+      title: 'English language requirement or concession',
+      status: e.status === 'likely_satisfied' ? 'likely_satisfied' : e.status === 'not_satisfied_or_high_risk' ? 'not_satisfied_or_high_risk' : 'unclear',
+      displayStatus: e.status === 'likely_satisfied' ? 'Likely satisfied - verify evidence' : e.status === 'not_satisfied_or_high_risk' ? 'High risk - English threshold not confirmed' : 'Unclear - evidence required',
+      riskLevel: e.status === 'likely_satisfied' ? 'Low to medium' : 'High',
+      legalRequirement: requirementFor('English language requirement or concession', facts.subclass, facts.stream),
+      clientFacts: factAnalysisFor('English language requirement or concession', facts, ''),
+      evidenceGap: 'Original English test report showing test type, component scores and validity date, or exemption/concession evidence.',
+      consequence: 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession.',
+      requiredAction: 'Verify English component scores, validity and any exemption/concession before final lodgement advice.',
+      insertedByAiController: true
+    });
+  }
+  return out;
+}
+
+function mergeFindings(registryFindings, existingFindings, facts) {
+  const out = [];
+  const seen = new Set();
+  const add = (finding) => {
+    const title = findingTitle(finding);
+    const clause = finding && finding.clause ? String(finding.clause) : '';
+    const key = clause || normaliseKey(title).slice(0, 80);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(finding);
+  };
+  registryFindings.forEach(add);
+  existingFindings.forEach(add);
+  return ensureCoreFindings(out, facts);
+}
+
 function topBlockers(findings) {
-  const priorityOrder = ['nomination', 'sponsor', 'employer', 'direct entry', 'skill', 'occupation', 'anzsco', 'salary', 'market', 'english', 'age', 'stream', 'pathway'];
+  const priorityOrder = ['nomination', 'sponsor', 'employer', 'direct entry', 'skill', 'occupation', 'anzsco', 'salary', 'market', 'english', 'age', 'stream', 'pathway', 'health', 'character', 'migration'];
   const scored = findings.map(f => {
     const title = f.title || f.issue || '';
     const lower = title.toLowerCase();
     const priority = priorityOrder.findIndex(p => lower.includes(p));
-    const unresolved = /unclear|risk|required|medium|high/i.test(`${f.displayStatus} ${f.riskLevel}`) ? 10 : 0;
+    const unresolved = /unclear|risk|required|medium|high|not_satisfied/i.test(`${f.displayStatus} ${f.riskLevel} ${f.status}`) ? 10 : 0;
     return { f, score: unresolved + (priority >= 0 ? (priorityOrder.length - priority) : 0) };
   });
   return scored.sort((a, b) => b.score - a.score).slice(0, 5).map(x => x.f);
@@ -437,7 +777,7 @@ function buildViabilityOpinion(facts, findings) {
   const blockers = topBlockers(findings);
   const high = blockers.filter(f => /high/i.test(String(f.riskLevel || ''))).length;
   const likely = findings.filter(f => /likely_satisfied/i.test(String(f.status || ''))).length;
-  const unresolved = findings.filter(f => /unclear|risk|required/i.test(`${f.status} ${f.displayStatus}`)).length;
+  const unresolved = findings.filter(f => /unclear|risk|required|not_satisfied/i.test(`${f.status} ${f.displayStatus}`)).length;
 
   let position = 'Potentially viable but not lodgement-ready';
   let overallRisk = 'High';
@@ -450,7 +790,7 @@ function buildViabilityOpinion(facts, findings) {
   }
 
   const blockerText = blockers.map(f => f.title || f.issue).filter(Boolean);
-  const summary = `On the current instructions, the Subclass ${facts.subclass}${facts.stream ? ` ${facts.stream}` : ''} pathway is ${position.toLowerCase()}. The main unresolved issues are ${blockerText.length ? blockerText.join('; ') : 'the criterion-by-criterion evidence position'}.`;
+  const summary = `On the current saved answers, the Subclass ${facts.subclass}${facts.stream ? ` ${facts.stream}` : ''} pathway is ${position.toLowerCase()}. The main unresolved issues are ${blockerText.length ? blockerText.join('; ') : 'the criterion-by-criterion evidence position'}.`;
   const nextStep = blockerText.length
     ? `Start with ${blockerText[0]}, then reconcile ${blockerText.slice(1, 4).join('; ') || 'the remaining evidence gaps'} before final lodgement advice.`
     : 'Complete original evidence review before final lodgement advice.';
@@ -458,15 +798,16 @@ function buildViabilityOpinion(facts, findings) {
   return { position, overallRisk, summary, nextStep, materialBlockers: blockerText };
 }
 
-function legalFrameworkSummary(facts) {
+function legalFrameworkSummary(facts, registry) {
   const streamPart = facts.stream ? ` ${facts.stream}` : '';
-  return `This preliminary assessment considered the Subclass ${facts.subclass}${streamPart} framework, including application validity, nomination-linked requirements, occupation and skills position, English and age-related issues where relevant, health, character, integrity/public-interest criteria and migration-history considerations. Exact clause references are used only where verified by the legal source mapping; otherwise the issue is expressed as a controlled source-supported requirement for agent review.`;
+  const registryVersion = registry && (registry.schemaVersion || registry.version || registry.registryFingerprint) ? ` Registry/source snapshot: ${registry.schemaVersion || registry.version || registry.registryFingerprint}.` : '';
+  return `This preliminary assessment considered the Subclass ${facts.subclass}${streamPart} framework using the subclass criteria registry and knowledgebase source pack, including application validity, nomination-linked requirements, occupation and skills position, English, age where relevant, health, character, integrity/public-interest criteria and migration-history considerations. Exact clause references are used only where present in the source-mapped registry and remain subject to RMA verification.${registryVersion}`;
 }
 
-function buildClientAdviceObject({ facts, findings, adviceBundle }) {
+function buildClientAdviceObject({ facts, findings, adviceBundle, registry, registryAssessmentAudit }) {
   const viability = buildViabilityOpinion(facts, findings);
   const priorityActionPlan = buildPriorityActionPlan(findings);
-  const pathwayStrengthAnalysis = `The selected pathway (${facts.stream || 'stream/pathway not confirmed'}) should be treated as a working pathway rather than a final lodgement position until the nomination, skills/occupation, salary and English evidence are reconciled. If those items are not supportable, the matter should be compared against any alternative pathway before filing.`;
+  const pathwayStrengthAnalysis = `The selected pathway (${facts.stream || 'stream/pathway not confirmed'}) is assessed as a working pathway against the saved answers, criteria registry and knowledgebase source mapping. It should not be treated as lodgement-ready until the priority criteria and original evidence are reconciled.`;
   return {
     matter: {
       reference: pick(adviceBundle.assessmentId, adviceBundle.reference),
@@ -488,7 +829,7 @@ function buildClientAdviceObject({ facts, findings, adviceBundle }) {
     pathwayStrengthAnalysis,
     topMaterialBlockers: viability.materialBlockers,
     priorityActionPlan,
-    legalFrameworkSummary: legalFrameworkSummary(facts),
+    legalFrameworkSummary: legalFrameworkSummary(facts, registry),
     eligibilityFindings: findings,
     criteriaFindings: findings,
     seniorCriteriaFindings: findings,
@@ -499,15 +840,20 @@ function buildClientAdviceObject({ facts, findings, adviceBundle }) {
     riskLevel: viability.overallRisk,
     lodgementPosition: viability.position,
     nextStep: viability.nextStep,
+    fieldCoverageSummary: registryAssessmentAudit ? {
+      savedAnswerFieldCount: registryAssessmentAudit.savedAnswerFieldCount,
+      usedAnswerFieldCount: registryAssessmentAudit.usedAnswerFieldCount,
+      registryCriteriaCount: registryAssessmentAudit.registryCriteriaCount
+    } : null,
     finalRecommendation: {
       position: 'Do not lodge yet',
       overallRisk: viability.overallRisk,
       nextStep: viability.nextStep,
       summary: `${viability.position}. Do not lodge until the priority issues are reconciled against original evidence.`,
-      fullText: `${viability.position}. The matter should proceed to formal evidence review. If the priority issues are verified and no adverse Departmental records or public-interest concerns emerge, the matter may become suitable for final lodgement advice. The first practical step is: ${viability.nextStep}`
+      fullText: `${viability.position}. The matter should proceed to formal evidence review. If the priority issues are verified and no adverse Departmental records, source-mapping issues or public-interest concerns emerge, the matter may become suitable for final lodgement advice. The first practical step is: ${viability.nextStep}`
     },
     limitations: [
-      'This is preliminary advice based on questionnaire answers and available source materials.',
+      'This is preliminary advice based on saved questionnaire answers and available source materials.',
       'Original evidence, current law, Departmental records and final migration-agent review are required before lodgement.',
       'No guarantee of visa grant is given.'
     ],
@@ -515,20 +861,20 @@ function buildClientAdviceObject({ facts, findings, adviceBundle }) {
   };
 }
 
-function buildInternalAuditObject({ facts, findings, adviceBundle, registry, registryResult }) {
+function buildInternalAuditObject({ facts, findings, adviceBundle, registry, registryResult, registryAssessmentAudit }) {
   const legalPack = adviceBundle.legalSourcePack || {};
   return {
     assessmentId: pick(adviceBundle.assessmentId, adviceBundle.advice && adviceBundle.advice.assessmentId),
     engineVersion: AI_CONTROLLER_VERSION,
-    registryVersion: pick(registry && registry.version, registry && registry.metadata && registry.metadata.version, 'registry-version-not-declared'),
-    knowledgebaseVersion: pick(legalPack.snapshotId, legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId, 'knowledgebase-snapshot-not-declared'),
-    pdfTemplateVersion: 'pdf-js-ai-controller-layout-v1',
+    registryVersion: pick(registry && registry.version, registry && registry.schemaVersion, registry && registry.metadata && registry.metadata.version, 'registry-version-not-declared'),
+    knowledgebaseVersion: pick(legalPack.snapshotId, legalPack.knowledgebaseSnapshot && legalPack.knowledgebaseSnapshot.snapshotId, registry && registry.registryFingerprint, 'knowledgebase-snapshot-not-declared'),
+    pdfTemplateVersion: 'pdf-js-ai-controller-layout-v2',
     generatedAt: new Date().toISOString(),
-    criteriaAssessed: findings.map(f => ({ issue: f.title || f.issue, status: f.status, riskLevel: f.riskLevel, materiality: f.materiality })),
+    criteriaAssessed: findings.map(f => ({ issue: f.title || f.issue, clause: f.clause || null, status: f.status, riskLevel: f.riskLevel, materiality: f.materiality, answerFieldsUsed: f.answerFieldsUsed || [] })),
     sourcesUsed: Array.isArray(legalPack.sources) ? legalPack.sources.map(s => ({ authority: s.authority, title: s.title, path: s.path, sha256: s.sha256 })).slice(0, 50) : [],
-    sourceConfidence: { subclass: facts.subclass ? 'medium' : 'low', stream: facts.stream ? 'medium' : 'low' },
-    extractedAssessmentFacts: { age: facts.age || null, english: facts.englishDetails || null, salary: facts.salary || null, occupation: facts.occupation || null },
+    sourceConfidence: { subclass: facts.subclass ? 'medium' : 'low', stream: facts.stream ? 'medium' : 'low', registry: registry ? 'source-mapped-needs-rma-verification' : 'missing' },
     coverageWarnings: asArray(registryResult && registryResult.audit && (registryResult.audit.coverageGateWarningMessage || registryResult.audit.sourceSupportWarningMessage)).filter(Boolean),
+    answerCoverageAudit: registryAssessmentAudit || null,
     fallbackUsed: Boolean(adviceBundle.fallbackUsed || adviceBundle.deterministicFallbackUsed),
     fallbackReason: pick(adviceBundle.fallbackReason, adviceBundle.primaryPipelineFailure, null),
     qualityGateResult: {
@@ -536,58 +882,18 @@ function buildInternalAuditObject({ facts, findings, adviceBundle, registry, reg
       subclassPresent: Boolean(facts.subclass),
       streamPresent: Boolean(facts.stream),
       criteriaFindingsPresent: findings.length > 0,
+      answerPayloadPresent: facts.answerCount > 0,
+      registryCriteriaMapped: Boolean(registryAssessmentAudit && registryAssessmentAudit.registryCriteriaCount),
       noFakeCitations: true,
       passed: Boolean(facts.clientEmail && facts.subclass && facts.stream && findings.length)
     },
     adminWarnings: [
       ...(!facts.stream ? ['Stream/pathway could not be confidently identified.'] : []),
       ...(!facts.clientEmail ? ['Client email missing from advice controller facts.'] : []),
-      ...findings.filter(f => /numeric value/i.test(String(f.clientFacts || ''))).map(f => `Unclear numeric field kept as audit warning for ${f.title || f.issue}.`)
+      ...(!registry ? ['Criteria registry was not supplied to AI controller; fallback/enhanced findings only.'] : []),
+      ...(registryAssessmentAudit && registryAssessmentAudit.unusedAnswerFields && registryAssessmentAudit.unusedAnswerFields.length ? [`Some saved answer fields were not mapped to registry criteria: ${registryAssessmentAudit.unusedAnswerFields.slice(0, 25).join(', ')}`] : [])
     ]
   };
-}
-
-
-function hasFinding(findings, pattern) {
-  const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
-  return findings.some(f => re.test(findingTitle(f)));
-}
-
-function ensureCoreFindings(findings, facts) {
-  const out = [...findings];
-  if (facts.subclass === '186' && !hasFinding(out, /age/)) {
-    const age = ageCriteriaAnalysis(facts);
-    out.push({
-      issue: 'Age requirement or exemption',
-      title: 'Age requirement or exemption',
-      status: age.status,
-      displayStatus: age.displayStatus,
-      riskLevel: age.riskLevel,
-      legalRequirement: requirementFor('Age requirement or exemption', facts.subclass, facts.stream),
-      clientFacts: age.clientFacts,
-      evidenceGap: 'Passport/date-of-birth evidence and any age exemption, concession or pathway-specific material.',
-      consequence: age.consequence,
-      requiredAction: age.requiredAction,
-      insertedByAiController: true
-    });
-  }
-  if (facts.subclass === '186' && !hasFinding(out, /english/)) {
-    const e = facts.englishDetails || {};
-    out.push({
-      issue: 'English language requirement or concession',
-      title: 'English language requirement or concession',
-      status: e.status === 'likely_satisfied' ? 'likely_satisfied' : e.status === 'not_satisfied_or_high_risk' ? 'not_satisfied_or_high_risk' : 'unclear',
-      displayStatus: e.status === 'likely_satisfied' ? 'Likely satisfied - verify evidence' : e.status === 'not_satisfied_or_high_risk' ? 'High risk - English threshold not confirmed' : 'Unclear - evidence required',
-      riskLevel: e.status === 'likely_satisfied' ? 'Low to medium' : 'High',
-      legalRequirement: requirementFor('English language requirement or concession', facts.subclass, facts.stream),
-      clientFacts: factAnalysisFor('English language requirement or concession', facts, ''),
-      evidenceGap: 'Original English test report showing test type, component scores and validity date, or exemption/concession evidence.',
-      consequence: 'The English position may be supportable only if the evidence is valid, current and meets the applicable threshold, exemption or concession.',
-      requiredAction: 'Verify English component scores, validity and any exemption/concession before final lodgement advice.',
-      insertedByAiController: true
-    });
-  }
-  return out;
 }
 
 function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, registry = null, registryResult = null } = {}) {
@@ -595,10 +901,12 @@ function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, 
   facts.subclass = facts.subclass || normaliseSubclass(pick(adviceBundle.subclass, adviceBundle.advice && adviceBundle.advice.subclass));
   facts.stream = facts.stream || normaliseStream(pick(adviceBundle.stream, adviceBundle.selectedStream, adviceBundle.clientFacingStream, adviceBundle.advice && adviceBundle.advice.stream));
 
-  const originalFindings = ensureCoreFindings(sourceFindings(adviceBundle), facts);
-  const enhancedFindings = originalFindings.map((finding, index) => enhanceFinding(finding, index, facts));
-  const clientAdviceObject = buildClientAdviceObject({ facts, findings: enhancedFindings, adviceBundle });
-  const internalAuditObject = buildInternalAuditObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryResult });
+  const registryAssessment = registry ? buildRegistryCriteriaFindings({ registry, facts }) : { findings: [], audit: null };
+  const originalFindings = sourceFindings(adviceBundle);
+  const mergedFindings = mergeFindings(registryAssessment.findings, originalFindings, facts);
+  const enhancedFindings = mergedFindings.map((finding, index) => enhanceFinding(finding, index, facts));
+  const clientAdviceObject = buildClientAdviceObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryAssessmentAudit: registryAssessment.audit });
+  const internalAuditObject = buildInternalAuditObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryResult, registryAssessmentAudit: registryAssessment.audit });
   const advice = adviceBundle.advice || {};
   const existingModel = adviceBundle.seniorAdviceModel || adviceBundle.universalAdviceModel || adviceBundle.adviceModel || advice.seniorAdviceModel || advice;
 
@@ -610,6 +918,7 @@ function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, 
     clientFacingStream: facts.stream || adviceBundle.clientFacingStream,
     aiMigrationAdviceControllerVersion: AI_CONTROLLER_VERSION,
     aiControllerApplied: true,
+    aiControllerMode: registry ? 'all-answers-registry-criteria-assessment' : 'all-answers-fallback-enhancement',
     clientAdviceObject,
     internalAuditObject: {
       ...(adviceBundle.internalAuditObject || {}),
