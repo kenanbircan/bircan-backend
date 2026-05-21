@@ -7099,18 +7099,31 @@ function scheduleDashboardV2PdfGeneration(services, email) {
   const targets = (services || []).filter(dashboardV2ShouldKickPdf).slice(0, 3);
   if (!targets.length) return [];
   const ids = targets.map(t => t.id);
+
+  // Universal advice-engine hardening:
+  // The dashboard request must never run the legal-frame/PDF renderer inline.
+  // It only queues jobs and returns immediately. A worker or admin worker call
+  // performs the heavy work outside the client-facing request cycle.
   setImmediate(async () => {
     for (const service of targets) {
       try {
         await query(
           `INSERT INTO pdf_jobs (assessment_id, status, run_after)
            VALUES ($1,'queued',now())
-           ON CONFLICT (assessment_id) DO UPDATE SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
+           ON CONFLICT (assessment_id) DO UPDATE
+             SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
           [service.id]
         );
-        await generateAssessmentPdfNow(service.id, email);
+        await query(
+          `UPDATE assessments
+           SET status=CASE WHEN status IN ('pdf_ready','advice_ready') THEN status ELSE 'pdf_queued' END,
+               generation_error=NULL,
+               updated_at=now()
+           WHERE id=$1 AND payment_status='paid' AND (pdf_bytes IS NULL OR octet_length(pdf_bytes) <= 1024)`,
+          [service.id]
+        ).catch(() => null);
       } catch (err) {
-        console.error('Dashboard v2 PDF generation kick failed:', service.id, err && err.message ? err.message : err);
+        console.error('Dashboard v2 PDF queue failed:', service.id, err && err.message ? err.message : err);
       }
     }
   });
@@ -7740,20 +7753,35 @@ async function sendAssessmentPdf(req, res, rawId) {
   }
   const hasPdf = hasIssuedPdfBytes(assessment.pdf_bytes);
   const needsGrantCriteriaRegeneration = hasPdf && !/grant-criteria/i.test(String(assessment.pdf_filename || ''));
+
+  // Do not generate the legal-frame PDF inside the open/download request.
+  // Opening a document is a fast read-only action. If generation is required,
+  // queue it and let the dashboard poll the status.
   if ((!hasPdf || needsGrantCriteriaRegeneration) && assessment.payment_status === 'paid') {
-    try {
-      await generateAssessmentPdfNow(assessment.id, req.client.email, { force: needsGrantCriteriaRegeneration });
-      assessment = await resolveAssessmentForAccount(assessment.id, req.client.email) || assessment;
-    } catch (err) {
-      console.error('Visa PDF generation on open failed:', err.message);
-      assessment.generation_error = err.message;
-    }
+    await query(
+      `INSERT INTO pdf_jobs (assessment_id, status, run_after)
+       VALUES ($1,'queued',now())
+       ON CONFLICT (assessment_id) DO UPDATE
+         SET status='queued', run_after=now(), locked_at=NULL, last_error=NULL, updated_at=now()`,
+      [assessment.id]
+    ).catch(() => null);
+    await query(
+      `UPDATE assessments
+       SET status='pdf_queued',
+           generation_error=NULL,
+           updated_at=now()
+       WHERE id=$1 AND (pdf_bytes IS NULL OR octet_length(pdf_bytes) <= 1024 OR $2=true)`,
+      [assessment.id, needsGrantCriteriaRegeneration]
+    ).catch(() => null);
   }
   if (!hasIssuedPdfBytes(assessment.pdf_bytes)) {
     return res.status(409).json({
       ok: false,
-      error: 'PDF not ready. The advice letter has not been issued yet.',
-      status: assessment.status,
+      queued: assessment.payment_status === 'paid',
+      error: assessment.payment_status === 'paid'
+        ? 'PDF generation has been queued. The advice letter is not ready yet.'
+        : 'PDF not ready. The advice letter has not been issued yet.',
+      status: assessment.payment_status === 'paid' ? 'pdf_queued' : assessment.status,
       paymentStatus: assessment.payment_status,
       generationError: assessment.generation_error || null
     });
