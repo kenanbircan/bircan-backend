@@ -216,6 +216,66 @@ function collectActionPlan(model) {
   ));
 }
 
+function collectPriorityActionPlan(model) {
+  return normaliseArray(pick(
+    model && model.priorityActionPlan,
+    model && model.clientAdviceObject && model.clientAdviceObject.priorityActionPlan,
+    model && model.seniorOpinion && model.seniorOpinion.priorityActionPlan
+  ));
+}
+
+function writeViabilityAndPriorities(doc, model) {
+  const viability = pick(
+    model && model.viabilityOpinion,
+    model && model.clientAdviceObject && model.clientAdviceObject.viabilityOpinion
+  );
+  const pathwayStrength = pick(
+    model && model.pathwayStrengthAnalysis,
+    model && model.clientAdviceObject && model.clientAdviceObject.pathwayStrengthAnalysis
+  );
+  const blockers = normaliseArray(pick(
+    model && model.topMaterialBlockers,
+    model && model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers,
+    viability && viability.materialBlockers
+  ));
+  const priorities = collectPriorityActionPlan(model);
+
+  if (!viability && !pathwayStrength && !blockers.length && !priorities.length) return;
+
+  h1(doc, '2. Current viability and priority action plan');
+  if (isPlainObject(viability)) {
+    keyValueTable(doc, [
+      ['Current viability', pick(viability.position, viability.viability, 'Potentially viable subject to evidence reconciliation')],
+      ['Overall risk', pick(viability.overallRisk, model && model.overallRisk, 'High')],
+      ['Main next step', pick(viability.nextStep, model && model.nextStep, 'Resolve priority evidence issues before final lodgement advice')]
+    ]);
+    if (viability.summary) p(doc, viability.summary);
+  } else if (viability) {
+    p(doc, viability);
+  }
+
+  if (pathwayStrength) {
+    h2(doc, 'Pathway strength analysis');
+    p(doc, pathwayStrength);
+  }
+
+  if (blockers.length) {
+    h2(doc, 'Main blockers to resolve');
+    blockers.slice(0, 6).forEach(item => bullet(doc, item));
+  }
+
+  if (priorities.length) {
+    h2(doc, 'Priority action plan');
+    priorities.slice(0, 6).forEach((item, index) => {
+      if (isPlainObject(item)) {
+        bullet(doc, `Priority ${item.priority || index + 1} — ${pick(item.issue, item.title, 'Issue')}: ${pick(item.requiredAction, item.action, item.description, item.whyItMatters, 'Resolve before final advice.')}`);
+      } else {
+        bullet(doc, item);
+      }
+    });
+  }
+}
+
 function findingTitle(finding) {
   if (!isPlainObject(finding)) return text(finding, '');
   return cleanClientText(pick(
@@ -539,7 +599,7 @@ function writeExecutive(doc, model, subclass, stream) {
 }
 
 function writeFacts(doc, assessment, model) {
-  h1(doc, '2. Facts, assumptions and evidence status');
+  h1(doc, '3. Facts, assumptions and evidence status');
   p(doc, 'The following matters are treated as preliminary unless confirmed by original evidence. The advice separates the current file position from the issues that must be verified before a final lodgement recommendation is made.');
 
   const rows = [
@@ -554,7 +614,7 @@ function writeFacts(doc, assessment, model) {
 }
 
 function writeLegalFramework(doc, model, subclass, stream) {
-  h1(doc, '3. Legal framework applied');
+  h1(doc, '4. Legal framework applied');
   const frame = pick(
     model.legalFrameworkSummary,
     model.legalFrameSummary,
@@ -582,7 +642,7 @@ function writeLegalFramework(doc, model, subclass, stream) {
 }
 
 function writeFindings(doc, findings) {
-  h1(doc, '4. Application of law to the client’s facts');
+  h1(doc, '5. Application of law to the client’s facts');
   p(doc, 'The following findings apply the identified legal requirements to the information currently available. The status labels separate matters that appear supportable from matters that remain unclear or higher risk. A final lodgement recommendation should not be issued until the listed evidence is reconciled.');
 
   const maxMain = Math.min(findings.length, 12);
@@ -592,7 +652,7 @@ function writeFindings(doc, findings) {
 }
 
 function writeEvidence(doc, model) {
-  h1(doc, '5. Evidence gaps and document request');
+  h1(doc, '6. Evidence gaps and document request');
   const gaps = collectEvidenceGaps(model);
   if (!gaps.length) {
     p(doc, 'A formal evidence request should be prepared from the criterion-by-criterion findings before final lodgement advice is issued.');
@@ -619,7 +679,7 @@ function riskCard(doc, index, finding) {
 }
 
 function writeRisk(doc, model, findings) {
-  h1(doc, '6. Risk assessment');
+  h1(doc, '7. Risk assessment');
   const riskSummary = pick(
     model.riskAnalysis && model.riskAnalysis.summary,
     model.riskSummary,
@@ -634,7 +694,7 @@ function writeRisk(doc, model, findings) {
 }
 
 function writeActionPlan(doc, model) {
-  h1(doc, '7. Lodgement-readiness action plan');
+  h1(doc, '8. Lodgement-readiness action plan');
   const actions = collectActionPlan(model);
   const defaultActions = [
     'Confirm the selected subclass and stream/pathway against the applicable registry and legal frame.',
@@ -650,7 +710,7 @@ function writeActionPlan(doc, model) {
 }
 
 function writeRecommendation(doc, model, subclass, stream) {
-  h1(doc, '8. Final professional recommendation');
+  h1(doc, '9. Final professional recommendation');
   const rec = pick(
     model.finalRecommendation && model.finalRecommendation.fullText,
     model.finalRecommendation && model.finalRecommendation.summary,
@@ -674,7 +734,7 @@ function writeRecommendation(doc, model, subclass, stream) {
 }
 
 function writeLimitations(doc) {
-  h1(doc, '9. Important limitations');
+  h1(doc, '10. Important limitations');
   p(doc, 'This advice is preliminary and based on the information presently available. It is subject to review of original documents, current law and policy, Departmental records, conflict checks and final professional review before lodgement. No guarantee of visa grant is given.');
   p(doc, 'The Department may request further information, apply policy differently, identify adverse information, or reach a different view after assessing the complete application record.');
   doc.moveDown(1);
@@ -719,6 +779,7 @@ function buildAssessmentPdfBuffer(assessment = {}, adviceBundle = {}) {
 
       coverPage(doc, { assessment: cleanAssessment, subclass, stream, model });
       writeExecutive(doc, model, subclass, stream);
+      writeViabilityAndPriorities(doc, model);
       writeFacts(doc, cleanAssessment, model);
       writeLegalFramework(doc, model, subclass, stream);
       writeFindings(doc, findings);

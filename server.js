@@ -42,6 +42,7 @@ const decisionEngineModule = require('./migrationDecisionEngine');
 const { attachPathwayComparisonToAdviceBundle, compareMigrationPathways } = require('./migrationPathwayComparator');
 const { installClientJourneyRoutes, ensureClientJourneySchema } = require('./clientJourneyEngine');
 const { attachSeniorAdviceModel } = require('./seniorAdviceEngine');
+const { applyAiMigrationAdviceController, AI_CONTROLLER_VERSION } = require('./advice/aiMigrationAdviceController');
 const { createPaidAdviceJob, runOneAdviceJob, runDueAdviceJobs } = require('./advice/adviceJobRunner');
 const { normaliseAssessment } = require('./advice/intakeNormalizer');
 const { loadSubclassRegistry, validateAssessmentPathway } = require('./advice/criteriaRegistryService');
@@ -1952,7 +1953,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.8-senior-advice-intelligence-layout-v1',
+    version: '12.2.9-ai-migration-advice-controller-v1',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -6889,7 +6890,13 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
 
     const enrichedAdviceBundle = attachPathwayComparisonToAdviceBundle(adviceBundle, assessmentForAdvice);
     const commercialAdviceBundle = enhanceAdviceBundleForCommercialOutput(enrichedAdviceBundle, assessmentForAdvice);
-    const pdfClientBundle = bmBuildClientPdfBundleForRenderer(commercialAdviceBundle, assessmentForAdvice);
+    const aiControlledAdviceBundle = applyAiMigrationAdviceController({
+      adviceBundle: commercialAdviceBundle,
+      assessment: assessmentForAdvice,
+      registry,
+      registryResult
+    });
+    const pdfClientBundle = bmBuildClientPdfBundleForRenderer(aiControlledAdviceBundle, assessmentForAdvice);
     pdf = await buildAssessmentPdfBuffer(
       assessmentForAdvice,
       pdfClientBundle
@@ -6910,7 +6917,11 @@ async function generateAssessmentPdfNow(assessmentId, accountEmail = null, optio
     // retained in generation_error only if this fallback also fails.
     try {
       const fallbackBundle = await buildFastLegalAdviceBundle(assessmentForAdvice || assessment);
-      const fallbackClientBundle = bmBuildClientPdfBundleForRenderer(fallbackBundle, assessmentForAdvice || assessment);
+      const aiControlledFallbackBundle = applyAiMigrationAdviceController({
+        adviceBundle: fallbackBundle,
+        assessment: assessmentForAdvice || assessment
+      });
+      const fallbackClientBundle = bmBuildClientPdfBundleForRenderer(aiControlledFallbackBundle, assessmentForAdvice || assessment);
       pdf = await buildAssessmentPdfBuffer(assessmentForAdvice || assessment, fallbackClientBundle);
       if (!Buffer.isBuffer(pdf) || pdf.length <= 1024) {
         throw new Error('Deterministic advice fallback produced an empty PDF buffer.');
