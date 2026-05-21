@@ -2010,7 +2010,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.11-ai-controller-worker-pipeline-v1',
+    version: '12.2.13-universal-all-subclasses-answer-criteria-v1',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
