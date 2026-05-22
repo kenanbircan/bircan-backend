@@ -7748,14 +7748,17 @@ async function clientFromJwtToken(token, secret = SESSION_SECRET) {
 }
 
 function dashboardRequestToken(req) {
+  // Explicit dashboard/PDF tokens must win over stale browser cookies.
+  // A direct PDF URL may include ?dashboard_token=... while the browser still
+  // carries an old bm_session/bm_dashboard_token from another test account.
+  // If cookies are checked first, the final-pdf route can reject a valid PDF as
+  // "Assessment was not found for this account" even where the token and DB owner match.
   return String(
-    (req.cookies && (req.cookies.bm_dashboard_token || req.cookies.bm_session)) ||
-    (req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
-    req.headers['x-auth-token'] ||
+    (req.query && (req.query.dashboard_token || req.query.dashboardToken || req.query.access_token)) ||
     req.headers['x-dashboard-access-token'] ||
-    req.query.dashboard_token ||
-    req.query.dashboardToken ||
-    req.query.access_token ||
+    req.headers['x-auth-token'] ||
+    (req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
+    (req.cookies && (req.cookies.bm_dashboard_token || req.cookies.bm_session)) ||
     ''
   ).trim();
 }
@@ -8880,25 +8883,34 @@ app.get('/api/assessment/:id/status', resolveDashboardAccess, asyncRoute(async (
   });
 }));
 
-async function resolveAssessmentForAccount(rawId, accountEmail) {
+async function resolveAssessmentForAccount(rawId, accountEmail, accountClientId = null) {
   const requestedId = String(rawId || '').trim();
   const email = normaliseEmail(accountEmail);
+  const clientId = String(accountClientId || '').trim();
   let rows = (await query(
     `SELECT * FROM assessments
      WHERE id=$1
-       AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))
+       AND (
+         ($2::uuid IS NOT NULL AND client_id=$2::uuid)
+         OR lower(client_email)=lower($3)
+         OR lower(applicant_email)=lower($3)
+       )
      LIMIT 1`,
-    [requestedId, email]
+    [requestedId, clientId || null, email]
   )).rows;
   if (!rows[0] && /^sub_\d+_[a-z0-9]+$/i.test(requestedId)) {
     const likePattern = requestedId.replace(/([%_\\])/g, '\\$1') + '\_%';
     rows = (await query(
       `SELECT * FROM assessments
        WHERE id LIKE $1 ESCAPE '\\'
-         AND (lower(client_email)=lower($2) OR lower(applicant_email)=lower($2))
+         AND (
+           ($2::uuid IS NOT NULL AND client_id=$2::uuid)
+           OR lower(client_email)=lower($3)
+           OR lower(applicant_email)=lower($3)
+         )
        ORDER BY created_at DESC
        LIMIT 1`,
-      [likePattern, email]
+      [likePattern, clientId || null, email]
     )).rows;
   }
   return rows[0] || null;
@@ -8927,7 +8939,7 @@ async function sendAssessmentPdf(req, res, rawId) {
   // Permanent PDF identity rule:
   // The route id is the record selector. Stripe session is only an access/context
   // proof and must never override the requested assessment id.
-  let assessment = await resolveAssessmentForAccount(requestedId, req.client.email);
+  let assessment = await resolveAssessmentForAccount(requestedId, req.client.email, req.client.id);
 
   // Backward-compatible fallback only for legacy calls that do not provide an id.
   if (!assessment && !requestedId && returnStripeSession) {
