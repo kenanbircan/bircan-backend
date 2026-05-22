@@ -224,6 +224,31 @@ function qualityGate(model) {
     }
   }
   const sc = subclassOf(model.subclass);
+  const family = (() => {
+    const employer = ['186','187','407','482','494'];
+    const partner = ['100','300','309','801','820'];
+    const skilled = ['188','189','190','485','489','491','888'];
+    if (employer.includes(sc)) return 'employer';
+    if (partner.includes(sc)) return 'partner';
+    if (skilled.includes(sc)) return 'skilled';
+    return 'other';
+  })();
+  if (family !== 'employer') {
+    const employerLeak = /Direct Entry skills|salary and market|market salary|AMSR|genuine position|nominated occupation|ANZSCO|sponsoring employer|Labour Market Testing/i.exec(text);
+    if (employerLeak) {
+      const err = new Error(`Advice-grade PDF blocked: employer-sponsored criterion leaked into Subclass ${sc}: ${employerLeak[0]}.`);
+      err.code = 'UNIVERSAL_SUBCLASS_CONTAMINATION';
+      throw err;
+    }
+  }
+  if (family === 'partner') {
+    const mustNot = /occupation eligibility|skills assessment|salary\/AMSR|nomination validity|labour agreement/i.exec(text);
+    if (mustNot) {
+      const err = new Error(`Advice-grade PDF blocked: non-partner criterion leaked into Subclass ${sc}: ${mustNot[0]}.`);
+      err.code = 'UNIVERSAL_PARTNER_CONTAMINATION';
+      throw err;
+    }
+  }
   const wrongFrame = text.match(/(?:controlled by|proposed|reviewed for|advice letter for)\s+(?:the\s+)?Subclass\s+(\d{3})/gi) || [];
   for (const m of wrongFrame) {
     const n = subclassOf(m);
@@ -250,7 +275,7 @@ async function buildUniversalAdviceModel({ assessment = {}, subclass: subclassVa
   const stream = clientFacingStream(resolved.stream);
   const model = {
     engine: 'universalAdviceEngine',
-    version: '1.0.0-universal-legal-frame-gated',
+    version: '1.0.1-v38-subclass-isolation-design-gated',
     subclass,
     stream,
     rawStream: clean(rawStream),
