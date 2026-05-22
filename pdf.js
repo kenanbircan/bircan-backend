@@ -14,7 +14,7 @@
 const crypto = require('crypto');
 const PDFDocument = require('pdfkit');
 
-const RENDERER_VERSION = 'pdf-js-server-contract-renderer-v111-20260522-polished';
+const RENDERER_VERSION = 'pdf-js-server-contract-renderer-v112-20260522-professional-advice-engine';
 
 const BRAND = {
   name: 'Bircan Migration & Education',
@@ -108,6 +108,91 @@ function uniqueByNormalised(items) {
   return out;
 }
 
+
+function issueKey(value) {
+  const text = body(isPlainObject(value) ? pick(value.issue, value.title, value.area, value.criterion, humanizeObject(value)) : value).toLowerCase();
+  if (/english/.test(text)) return 'english';
+  if (/age/.test(text)) return 'age';
+  if (/salary|market|remuneration|amsr/.test(text)) return 'salary-market';
+  if (/direct entry|skill|skills assessment|qualification/.test(text)) return 'direct-entry-skills';
+  if (/occupation|anzsco|duties/.test(text)) return 'occupation-anzsco';
+  if (/sponsor|employer|nomination|genuine|operational need/.test(text)) return 'employer-nomination';
+  if (/health/.test(text)) return 'health';
+  if (/character|integrity|public interest/.test(text)) return 'character-integrity';
+  if (/migration history|compliance|refusal|cancellation|section 48|8503/.test(text)) return 'migration-history';
+  if (/valid|identity|application/.test(text)) return 'validity-identity';
+  if (/stream|pathway/.test(text)) return 'stream-pathway';
+  return text.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'issue';
+}
+
+function uniqueIssues(items, limit = 30) {
+  const seen = new Set();
+  const out = [];
+  for (const item of asArray(items)) {
+    const key = issueKey(item);
+    const text = body(isPlainObject(item) ? pick(item.issue, item.title, item.area, humanizeObject(item)) : item);
+    if (!key || !text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function priorityCategory(title) {
+  const lower = String(title || '').toLowerCase();
+  if (/sponsor|employer|nomination|genuine|position|salary|market/.test(lower)) return 'Employer, nomination and salary evidence';
+  if (/direct entry|skill|occupation|anzsco|qualification|licen|registration|employment continuity|work history/.test(lower)) return 'Direct Entry skills, occupation and employment evidence';
+  if (/english|age|identity|valid|passport|location/.test(lower)) return 'Applicant eligibility and identity evidence';
+  if (/health|character|integrity|migration|compliance|refusal|cancellation/.test(lower)) return 'Health, character and immigration-history evidence';
+  return 'Additional evidence';
+}
+
+function groupedEvidenceFromFindings(findings) {
+  const groups = new Map();
+  for (const f of asArray(findings)) {
+    const title = findingTitle(f);
+    const gap = findingGap(f);
+    const action = findingAction(f);
+    if (!gap && !action) continue;
+    const group = priorityCategory(title);
+    if (!groups.has(group)) groups.set(group, []);
+    const text = `${title}: ${gap || 'Evidence to be verified.'}${action ? ` Required action: ${action}` : ''}`;
+    groups.get(group).push(text);
+  }
+  return Array.from(groups.entries()).map(([group, items]) => ({
+    group,
+    items: uniqueByNormalised(items).slice(0, 8)
+  })).filter(g => g.items.length);
+}
+
+function executiveNarrative(model, subclass, stream, findings) {
+  const position = body(pick(model.currentProfessionalPosition, model.lodgementPosition, model.agentPosition && model.agentPosition.position, 'potentially viable subject to evidence reconciliation'));
+  const risk = body(pick(model.overallRisk, model.riskLevel, model.agentPosition && model.agentPosition.risk, 'evidence review required'));
+  const issueList = uniqueIssues(pick(model.topMaterialBlockers, model.materialBlockers, model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers, findings.map(findingTitle)), 5);
+  const issues = issueList.length ? issueList.join('; ') : 'the criterion-by-criterion evidence position';
+  return `On the current saved answers, the Subclass ${subclass}${stream ? ` ${stream}` : ''} pathway is ${position.toLowerCase()}. The matter is not lodgement-ready until the priority evidence is reconciled. The main issues to resolve are ${issues}. Overall risk is ${risk.toLowerCase()}. The advice is preliminary and must be checked against original evidence, Departmental records, current law and final migration-agent review before lodgement action.`;
+}
+
+function recommendationParagraphs(model) {
+  const rec = pick(model.finalRecommendation, model.recommendation, model.agentPosition && model.agentPosition.recommendation, {});
+  if (isPlainObject(rec)) {
+    const position = body(pick(rec.position, 'Do not lodge yet'));
+    const risk = body(pick(rec.overallRisk, rec.risk, rec.riskLevel, model.overallRisk, 'Evidence review required'));
+    const summary = body(pick(rec.summary, rec.fullText, model.lodgementPosition, 'The matter should proceed to formal evidence review before filing.'));
+    const next = body(pick(rec.nextStep, rec.requiredAction, model.nextStep, 'Reconcile the priority evidence before final lodgement advice.'));
+    return [
+      `${position}. On the present information, the matter should not be treated as lodgement-ready.`,
+      summary,
+      `Current risk position: ${risk}.`,
+      `Next step: ${next}`
+    ];
+  }
+  const text = body(rec || 'The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.');
+  return [text];
+}
+
+
 function toText(value, fallback = '—') {
   if (value === undefined || value === null || value === '') return fallback;
   if (Array.isArray(value)) return value.map(v => toText(v, '')).filter(Boolean).join(', ') || fallback;
@@ -135,6 +220,14 @@ function cleanClientText(value) {
     .replace(/This criterion remains subject to verification against original evidence, current legal settings and any applicable instrument or transitional control\.?/gi,
       'This requirement must be assessed against the original evidence, current legal settings and any applicable instrument before final lodgement advice is issued.')
     .replace(/[‐‑‒–—]/g, '-')
+    .replace(/stream-specific/gi, 'stream specific')
+    .replace(/health-related/gi, 'health related')
+    .replace(/public-interest/gi, 'public interest')
+    .replace(/TRT-based/gi, 'TRT based')
+    .replace(/source-mapped/gi, 'source mapped')
+    .replace(/pathway-specific/gi, 'pathway specific')
+    .replace(/date-of-birth/gi, 'date of birth')
+    .replace(/Passport\/date of birth/gi, 'Passport and date of birth')
     .replace(/\s{2,}/g, ' ')
     .trim();
 
@@ -544,18 +637,16 @@ function cover(doc, assessment, subclass, stream, model) {
 
 function writeExecutive(doc, model, subclass, stream, findings) {
   h1(doc, '1. Executive professional advice');
-  const intro = pick(model.executiveAdvice, model.executiveSummary, model.summary, model.clientSummary && model.clientSummary.summary,
-    `On the current saved answers, the Subclass ${subclass} ${stream} pathway requires criterion-by-criterion evidence reconciliation before final lodgement advice.`);
-  p(doc, intro);
+  p(doc, executiveNarrative(model, subclass, stream, findings));
   keyValue(doc, [
     ['Pathway assessed', `Subclass ${subclass}${stream ? ' - ' + stream : ''}`],
     ['Current professional position', pick(model.currentProfessionalPosition, model.lodgementPosition, model.agentPosition && model.agentPosition.position, 'Potentially viable subject to evidence reconciliation')],
     ['Overall risk', pick(model.overallRisk, model.riskLevel, model.agentPosition && model.agentPosition.risk, 'Evidence review required')],
-    ['Renderer version', RENDERER_VERSION]
+    ['Lodgement-readiness position', 'Not lodgement-ready until priority evidence is reconciled and reviewed']
   ]);
-  const blockers = asArray(pick(model.topMaterialBlockers, model.materialBlockers, model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers));
-  if (blockers.length) { h2(doc, 'Main issues to resolve'); uniqueByNormalised(blockers).slice(0, 6).forEach(bullet.bind(null, doc)); }
-  else { h2(doc, 'Main issues to resolve'); findings.slice(0, 5).forEach(f => bullet(doc, findingTitle(f))); }
+  const blockers = uniqueIssues(pick(model.topMaterialBlockers, model.materialBlockers, model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers, findings.map(findingTitle)), 6);
+  h2(doc, 'Main issues to resolve');
+  blockers.length ? blockers.forEach(bullet.bind(null, doc)) : findings.slice(0, 5).forEach(f => bullet(doc, findingTitle(f)));
 }
 
 function writeFacts(doc, assessment, model) {
@@ -593,9 +684,17 @@ function writeFindings(doc, findings) {
 
 function writeEvidence(doc, model, findings) {
   h1(doc, '5. Evidence gaps and document request');
-  const items = asArray(pick(model.evidenceChecklist, model.evidenceGaps, model.requiredEvidence, model.documentRequests));
-  if (items.length) uniqueByNormalised(items).slice(0, 30).forEach(x => bullet(doc, x));
-  else findings.forEach(f => bullet(doc, `${findingTitle(f)}: ${findingGap(f) || 'Evidence to be verified.'}`));
+  p(doc, 'Before final lodgement advice can be issued, the following evidence should be obtained and reconciled against the saved instructions. The request is grouped by practical file-control priority rather than reproduced as raw engine output.');
+  const groups = groupedEvidenceFromFindings(findings);
+  if (groups.length) {
+    groups.forEach((group, index) => {
+      h2(doc, `Priority ${index + 1} — ${group.group}`);
+      group.items.forEach(x => bullet(doc, x));
+    });
+    return;
+  }
+  const items = uniqueByNormalised(asArray(pick(model.evidenceChecklist, model.evidenceGaps, model.requiredEvidence, model.documentRequests))).slice(0, 30);
+  items.forEach(x => bullet(doc, x));
 }
 
 function writeRisk(doc, model, findings) {
@@ -613,22 +712,25 @@ function writeRisk(doc, model, findings) {
 function writeActionPlan(doc, model, findings) {
   h1(doc, '7. Lodgement-readiness action plan');
   const plan = asArray(pick(model.priorityActionPlan, model.actionPlan, model.nextSteps, model.requiredActions));
-  if (plan.length) uniqueByNormalised(plan.map((x, i) => isPlainObject(x) ? `Priority ${pick(x.priority, i + 1)} - ${pick(x.issue, x.title, 'Issue')}: ${pick(x.requiredAction, x.action, x.description, x.nextStep, 'Resolve before final advice.')}` : x)).slice(0, 18).forEach(x => bullet(doc, x));
-  else findings.slice(0, 8).forEach((f, i) => bullet(doc, `Priority ${i + 1} - ${findingTitle(f)}: ${findingAction(f) || 'Resolve before final advice.'}`));
+  const items = plan.length
+    ? uniqueIssues(plan.map((x, i) => isPlainObject(x) ? `${pick(x.issue, x.title, 'Issue')}: ${pick(x.requiredAction, x.action, x.description, x.nextStep, 'Resolve before final advice.')}` : x), 8)
+    : uniqueIssues(findings.slice(0, 10).map(f => `${findingTitle(f)}: ${findingAction(f) || 'Resolve before final advice.'}`), 8);
+  items.forEach((x, i) => bullet(doc, `Priority ${i + 1} — ${x}`));
 }
 
 function writeRecommendation(doc, model) {
   h1(doc, '8. Final professional recommendation');
-  const rec = pick(model.finalRecommendation, model.recommendation, model.agentPosition && model.agentPosition.recommendation,
-    'The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.');
-  p(doc, isPlainObject(rec) ? humanizeObject(rec) : rec);
+  recommendationParagraphs(model).forEach((para, index) => p(doc, para, { bold: index === 0 }));
 }
 
 function writeLimitations(doc) {
   h1(doc, '9. Important limitations');
   p(doc, 'This advice is preliminary and based on the information presently available. It is subject to review of original documents, current law and policy, Departmental records, conflict checks and final professional review before lodgement. No guarantee of visa grant is given.');
   doc.moveDown(1.4);
-  p(doc, `Yours faithfully,\n${BRAND.agent}\nRegistered Migration Agent | MARN: ${BRAND.marn}\n${BRAND.name}`, { bold: true });
+  p(doc, 'Yours faithfully,', { bold: true, after: 0.7 });
+  p(doc, BRAND.agent, { bold: true, after: 0.18 });
+  p(doc, `Registered Migration Agent | MARN: ${BRAND.marn}`, { bold: true, after: 0.18 });
+  p(doc, BRAND.name, { bold: true });
 }
 
 function writeAppendix(doc, findings) {
