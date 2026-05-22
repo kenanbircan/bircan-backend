@@ -14,7 +14,7 @@
  * pdf.js must render the client object only.
  */
 
-const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v4-subclass186-mandatory-age-finding-20260522';
+const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v3-universal-all-subclasses-answer-criteria-20260522';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -705,71 +705,6 @@ function ageCriteriaAnalysis(facts) {
   };
 }
 
-
-function hasSavedAgeAnswer(facts) {
-  if (!facts) return false;
-  if (Number.isFinite(facts.age)) return true;
-  if (facts.ageInfo && (facts.ageInfo.dateOfBirth || facts.ageInfo.ageAtApplication || facts.ageInfo.exemption)) return true;
-  const flat = facts.rawFlat || {};
-  return Object.keys(flat).some(k => /\bage\b|date[-_\s]*of[-_\s]*birth|birth|dob/i.test(k) && clean(flat[k]));
-}
-
-function findingLooksLikeAge(finding) {
-  const title = findingTitle(finding);
-  const body = [
-    title,
-    finding && finding.issue,
-    finding && finding.title,
-    finding && finding.criterionId,
-    finding && finding.legalRequirement,
-    finding && finding.clientFacts,
-    finding && finding.requiredAction
-  ].map(clean).join(' ');
-  return /\bage\b|date[-_\s]*of[-_\s]*birth|birth|dob/i.test(body);
-}
-
-function buildMandatoryAgeFinding(facts) {
-  const analysis = ageCriteriaAnalysis(facts || {});
-  const subclass = facts && facts.subclass ? facts.subclass : '186';
-  const stream = facts && facts.stream ? facts.stream : '';
-  const issue = 'Age';
-  return {
-    issue,
-    title: issue,
-    area: 'Age',
-    criterionKey: 'age',
-    criterionId: `subclass-${subclass}-age`,
-    clause: null,
-    sourceArea: `Subclass ${subclass}${stream ? ` ${stream}` : ''} age criterion`,
-    sourceConfidence: 'mandatory-controller-finding-from-saved-age-answer',
-    answerFieldsUsed: (facts && facts.ageInfo && facts.ageInfo.fields) || [],
-    mappedAnswerSummary: facts && Number.isFinite(facts.age) ? `Recorded age: ${facts.age}` : 'Age/date-of-birth answer requires verification.',
-    status: analysis.status,
-    displayStatus: analysis.displayStatus,
-    riskLevel: analysis.riskLevel,
-    materiality: 'material',
-    legalRequirement: requirementFor('Age', subclass, stream),
-    clientFacts: analysis.clientFacts,
-    evidenceGap: 'Passport bio page, date-of-birth evidence and any age exemption/concession evidence must be checked before final advice is relied upon.',
-    consequence: analysis.consequence,
-    requiredAction: analysis.requiredAction,
-    requiredEvidence: ['Passport bio page', 'Date of birth evidence', 'Age exemption/concession evidence if relied upon'],
-    missingEvidence: [],
-    criterionTypes: ['grant-criterion', 'mandatory-saved-answer-coverage'],
-    registryStream: stream,
-    aiControllerAssessed: true,
-    mandatoryCoverageFinding: true
-  };
-}
-
-function ensureMandatorySavedAnswerFindings(findings, facts) {
-  const out = asArray(findings).filter(Boolean);
-  if ((facts && facts.subclass === '186') && hasSavedAgeAnswer(facts) && !out.some(findingLooksLikeAge)) {
-    out.unshift(buildMandatoryAgeFinding(facts));
-  }
-  return out;
-}
-
 function factAnalysisFor(title, facts, existing) {
   const lower = String(title || '').toLowerCase();
   const existingText = clean(existing || '');
@@ -849,12 +784,14 @@ function ensureCoreFindings(findings, facts, registryAreas = new Set()) {
   if (areaRelevantForSubclass('age', facts, registryAreas) && !hasFinding(out, /age/)) {
     const age = ageCriteriaAnalysis(facts);
     out.push({
-      issue: 'Age requirement or exemption',
-      title: 'Age requirement or exemption',
+      issue: 'Age',
+      title: 'Age',
+      criterion: 'Age',
+      criterionLabel: 'Age',
       status: age.status,
       displayStatus: age.displayStatus,
       riskLevel: age.riskLevel,
-      legalRequirement: requirementFor('Age requirement or exemption', facts.subclass, facts.stream),
+      legalRequirement: requirementFor('Age', facts.subclass, facts.stream),
       clientFacts: age.clientFacts,
       evidenceGap: 'Passport/date-of-birth evidence and any age exemption, concession or pathway-specific material.',
       consequence: age.consequence,
@@ -881,6 +818,33 @@ function ensureCoreFindings(findings, facts, registryAreas = new Set()) {
   return out;
 }
 
+
+function forceAgeCriterionFinding(findings, facts) {
+  const out = Array.isArray(findings) ? [...findings] : [];
+  if (!areaRelevantForSubclass('age', facts, new Set(['age']))) return out;
+  if (hasFinding(out, /\bage\b/i)) return out;
+  const age = ageCriteriaAnalysis(facts || {});
+  out.push({
+    issue: 'Age',
+    title: 'Age',
+    criterion: 'Age',
+    criterionLabel: 'Age',
+    criterionName: 'Age',
+    area: 'age',
+    status: age.status || 'unclear',
+    displayStatus: age.displayStatus || 'Unclear - age evidence required',
+    riskLevel: age.riskLevel || 'High',
+    legalRequirement: requirementFor('Age', facts && facts.subclass, facts && facts.stream),
+    clientFacts: age.clientFacts || 'The saved assessment includes age/date-of-birth information. Age must be assessed for Subclass 186 and any applicable exemption or concession must be confirmed.',
+    evidenceGap: 'Passport/date-of-birth evidence and any age exemption, concession or pathway-specific material.',
+    consequence: age.consequence || 'If the applicant does not satisfy the applicable age setting and no exemption or concession applies, the pathway may not be viable.',
+    requiredAction: age.requiredAction || 'Confirm date of birth, age at the relevant time, and whether any age exemption or concession applies.',
+    insertedByAiController: true,
+    forcedAgeCriterionFinding: true
+  });
+  return out;
+}
+
 function mergeFindings(registryFindings, existingFindings, facts, registryAreas = new Set()) {
   const out = [];
   const seen = new Set();
@@ -894,7 +858,7 @@ function mergeFindings(registryFindings, existingFindings, facts, registryAreas 
   };
   registryFindings.forEach(add);
   existingFindings.forEach(add);
-  return ensureCoreFindings(out, facts, registryAreas);
+  return forceAgeCriterionFinding(ensureCoreFindings(out, facts, registryAreas), facts);
 }
 
 function topBlockers(findings) {
@@ -1051,8 +1015,7 @@ function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, 
   const registryAssessment = registry ? buildRegistryCriteriaFindings({ registry, facts }) : { findings: [], audit: null };
   const originalFindings = sourceFindings(adviceBundle);
   const mergedFindings = mergeFindings(registryAssessment.findings, originalFindings, facts, new Set(registryAssessment.audit && registryAssessment.audit.registryAreas || []));
-  const coverageCompleteFindings = ensureMandatorySavedAnswerFindings(mergedFindings, facts);
-  const enhancedFindings = coverageCompleteFindings.map((finding, index) => enhanceFinding(finding, index, facts));
+  const enhancedFindings = mergedFindings.map((finding, index) => enhanceFinding(finding, index, facts));
   const clientAdviceObject = buildClientAdviceObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryAssessmentAudit: registryAssessment.audit });
   const internalAuditObject = buildInternalAuditObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryResult, registryAssessmentAudit: registryAssessment.audit });
   const advice = adviceBundle.advice || {};
