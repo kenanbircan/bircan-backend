@@ -2060,7 +2060,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     supportedDecisionEngineSubclasses: supportedDelegateSimulatorSubclasses(),
     criteriaRegistrySubclasses: listSupportedCriteriaRegistrySubclasses(),
     criteriaRegistryCoverageGate: true,
-    version: '12.2.15-payment-finalise-paid-attach-v8-testing',
+    version: '12.2.16-dashboard-session-authority-no-blank-v32',
     postgres: true,
     jsonFallback: false,
     stripeConfigured: Boolean(stripe),
@@ -8308,6 +8308,73 @@ function scheduleDashboardV2PaymentRepair({ sessionId, email, clientId }) {
   return { queued: true, status: 'background_queued', sessionId: cleanSessionIdValue };
 }
 
+
+async function dashboardV2SessionFallbackContext(req, sessionId) {
+  const sid = cleanStripeSessionIdValue(sessionId);
+  if (!sid) return null;
+  let context = await withSoftTimeout(
+    findFastPaymentReturnContext(sid, req),
+    1500,
+    null,
+    'dashboard-v2 payment-return local context'
+  );
+  if ((!context || !context.clientEmail || !context.assessmentId || context.paymentStatus !== 'paid') && stripe) {
+    const stripeContext = await withSoftTimeout(
+      contextFromStripeForFastFinalise(sid, req),
+      3000,
+      null,
+      'dashboard-v2 payment-return stripe context'
+    );
+    if (stripeContext) {
+      context = {
+        ...(context || {}),
+        ...stripeContext,
+        client: stripeContext.client || (context && context.client) || null,
+        clientEmail: stripeContext.clientEmail || (context && context.clientEmail) || '',
+        assessmentId: stripeContext.assessmentId || (context && context.assessmentId) || '',
+        serviceSessionId: stripeContext.serviceSessionId || (context && context.serviceSessionId) || '',
+        serviceType: stripeContext.serviceType || (context && context.serviceType) || 'visa_assessment',
+        plan: stripeContext.plan || (context && context.plan) || 'instant',
+        paymentStatus: stripeContext.paymentStatus || (context && context.paymentStatus) || ''
+      };
+      if (stripeContext.session && stripeContext.paymentStatus === 'paid') {
+        setImmediate(() => attachPaidSession(stripeContext.session, { triggerGeneration: true, waitForPdf: false })
+          .catch(err => console.warn('Dashboard v2 fallback attach skipped:', err && err.message ? err.message : err)));
+      }
+    }
+  }
+  return context;
+}
+
+function dashboardV2FallbackVisaServiceFromContext(context, sessionId, dashboardToken) {
+  if (!context || normaliseServiceType(context.serviceType || 'visa_assessment') !== 'visa_assessment' || !context.assessmentId) return null;
+  const plan = safePlan(context.plan || 'instant');
+  const paid = context.paymentStatus === 'paid';
+  const row = {
+    id: context.assessmentId,
+    visa_type: '186',
+    applicant_email: context.clientEmail || null,
+    applicant_name: null,
+    selected_plan: plan,
+    active_plan: plan,
+    payment_status: paid ? 'paid' : 'pending',
+    amount_cents: null,
+    currency: 'aud',
+    stripe_session_id: sessionId,
+    status: paid ? 'pdf_queued' : 'payment_confirmed',
+    created_at: null,
+    updated_at: null,
+    release_at: null,
+    pdf_generated_at: null,
+    pdf_filename: null,
+    pdf_sha256: null,
+    generation_error: null,
+    has_pdf: false,
+    release_seconds_remaining: 0
+  };
+  return dashboardV2Service(row, 'visa_assessment', dashboardToken);
+}
+
 app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (req, res) => {
   const startedAt = Date.now();
   const email = normaliseEmail(req.client.email);
@@ -8349,6 +8416,23 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
     .map(row => dashboardV2Service(row, 'appeals_assessment', dashboardToken));
   const citizenship = (fastRows.citizenshipRows || [])
     .map(row => dashboardV2Service(row, 'citizenship_test', dashboardToken));
+
+  // Payment-return hard stop:
+  // A valid session_id must never render a blank "no paid services" dashboard merely
+  // because the normal record query timed out or the worker has not yet moved the
+  // assessment into pdf_generating. Return a minimal paid/queued card from the
+  // authoritative Stripe/session context while the normal records catch up.
+  let paymentReturnContext = null;
+  if (sessionId && /^cs_(test|live)_/i.test(sessionId) && !visa.length && !appeals.length && !citizenship.length) {
+    paymentReturnContext = await dashboardV2SessionFallbackContext(req, sessionId);
+    if (paymentReturnContext && paymentReturnContext.client && paymentReturnContext.client.email) {
+      req.client = paymentReturnContext.client;
+      setDashboardAccessCookie(res, signDashboardAccessToken(paymentReturnContext.client));
+    }
+    const fallbackVisa = dashboardV2FallbackVisaServiceFromContext(paymentReturnContext, sessionId, dashboardToken);
+    if (fallbackVisa) visa.push(fallbackVisa);
+  }
+
   const payments = (paymentRows || []).map(p => ({
     id: p.id || p.stripe_session_id || p.stripe_payment_intent,
     type: 'payment',
@@ -8369,9 +8453,9 @@ app.get('/api/account/dashboard-v2', resolveDashboardAccess, asyncRoute(async (r
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    version: 'dashboard-v2-v7-11-soft-timeout-identity-first',
+    version: 'dashboard-v2-v8-session-authority-no-blank-service',
     loadMs: Date.now() - startedAt,
-    partial: Boolean((fastRows && fastRows.__partial) || (appealRows && appealRows.__partial) || (paymentRows && paymentRows.__partial)),
+    partial: Boolean((fastRows && fastRows.__partial) || (appealRows && appealRows.__partial) || (paymentRows && paymentRows.__partial) || paymentReturnContext),
     client: { id: req.client.id, email: req.client.email, name: req.client.name || null },
     dashboardAccessToken: dashboardToken,
     sessionId: sessionId || null,
