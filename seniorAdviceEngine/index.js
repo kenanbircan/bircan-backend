@@ -570,6 +570,32 @@ function finalRecommendation({ subclass, stream, familyProfile, findings, corpus
   };
 }
 
+
+function assertSubclassIsolation({ subclass, family, selectedStream, findings }) {
+  const text = JSON.stringify({ subclass, family, selectedStream, findings });
+  if (family !== 'employer') {
+    const employerLeak = /Direct Entry skills|salary and market|market salary|AMSR|genuine position|nominated occupation|ANZSCO|sponsoring employer|Labour Market Testing/i.exec(text);
+    if (employerLeak) {
+      const err = new Error(`Senior advice engine blocked: employer-sponsored criterion leaked into Subclass ${subclass}: ${employerLeak[0]}.`);
+      err.code = 'SENIOR_SUBCLASS_CONTAMINATION';
+      throw err;
+    }
+  }
+  if (family === 'partner') {
+    const nonPartnerLeak = /occupation eligibility|skills assessment|labour agreement|nomination validity|salary\/AMSR/i.exec(text);
+    if (nonPartnerLeak) {
+      const err = new Error(`Senior advice engine blocked: non-partner criterion leaked into Subclass ${subclass}: ${nonPartnerLeak[0]}.`);
+      err.code = 'SENIOR_PARTNER_CONTAMINATION';
+      throw err;
+    }
+  }
+  if (/stream\/pathway|registry-controlled pathway|primary pathway/i.test(String(selectedStream || ''))) {
+    const err = new Error(`Senior advice engine blocked: unresolved stream/pathway for Subclass ${subclass}.`);
+    err.code = 'SENIOR_STREAM_NOT_CONFIRMED';
+    throw err;
+  }
+}
+
 function buildSeniorAdviceModel({ assessment = {}, adviceBundle = {}, registry = null, stream = '', legalFrame = null } = {}) {
   const subclass = normSubclass(adviceBundle.subclass || adviceBundle.advice?.subclass || assessment.visa_type || assessment.subclass || assessment.visaSubclass);
   if (!subclass) throw new Error('Senior advice engine blocked: subclass is missing.');
@@ -585,12 +611,13 @@ function buildSeniorAdviceModel({ assessment = {}, adviceBundle = {}, registry =
     : (loaded.criteria && loaded.criteria.length ? loaded.criteria : []);
   if (!criteria.length) throw new Error(`Senior advice engine blocked: no criteria/legal frames loaded for subclass ${subclass}.`);
   const findings = criteria.map(criterion => buildCriterionFinding({ criterion, assessment, corpus, familyProfile }));
+  assertSubclassIsolation({ subclass, family, selectedStream, findings });
   const legalIssues = buildLegalIssues({ findings, familyProfile });
   const recommendation = finalRecommendation({ subclass, stream: selectedStream, familyProfile, findings, corpus });
 
   return {
     engine: 'senior-australian-immigration-advice-engine',
-    version: '1.0.0-all-subclasses-registry-driven',
+    version: '1.0.1-v38-engine-design-subclass-isolation',
     generatedAt: new Date().toISOString(),
     subclass,
     stream: selectedStream,
