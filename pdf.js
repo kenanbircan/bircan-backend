@@ -243,6 +243,53 @@ function findingAction(f) {
   return body(pick(f.requiredAction, f.action, f.recommendation, f.seniorOpinion, f.agentOpinion, f.professionalPosition, f.strategy));
 }
 
+
+function buildForcedAgeFindingFromAnswers(assessment, subclass, stream) {
+  const flat = flattenObject(collectAnswers(assessment));
+  const entries = Object.entries(flat);
+  const get = (patterns) => {
+    for (const re of patterns) {
+      const hit = entries.find(([k]) => re.test(k));
+      if (hit) return hit[1];
+    }
+    return '';
+  };
+  const dob = get([/date[-_\s]*of[-_\s]*birth/i, /dob/i, /birth/i]);
+  const age = get([/age[-_\s]*at[-_\s]*application/i, /applicant[-_\s]*age/i, /\bage\b/i]);
+  const exemption = get([/age[-_\s]*exemption/i, /age[-_\s]*concession/i, /high[-_\s]*income/i, /earnings/i]);
+  const factBits = [];
+  if (age) factBits.push(`recorded age/intended age: ${body(age)}`);
+  if (dob) factBits.push(`date of birth recorded`);
+  if (exemption) factBits.push(`age exemption/concession indicator: ${body(exemption)}`);
+  return {
+    issue: 'Age',
+    title: 'Age',
+    criterion: 'Age',
+    criterionLabel: 'Age',
+    criterionName: 'Age',
+    area: 'age',
+    status: 'unclear',
+    displayStatus: 'Unclear - age evidence required',
+    riskLevel: 'High',
+    materiality: 'material',
+    legalRequirement: `The applicant must satisfy the applicable Subclass ${subclass}${stream ? ` ${stream}` : ''} age setting or establish a valid exemption or concession before lodgement-ready advice is released.`,
+    clientFacts: factBits.length ? `The saved assessment includes age-related information (${factBits.join('; ')}). This must be reconciled against identity evidence and the selected Subclass ${subclass} stream.` : 'The saved assessment includes age/date-of-birth information which must be assessed against the selected stream.',
+    evidenceGap: 'Passport bio page/date-of-birth evidence and any age exemption, concession, high-income, labour agreement or DAMA material.',
+    consequence: 'If the age setting is not satisfied and no exemption or concession applies, the selected pathway may not be viable.',
+    requiredAction: 'Confirm age at the relevant time and verify whether any age exemption or concession applies before final advice.',
+    insertedByPdfQualityGate: true
+  };
+}
+
+function ensureRendererMandatoryFindings(assessment, subclass, stream, findings) {
+  const out = Array.isArray(findings) ? [...findings] : [];
+  const keys = new Set(out.map(criterionKey));
+  if (hasAnswerMatching(assessment, /\bage\b|date[-_\s]*of[-_\s]*birth|birth/i) && !keys.has('age')) {
+    out.push(buildForcedAgeFindingFromAnswers(assessment, subclass, stream));
+  }
+  return out;
+}
+
 function criterionKey(f) {
   const title = findingTitle(f).toLowerCase();
   if (/english/.test(title)) return 'english';
@@ -560,7 +607,8 @@ function buildAssessmentPdfBuffer(assessment = {}, adviceBundle = {}) {
       const model = getAdviceModel(cleanBundle);
       const subclass = getSubclass(cleanAssessment, cleanBundle, model);
       const stream = getStream(cleanAssessment, cleanBundle, model);
-      const findings = collectFindings(model, cleanBundle);
+      let findings = collectFindings(model, cleanBundle);
+      findings = ensureRendererMandatoryFindings(cleanAssessment, subclass, stream, findings);
       assertAdviceModelReady(cleanAssessment, cleanBundle, model, subclass, stream, findings);
 
       const doc = createDoc(resolve, reject);
