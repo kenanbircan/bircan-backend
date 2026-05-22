@@ -14,7 +14,7 @@
  * pdf.js must render the client object only.
  */
 
-const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v4-polished-client-output-20260522';
+const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v5-criterion-specific-professional-output-20260522';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -56,6 +56,16 @@ function pick(...values) {
 
 function clean(value) {
   return text(value, '')
+    .normalize('NFKC')
+    .replace(/[\uFFFC-\uFFFF]/g, ' ')
+    .replace(/[\u200B-\u200D\u2060]/g, '')
+    .replace(/\bstream-specific\b/gi, 'stream specific')
+    .replace(/\bhealth-related\b/gi, 'health related')
+    .replace(/\bpublic-interest\b/gi, 'public interest')
+    .replace(/\bTRT-based\b/gi, 'TRT based')
+    .replace(/\bsource-mapped\b/gi, 'source mapped')
+    .replace(/\bpathway-specific\b/gi, 'pathway specific')
+    .replace(/\bdate-of-birth\b/gi, 'date of birth')
     .replace(/Questionnaire instruction recorded:\s*/gi, '')
     .replace(/This is treated as an instruction only and must be reconciled against original evidence\.?/gi, '')
     .replace(/\s+\./g, '.')
@@ -121,6 +131,38 @@ function normaliseStream(value) {
 function normaliseKey(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
+
+
+function professionalIssueKey(value) {
+  const lower = String(value || '').toLowerCase();
+  if (/english/.test(lower)) return 'english';
+  if (/age/.test(lower)) return 'age';
+  if (/salary|market|remuneration|amsr/.test(lower)) return 'salary-market';
+  if (/direct entry|skill|skills assessment|qualification/.test(lower)) return 'direct-entry-skills';
+  if (/occupation|anzsco|duties/.test(lower)) return 'occupation-anzsco';
+  if (/sponsor|employer|nomination|genuine|operational need/.test(lower)) return 'employer-nomination';
+  if (/health/.test(lower)) return 'health';
+  if (/character|integrity|public interest/.test(lower)) return 'character-integrity';
+  if (/migration history|compliance|refusal|cancellation|section 48|8503/.test(lower)) return 'migration-history';
+  if (/valid|identity|application/.test(lower)) return 'validity-identity';
+  if (/stream|pathway/.test(lower)) return 'stream-pathway';
+  return normaliseKey(lower).slice(0, 80) || 'issue';
+}
+
+function uniqueIssueTexts(values, limit = 30) {
+  const seen = new Set();
+  const out = [];
+  for (const value of asArray(values)) {
+    const v = clean(value);
+    const key = professionalIssueKey(v);
+    if (!v || seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 
 function normaliseYesNo(value) {
   const raw = String(value == null ? '' : value).trim().toLowerCase();
@@ -671,9 +713,11 @@ function riskLevelFor(title, status) {
 function requirementFor(title, subclass, stream, existing) {
   const lower = String(title || '').toLowerCase();
   if (existing && !/^the requirement must be assessed under/i.test(existing)) return clean(existing);
-  if (/stream|pathway/.test(lower)) return `The selected Subclass ${subclass}${stream ? ` ${stream}` : ''} pathway must be legally available on the facts and strategically appropriate having regard to the applicant, sponsor and evidence position.`;
-  if (/sponsor|employer|nomination|genuine position|operational/.test(lower)) return 'The nomination and employer file must support a genuine, available and properly documented role connected to the business operations, position duties and ongoing need.';
-  if (/direct entry|skill|occupation|anzsco/.test(lower)) return 'The applicant’s occupation, duties, qualifications, employment history, skills assessment and any licensing or registration evidence must support the selected pathway.';
+  if (/direct entry|skill|skills assessment/.test(lower)) return `For Subclass ${subclass}${stream ? ` ${stream}` : ''}, the applicant's Direct Entry pathway must be supported by the required skills assessment or equivalent pathway evidence, qualifications, employment references, occupation alignment and any licensing or registration evidence.`;
+  if (/salary|market|remuneration|amsr/.test(lower)) return 'The nominated salary and employment conditions must be consistent with the nomination, written contract, payroll/superannuation records, market salary evidence, award or enterprise agreement material and any applicable threshold or concession.';
+  if (/stream|pathway/.test(lower)) return `The selected Subclass ${subclass}${stream ? ` ${stream}` : ''} pathway must be legally available on the facts and strategically appropriate having regard to the nomination, applicant eligibility, visa history and evidence position.`;
+  if (/sponsor|employer|nomination|genuine position|operational/.test(lower)) return 'The nomination and employer file must support a genuine, available and properly documented role connected to the business operations, position duties, organisational structure, salary position and ongoing commercial need.';
+  if (/occupation|anzsco/.test(lower)) return 'The applicant’s actual duties, ANZSCO alignment, qualifications, employment history and any required licensing or registration evidence must support the nominated occupation and the selected stream.';
   if (/employment|work history|continuity/.test(lower)) return 'The employment history must be reconstructed from objective records and tested against the selected stream, nominated occupation and any relevant continuity or experience requirement.';
   if (/salary|market/.test(lower)) return 'The remuneration position must be consistent with the nomination, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.';
   if (/english/.test(lower)) return 'The applicant must hold acceptable English evidence, exemption evidence or concession evidence that is valid at the relevant time for the selected stream.';
@@ -723,7 +767,7 @@ function factAnalysisFor(title, facts, existing) {
   const existingText = clean(existing || '');
   if (/stream|pathway/.test(lower)) return facts.stream ? `The selected pathway is recorded as ${facts.stream}. It must be confirmed against the nomination, skills, visa-history and source-mapped stream criteria before it is adopted as the lodgement pathway.` : 'The selected pathway has not been clearly confirmed from the stored assessment record.';
   if (/sponsor|employer|nomination/.test(lower)) return facts.employer ? `The employer/nomination instruction identifies ${clean(facts.employer)}. The nomination file, business records, position description and evidence of genuine ongoing need must support that instruction.` : 'The employer/nomination position requires confirmation from the nomination file and employer evidence.';
-  if (/direct entry|skill/.test(lower)) return facts.skills ? `The skills/qualification information recorded is ${clean(facts.skills)}. It should be tested against the nominated occupation, skills-assessment pathway, licensing/registration and employment evidence before the stream is relied upon.` : 'The skills position requires confirmation through skills-assessment, qualifications, licensing and employment evidence.';
+  if (/direct entry|skill/.test(lower)) return facts.skills ? `The Direct Entry skills/qualification information recorded is ${clean(facts.skills)}. It must be reconciled against the nominated occupation, the relevant skills-assessment pathway, qualifications, employment references, licensing/registration requirements and any stream-specific evidence before Direct Entry is relied upon.` : 'The Direct Entry skills position requires confirmation through the skills-assessment pathway, qualifications, licensing/registration and employment evidence.';
   if (/occupation|anzsco/.test(lower)) return facts.duties || facts.occupation ? `The occupation/duties information appears potentially supportive, but actual duties must be mapped to the nominated occupation and supported by references, qualifications and any required registration or licensing.` : 'The nominated occupation and ANZSCO alignment are not yet sufficiently established on the stored facts.';
   if (/employment|work history|continuity/.test(lower)) return 'Employment continuity should be reconstructed from objective payroll, tax, superannuation, leave and visa/work-rights records rather than treated as established from questionnaire wording alone.';
   if (/salary|market/.test(lower)) return facts.salary ? `The remuneration figure recorded is ${clean(facts.salary)}. It should be tested against the nomination record, contract, payroll, superannuation, market salary evidence and any applicable threshold or concession.` : 'The salary and market salary position requires confirmation from the nomination, contract, payroll and market evidence.';
@@ -881,9 +925,17 @@ function topBlockers(findings) {
     const lower = title.toLowerCase();
     const priority = priorityOrder.findIndex(p => lower.includes(p));
     const unresolved = /unclear|risk|required|medium|high|not_satisfied/i.test(`${f.displayStatus} ${f.riskLevel} ${f.status}`) ? 10 : 0;
-    return { f, score: unresolved + (priority >= 0 ? (priorityOrder.length - priority) : 0) };
-  });
-  return scored.sort((a, b) => b.score - a.score).slice(0, 5).map(x => x.f);
+    return { f, key: professionalIssueKey(title), score: unresolved + (priority >= 0 ? (priorityOrder.length - priority) : 0) };
+  }).sort((a, b) => b.score - a.score);
+  const seen = new Set();
+  const out = [];
+  for (const item of scored) {
+    if (seen.has(item.key)) continue;
+    seen.add(item.key);
+    out.push(item.f);
+    if (out.length >= 5) break;
+  }
+  return out;
 }
 
 function buildPriorityActionPlan(findings) {
@@ -912,7 +964,7 @@ function buildViabilityOpinion(facts, findings) {
     overallRisk = 'Medium to high';
   }
 
-  const blockerText = blockers.map(f => f.title || f.issue).filter(Boolean);
+  const blockerText = uniqueIssueTexts(blockers.map(f => f.title || f.issue).filter(Boolean), 5);
   const summary = `On the current saved answers, the Subclass ${facts.subclass}${facts.stream ? ` ${facts.stream}` : ''} pathway is ${position.toLowerCase()}. The main unresolved issues are ${blockerText.length ? blockerText.join('; ') : 'the criterion-by-criterion evidence position'}.`;
   const nextStep = blockerText.length
     ? `Start with ${blockerText[0]}, then reconcile ${blockerText.slice(1, 4).join('; ') || 'the remaining evidence gaps'} before final lodgement advice.`
