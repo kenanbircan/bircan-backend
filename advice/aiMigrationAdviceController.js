@@ -14,7 +14,7 @@
  * pdf.js must render the client object only.
  */
 
-const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v3-universal-all-subclasses-answer-criteria-20260522';
+const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v4-polished-client-output-20260522';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -25,12 +25,25 @@ function asArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [value];
 }
 
+
+function objectSummary(value) {
+  if (!isPlainObject(value)) return '';
+  const parts = [];
+  const keys = ['issue','title','area','criterion','status','risk','riskLevel','summary','finding','requiredEvidence','evidenceRequired','requiredAction','action','recommendation','position','nextStep','fullText'];
+  for (const key of keys) {
+    if (value[key] !== undefined && value[key] !== null && value[key] !== '') {
+      const raw = Array.isArray(value[key]) ? value[key].join(', ') : (isPlainObject(value[key]) ? objectSummary(value[key]) : String(value[key]));
+      if (raw) parts.push(`${key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim()}: ${raw}`);
+    }
+  }
+  if (parts.length) return parts.join('; ');
+  return Object.entries(value).slice(0, 6).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : (isPlainObject(v) ? objectSummary(v) : String(v))}`).join('; ');
+}
+
 function text(value, fallback = '') {
   if (value === undefined || value === null || value === '') return fallback;
   if (Array.isArray(value)) return value.map(v => text(v, '')).filter(Boolean).join(', ') || fallback;
-  if (typeof value === 'object') {
-    try { return JSON.stringify(value); } catch (_err) { return fallback; }
-  }
+  if (typeof value === 'object') return objectSummary(value) || fallback;
   return String(value).replace(/\s+/g, ' ').trim();
 }
 
