@@ -8,7 +8,7 @@
  * browser-grade wrapping, pagination and page-break control.
  */
 
-const RENDERER_VERSION = 'advice-html-pdf-renderer-v120-20260522';
+const RENDERER_VERSION = 'advice-html-pdf-renderer-v121-premium-template-20260522';
 
 const BRAND = {
   name: 'Bircan Migration & Education',
@@ -362,9 +362,17 @@ function buildAssessmentHtml(assessment = {}, adviceBundle = {}) {
 
   return htmlDocument(`${html(BRAND.name)} - Professional Migration Advice`, `
     <section class="cover page-break-after">
-      <div class="brand">${html(BRAND.name)}</div>
-      <div class="subtitle">${html(BRAND.subtitle)}</div>
+      <div class="cover-band">
+        <div class="brand-mark">BM</div>
+        <div>
+          <div class="brand">${html(BRAND.name)}</div>
+          <div class="subtitle">${html(BRAND.subtitle)} · MARA Code of Conduct</div>
+        </div>
+      </div>
+      <div class="gold-rule"></div>
+      <div class="cover-kicker">Confidential client advice</div>
       <h1 class="cover-title">Professional Migration<br/>Advice Letter</h1>
+      <div class="matter-card">
       ${kv([
         ['Matter', `Subclass ${subclass || '—'}${stream ? ' - ' + stream : ''}`],
         ['Reference', pick(cleanAssessment.id, cleanAssessment.reference, cleanAssessment.assessment_id, '—')],
@@ -373,8 +381,11 @@ function buildAssessmentHtml(assessment = {}, adviceBundle = {}) {
         ['Client email', pick(cleanAssessment.client_email, model.clientEmail, cleanAssessment.applicant_email, '—')],
         ['Generated', generated]
       ])}
-      ${h2('Confidential professional advice')}
-      ${para('This advice letter is prepared from the information presently available and is subject to review of original evidence, current law, Departmental records, conflict checks and final migration-agent review before lodgement action. No guarantee of visa grant is given.')}
+      </div>
+      <div class="cover-note">
+        ${h2('Confidential professional advice')}
+        ${para('This advice letter is prepared from the information presently available and is subject to review of original evidence, current law, Departmental records, conflict checks and final migration-agent review before lodgement action. No guarantee of visa grant is given.')}
+      </div>
     </section>
 
     <main>
@@ -463,62 +474,36 @@ function htmlDocument(title, bodyContent) {
 <meta charset="utf-8" />
 <title>${title}</title>
 <style>
-  @page { size: A4; margin: 18mm 17mm 20mm 17mm; }
+  @page { size: A4; margin: 16mm 15mm 18mm 15mm; }
   * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    color: #172033;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 10.4pt;
-    line-height: 1.45;
-    overflow-wrap: anywhere;
-    word-break: normal;
-    hyphens: auto;
-    background: #fff;
-  }
+  body { margin: 0; color: #172033; font-family: Arial, Helvetica, sans-serif; font-size: 10.2pt; line-height: 1.48; overflow-wrap: anywhere; word-break: normal; hyphens: auto; background: #fff; }
   h1, h2, h3, p, li, div { max-width: 100%; }
-  h1 {
-    margin: 0 0 8pt 0;
-    color: #0b2545;
-    font-size: 15.2pt;
-    line-height: 1.2;
-    page-break-after: avoid;
-  }
-  h2 {
-    margin: 12pt 0 5pt 0;
-    color: #0b2545;
-    font-size: 11.2pt;
-    line-height: 1.25;
-    page-break-after: avoid;
-  }
+  h1 { margin: 0 0 9pt 0; color: #0b2545; font-size: 15.8pt; line-height: 1.18; page-break-after: avoid; letter-spacing: -0.01em; }
+  h2 { margin: 13pt 0 6pt 0; color: #0b2545; font-size: 11.4pt; line-height: 1.25; page-break-after: avoid; }
   p { margin: 0 0 8pt 0; }
-  .lead { font-size: 10.8pt; }
+  .lead { font-size: 10.8pt; color: #1f2f46; }
   .strong { font-weight: 700; }
   ul { margin: 4pt 0 10pt 17pt; padding: 0; }
   li { margin: 0 0 4pt 0; padding-left: 2pt; }
-  .brand { color: #0b2545; font-weight: 700; font-size: 13pt; margin-bottom: 2pt; }
-  .subtitle { color: #56657a; font-size: 9.5pt; margin-bottom: 22pt; }
-  .cover-title { font-size: 27pt; line-height: 1.05; margin-bottom: 22pt; }
-  .kv { width: 100%; border: 1px solid #dbe3ee; border-radius: 8pt; overflow: hidden; margin: 5pt 0 12pt 0; page-break-inside: avoid; }
-  .kv-row { display: grid; grid-template-columns: 34% 66%; border-bottom: 1px solid #dbe3ee; min-height: 22pt; }
+  .cover { min-height: 245mm; padding: 0; position: relative; }
+  .cover-band { background: #0b2545; color: #fff; border-radius: 14pt; padding: 18pt 20pt; display: flex; align-items: center; gap: 14pt; margin-bottom: 12pt; }
+  .brand-mark { width: 42pt; height: 42pt; border-radius: 50%; border: 1.5pt solid rgba(212,175,55,.95); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15pt; letter-spacing: .04em; color: #d4af37; flex: 0 0 auto; }
+  .brand { color: #fff; font-weight: 700; font-size: 14.2pt; margin-bottom: 2pt; }
+  .subtitle { color: #d8e1ef; font-size: 9.2pt; }
+  .gold-rule { height: 3pt; background: #d4af37; border-radius: 999px; width: 35%; margin: 0 0 22pt 0; }
+  .cover-kicker { color: #7b8798; text-transform: uppercase; letter-spacing: .12em; font-size: 8.2pt; font-weight: 700; margin-bottom: 8pt; }
+  .cover-title { font-size: 30pt; line-height: 1.04; margin: 0 0 20pt 0; color: #0b2545; letter-spacing: -0.03em; }
+  .matter-card { border: 1px solid #dbe3ee; border-radius: 14pt; padding: 10pt; background: #f8fafc; box-shadow: 0 8pt 22pt rgba(11,37,69,.08); margin-bottom: 16pt; page-break-inside: avoid; }
+  .cover-note { border-left: 4pt solid #d4af37; padding: 8pt 0 2pt 12pt; color: #26364a; }
+  .kv { width: 100%; border: 1px solid #dbe3ee; border-radius: 9pt; overflow: hidden; margin: 5pt 0 12pt 0; page-break-inside: avoid; background: #fff; }
+  .kv-row { display: grid; grid-template-columns: 34% 66%; border-bottom: 1px solid #dbe3ee; min-height: 23pt; }
   .kv-row:last-child { border-bottom: 0; }
-  .kv-key { background: #f3f6fa; color: #314258; font-weight: 700; padding: 6pt 8pt; }
-  .kv-val { background: #fff; padding: 6pt 8pt; }
-  .advice-block {
-    border: 1px solid #dbe3ee;
-    border-radius: 8pt;
-    background: #fbfdff;
-    padding: 6pt 8pt;
-    margin: 0 0 6pt 0;
-    page-break-inside: avoid;
-  }
-  .block-label { color: #0b2545; font-size: 8.7pt; font-weight: 700; margin-bottom: 2pt; }
+  .kv-key { background: #eef3f9; color: #26364a; font-weight: 700; padding: 6.5pt 8pt; }
+  .kv-val { background: #fff; padding: 6.5pt 8pt; color: #172033; }
+  .advice-block { border: 1px solid #dbe3ee; border-radius: 9pt; background: #fbfdff; padding: 7pt 8.5pt; margin: 0 0 6.5pt 0; page-break-inside: avoid; }
+  .block-label { color: #0b2545; font-size: 8.5pt; font-weight: 700; margin-bottom: 2.5pt; text-transform: uppercase; letter-spacing: .035em; }
   .block-value { color: #172033; }
-  .finding, .risk, .appendix-item {
-    border-top: 1px solid #e4ebf3;
-    padding-top: 4pt;
-    margin-top: 8pt;
-  }
+  .finding, .risk, .appendix-item { border-top: 1px solid #e4ebf3; padding-top: 5pt; margin-top: 9pt; }
   .avoid-break { page-break-inside: avoid; break-inside: avoid; }
   .page-break-after { page-break-after: always; }
   .page-break-before { page-break-before: always; }
