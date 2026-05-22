@@ -14,7 +14,7 @@
 const crypto = require('crypto');
 const PDFDocument = require('pdfkit');
 
-const RENDERER_VERSION = 'pdf-js-server-contract-renderer-v110-20260522';
+const RENDERER_VERSION = 'pdf-js-server-contract-renderer-v111-20260522-polished';
 
 const BRAND = {
   name: 'Bircan Migration & Education',
@@ -62,12 +62,56 @@ function pick(...values) {
   return '';
 }
 
+
+function humanizeObject(value) {
+  if (!isPlainObject(value)) return '';
+  const issue = pick(value.issue, value.title, value.area, value.criterion, value.criterionLabel, value.criterionName);
+  const evidence = pick(value.requiredEvidence, value.evidenceRequired, value.evidence, value.documentsRequired, value.evidenceGap);
+  const action = pick(value.requiredAction, value.action, value.recommendation, value.nextStep);
+  const position = pick(value.position, value.summary, value.fullText, value.finding, value.professionalPosition);
+  const risk = pick(value.overallRisk, value.risk, value.riskLevel, value.status, value.statusLabel);
+  const parts = [];
+  if (issue) parts.push(String(issue));
+  if (position) parts.push(String(position));
+  if (risk) parts.push(`Risk/status: ${String(risk)}`);
+  if (evidence) parts.push(`Evidence required: ${Array.isArray(evidence) ? evidence.join(', ') : String(evidence)}`);
+  if (action) parts.push(`Action: ${String(action)}`);
+  if (parts.length) return parts.join(' — ');
+  return Object.entries(value)
+    .filter(([k, v]) => !INTERNAL_KEYS.has(k) && v !== undefined && v !== null && v !== '')
+    .slice(0, 6)
+    .map(([k, v]) => `${String(k).replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim()}: ${Array.isArray(v) ? v.join(', ') : (isPlainObject(v) ? humanizeObject(v) : String(v))}`)
+    .join('; ');
+}
+
+function professionalStatus(value) {
+  const s = String(value || '').toLowerCase().trim();
+  if (!s) return 'Not verified';
+  if (/likely[_\s-]*satisfied|appears supportable|supportable/.test(s)) return 'Appears supportable, subject to evidence';
+  if (/not[_\s-]*satisfied|adverse|not supportable/.test(s)) return 'Presently adverse on current information';
+  if (/not[_\s-]*applicable|n\/a/.test(s)) return 'Not presently applicable';
+  if (/manual[_\s-]*review|required/.test(s)) return 'Requires migration-agent review';
+  if (/unclear|unknown|review|required|verify|reconcil/.test(s)) return 'Requires evidence reconciliation';
+  return cleanClientText(value);
+}
+
+function uniqueByNormalised(items) {
+  const seen = new Set();
+  const out = [];
+  for (const item of asArray(items)) {
+    const text = body(isPlainObject(item) ? humanizeObject(item) : item);
+    const key = text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
 function toText(value, fallback = '—') {
   if (value === undefined || value === null || value === '') return fallback;
   if (Array.isArray(value)) return value.map(v => toText(v, '')).filter(Boolean).join(', ') || fallback;
-  if (typeof value === 'object') {
-    try { return JSON.stringify(value); } catch (_err) { return fallback; }
-  }
+  if (typeof value === 'object') return humanizeObject(value) || fallback;
   return String(value);
 }
 
@@ -75,8 +119,9 @@ function cleanClientText(value) {
   if (value === undefined || value === null) return '';
   let out = String(value)
     .normalize('NFKC')
-    .replace(/[\uFFFC-\uFFFF]/g, '-')
+    .replace(/[\uFFFC-\uFFFF]/g, ' ')
     .replace(/[\u200B-\u200D\u2060]/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .replace(/\u00AD/g, '')
     .replace(/\bGrant Criterion Control\b/gi, 'Grant criterion requirement')
@@ -215,7 +260,7 @@ function findingTitle(f) {
 
 function findingStatus(f) {
   if (!isPlainObject(f)) return 'Not verified';
-  return body(pick(f.statusLabel, f.status, f.finding, f.riskLevel, f.risk, f.evidenceStatus, 'Not verified'));
+  return professionalStatus(pick(f.professionalStatus, f.statusLabel, f.status, f.finding, f.riskLevel, f.risk, f.evidenceStatus, 'Not verified'));
 }
 
 function findingRequirement(f) {
@@ -509,7 +554,7 @@ function writeExecutive(doc, model, subclass, stream, findings) {
     ['Renderer version', RENDERER_VERSION]
   ]);
   const blockers = asArray(pick(model.topMaterialBlockers, model.materialBlockers, model.clientAdviceObject && model.clientAdviceObject.topMaterialBlockers));
-  if (blockers.length) { h2(doc, 'Main issues to resolve'); blockers.slice(0, 6).forEach(bullet.bind(null, doc)); }
+  if (blockers.length) { h2(doc, 'Main issues to resolve'); uniqueByNormalised(blockers).slice(0, 6).forEach(bullet.bind(null, doc)); }
   else { h2(doc, 'Main issues to resolve'); findings.slice(0, 5).forEach(f => bullet(doc, findingTitle(f))); }
 }
 
@@ -549,7 +594,7 @@ function writeFindings(doc, findings) {
 function writeEvidence(doc, model, findings) {
   h1(doc, '5. Evidence gaps and document request');
   const items = asArray(pick(model.evidenceChecklist, model.evidenceGaps, model.requiredEvidence, model.documentRequests));
-  if (items.length) items.slice(0, 30).forEach(x => bullet(doc, isPlainObject(x) ? pick(x.item, x.document, x.evidence, x.title, JSON.stringify(x)) : x));
+  if (items.length) uniqueByNormalised(items).slice(0, 30).forEach(x => bullet(doc, x));
   else findings.forEach(f => bullet(doc, `${findingTitle(f)}: ${findingGap(f) || 'Evidence to be verified.'}`));
 }
 
@@ -568,14 +613,15 @@ function writeRisk(doc, model, findings) {
 function writeActionPlan(doc, model, findings) {
   h1(doc, '7. Lodgement-readiness action plan');
   const plan = asArray(pick(model.priorityActionPlan, model.actionPlan, model.nextSteps, model.requiredActions));
-  if (plan.length) plan.slice(0, 18).forEach((x, i) => bullet(doc, isPlainObject(x) ? `Priority ${pick(x.priority, i + 1)} - ${pick(x.issue, x.title, 'Issue')}: ${pick(x.requiredAction, x.action, x.description, 'Resolve before final advice.')}` : x));
+  if (plan.length) uniqueByNormalised(plan.map((x, i) => isPlainObject(x) ? `Priority ${pick(x.priority, i + 1)} - ${pick(x.issue, x.title, 'Issue')}: ${pick(x.requiredAction, x.action, x.description, x.nextStep, 'Resolve before final advice.')}` : x)).slice(0, 18).forEach(x => bullet(doc, x));
   else findings.slice(0, 8).forEach((f, i) => bullet(doc, `Priority ${i + 1} - ${findingTitle(f)}: ${findingAction(f) || 'Resolve before final advice.'}`));
 }
 
 function writeRecommendation(doc, model) {
   h1(doc, '8. Final professional recommendation');
-  p(doc, pick(model.finalRecommendation, model.recommendation, model.agentPosition && model.agentPosition.recommendation,
-    'The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.'));
+  const rec = pick(model.finalRecommendation, model.recommendation, model.agentPosition && model.agentPosition.recommendation,
+    'The matter should proceed to formal evidence review and lodgement-readiness assessment before filing.');
+  p(doc, isPlainObject(rec) ? humanizeObject(rec) : rec);
 }
 
 function writeLimitations(doc) {
