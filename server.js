@@ -5461,18 +5461,22 @@ async function finaliseStripePayment(req, res) {
     ? { queued: false, status: 'inline_paid_service_attached', sessionId }
     : schedulePaymentFinaliseBackground(sessionId);
 
-  // 5) If we found the client, set cookie/token immediately. This prevents blank dashboard.
-  if (context.client) {
-    try { setSessionCookie(res, sign(context.client)); } catch (_err) {}
-  }
-
-  res.setHeader('Cache-Control', 'no-store');
-  return res.json(buildPaymentFinaliseResponsePayload({
+  // 5) If we found the client, set both normal and dedicated dashboard cookies immediately.
+  // The dashboard cookie is the permanent authority for account-dashboard access;
+  // the JSON token remains only as a compatibility fallback for older frontend builds.
+  const payload = buildPaymentFinaliseResponsePayload({
     context,
     sessionId,
     background,
     stripeChecked: Boolean(stripeContext)
-  }));
+  });
+  if (context.client) {
+    try { setSessionCookie(res, sign(context.client)); } catch (_err) {}
+    try { setDashboardAccessCookie(res, payload.dashboardAccessToken || signDashboardAccessToken(context.client)); } catch (_err) {}
+  }
+
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json(payload);
 }
 
 // Aliases used by payment-complete/checkout return pages.
@@ -7717,6 +7721,18 @@ function signDashboardAccessToken(client) {
   );
 }
 
+
+function setDashboardAccessCookie(res, token) {
+  if (!res || !token) return;
+  res.cookie('bm_dashboard_token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+    maxAge: DASHBOARD_TOKEN_TTL_SECONDS * 1000,
+    path: '/'
+  });
+}
+
 async function clientFromJwtToken(token, secret = SESSION_SECRET) {
   if (!token) return null;
   try {
@@ -7733,7 +7749,7 @@ async function clientFromJwtToken(token, secret = SESSION_SECRET) {
 
 function dashboardRequestToken(req) {
   return String(
-    (req.cookies && req.cookies.bm_session) ||
+    (req.cookies && (req.cookies.bm_dashboard_token || req.cookies.bm_session)) ||
     (req.headers.authorization || '').replace(/^Bearer\s+/i, '') ||
     req.headers['x-auth-token'] ||
     req.headers['x-dashboard-access-token'] ||
@@ -7805,35 +7821,41 @@ async function clientFromLocalDashboardSession(sessionId) {
 async function resolveDashboardAccess(req, res, next) {
   try {
     let client = null;
-    const rawToken = dashboardRequestToken(req);
-
-    // 1) Normal portal session cookie / bearer token.
-    client = await clientFromJwtToken(rawToken, SESSION_SECRET);
-
-    // 2) Dedicated signed dashboard access token.
-    if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
-
-    // 3) Stripe return fallback: resolve from local paid/session records first, then Stripe only as a last resort.
-    // This solves cross-site cookie loss without delaying the dashboard on external Stripe API latency.
     const sid = dashboardSessionId(req);
-    if (!client) client = await clientFromLocalDashboardSession(sid);
-    if (!client) client = await clientFromStripeDashboardSession(sid);
+
+    // Permanent payment-return rule:
+    // If a valid Stripe session_id is present in the dashboard URL, it is the
+    // authoritative identity source for that request. This prevents a stale
+    // browser cookie/localStorage token from another test account from causing
+    // the dashboard to show Email — / no records or the wrong account.
+    if (sid && /^cs_(test|live)_/i.test(sid)) {
+      client = await clientFromLocalDashboardSession(sid);
+      if (!client) client = await clientFromStripeDashboardSession(sid);
+    }
+
+    // Normal dashboard access when there is no payment-return session, or when
+    // the session cannot yet be resolved locally/through Stripe.
+    const rawToken = dashboardRequestToken(req);
+    if (!client) client = await clientFromJwtToken(rawToken, dashboardTokenSecret());
+    if (!client) client = await clientFromJwtToken(rawToken, SESSION_SECRET);
 
     if (!client) return res.status(401).json({
       ok: false,
       error: 'Login required.',
       code: 'DASHBOARD_ACCESS_REQUIRED',
-      accessMethods: ['cookie', 'bearer', 'dashboard_token', 'stripe_session_id']
+      accessMethods: ['secure_dashboard_cookie', 'cookie', 'bearer', 'dashboard_token', 'stripe_session_id']
     });
 
     req.client = client;
     req.dashboardAccessToken = signDashboardAccessToken(client);
+    setDashboardAccessCookie(res, req.dashboardAccessToken);
     next();
   } catch (err) {
     console.error('Dashboard access resolver failed:', err.message);
     res.status(401).json({ ok: false, error: 'Login required.', code: 'DASHBOARD_ACCESS_FAILED' });
   }
 }
+
 
 app.get('/api/account/dashboard-access-token', resolveDashboardAccess, asyncRoute(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
