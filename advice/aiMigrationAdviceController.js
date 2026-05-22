@@ -14,7 +14,7 @@
  * pdf.js must render the client object only.
  */
 
-const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v3-universal-all-subclasses-answer-criteria-20260522';
+const AI_CONTROLLER_VERSION = 'ai-migration-advice-controller-v4-subclass186-mandatory-age-finding-20260522';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -705,6 +705,71 @@ function ageCriteriaAnalysis(facts) {
   };
 }
 
+
+function hasSavedAgeAnswer(facts) {
+  if (!facts) return false;
+  if (Number.isFinite(facts.age)) return true;
+  if (facts.ageInfo && (facts.ageInfo.dateOfBirth || facts.ageInfo.ageAtApplication || facts.ageInfo.exemption)) return true;
+  const flat = facts.rawFlat || {};
+  return Object.keys(flat).some(k => /\bage\b|date[-_\s]*of[-_\s]*birth|birth|dob/i.test(k) && clean(flat[k]));
+}
+
+function findingLooksLikeAge(finding) {
+  const title = findingTitle(finding);
+  const body = [
+    title,
+    finding && finding.issue,
+    finding && finding.title,
+    finding && finding.criterionId,
+    finding && finding.legalRequirement,
+    finding && finding.clientFacts,
+    finding && finding.requiredAction
+  ].map(clean).join(' ');
+  return /\bage\b|date[-_\s]*of[-_\s]*birth|birth|dob/i.test(body);
+}
+
+function buildMandatoryAgeFinding(facts) {
+  const analysis = ageCriteriaAnalysis(facts || {});
+  const subclass = facts && facts.subclass ? facts.subclass : '186';
+  const stream = facts && facts.stream ? facts.stream : '';
+  const issue = 'Age';
+  return {
+    issue,
+    title: issue,
+    area: 'Age',
+    criterionKey: 'age',
+    criterionId: `subclass-${subclass}-age`,
+    clause: null,
+    sourceArea: `Subclass ${subclass}${stream ? ` ${stream}` : ''} age criterion`,
+    sourceConfidence: 'mandatory-controller-finding-from-saved-age-answer',
+    answerFieldsUsed: (facts && facts.ageInfo && facts.ageInfo.fields) || [],
+    mappedAnswerSummary: facts && Number.isFinite(facts.age) ? `Recorded age: ${facts.age}` : 'Age/date-of-birth answer requires verification.',
+    status: analysis.status,
+    displayStatus: analysis.displayStatus,
+    riskLevel: analysis.riskLevel,
+    materiality: 'material',
+    legalRequirement: requirementFor('Age', subclass, stream),
+    clientFacts: analysis.clientFacts,
+    evidenceGap: 'Passport bio page, date-of-birth evidence and any age exemption/concession evidence must be checked before final advice is relied upon.',
+    consequence: analysis.consequence,
+    requiredAction: analysis.requiredAction,
+    requiredEvidence: ['Passport bio page', 'Date of birth evidence', 'Age exemption/concession evidence if relied upon'],
+    missingEvidence: [],
+    criterionTypes: ['grant-criterion', 'mandatory-saved-answer-coverage'],
+    registryStream: stream,
+    aiControllerAssessed: true,
+    mandatoryCoverageFinding: true
+  };
+}
+
+function ensureMandatorySavedAnswerFindings(findings, facts) {
+  const out = asArray(findings).filter(Boolean);
+  if ((facts && facts.subclass === '186') && hasSavedAgeAnswer(facts) && !out.some(findingLooksLikeAge)) {
+    out.unshift(buildMandatoryAgeFinding(facts));
+  }
+  return out;
+}
+
 function factAnalysisFor(title, facts, existing) {
   const lower = String(title || '').toLowerCase();
   const existingText = clean(existing || '');
@@ -986,7 +1051,8 @@ function applyAiMigrationAdviceController({ adviceBundle = {}, assessment = {}, 
   const registryAssessment = registry ? buildRegistryCriteriaFindings({ registry, facts }) : { findings: [], audit: null };
   const originalFindings = sourceFindings(adviceBundle);
   const mergedFindings = mergeFindings(registryAssessment.findings, originalFindings, facts, new Set(registryAssessment.audit && registryAssessment.audit.registryAreas || []));
-  const enhancedFindings = mergedFindings.map((finding, index) => enhanceFinding(finding, index, facts));
+  const coverageCompleteFindings = ensureMandatorySavedAnswerFindings(mergedFindings, facts);
+  const enhancedFindings = coverageCompleteFindings.map((finding, index) => enhanceFinding(finding, index, facts));
   const clientAdviceObject = buildClientAdviceObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryAssessmentAudit: registryAssessment.audit });
   const internalAuditObject = buildInternalAuditObject({ facts, findings: enhancedFindings, adviceBundle, registry, registryResult, registryAssessmentAudit: registryAssessment.audit });
   const advice = adviceBundle.advice || {};
